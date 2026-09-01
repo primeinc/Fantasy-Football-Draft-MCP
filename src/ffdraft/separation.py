@@ -180,7 +180,7 @@ def separation_summary(seasons=None) -> pd.DataFrame:
     cols = {
         "sep_score": "sep_score", "avg_separation": "avg_separation",
         "avg_cushion": "avg_cushion", "yprr": "yprr", "tprr": "tprr",
-        "yac_oe": "avg_yac_above_expectation",
+        "yac_oe": "avg_yac_above_expectation", "adot": "avg_intended_air_yards",
     }
     keys = ["player_id", "name", "position"]
     agg_spec, frame = {}, prof[keys + ["w", "routes_est"]].copy()

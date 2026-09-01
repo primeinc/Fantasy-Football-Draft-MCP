@@ -915,11 +915,11 @@ def player_report(player_name: str) -> str:
               "injury_risk", "games_missed_rate", "report_rate", "heavy_seasons", "recent_burden",
               "run_block_rank", "pass_block_rank", "plays_per_game", "neutral_pass_rate",
               "rush_rate", "divisional_games",
-              "sep_score", "avg_separation", "avg_cushion", "yprr", "tprr", "yac_oe",
+              "sep_score", "avg_separation", "avg_cushion", "yprr", "tprr", "yac_oe", "adot",
               "is_rookie", "pick", "draft_round", "college",
               "rz_touches", "rz_td", "rz_td_rate", "rz_baseline_rate",
               "m_oline", "m_volume", "m_schedule", "m_divisional", "m_injury", "m_age",
-              "m_separation", "m_td_luck", "vor"]
+              "m_separation", "m_td_luck", "m_coverage_trend", "vor"]
     out = _rows(pd.DataFrame([r]), [f for f in fields if f in r.index], 1)[0]
     out["summary"] = model.explain(r)
     return json.dumps(out, indent=2)
@@ -1090,7 +1090,7 @@ def plan_my_draft(strategy: str = "balanced") -> str:
 def model_settings(consistency_weight: float | None = None, injury_weight: float | None = None,
                    oline_weight: float | None = None, schedule_weight: float | None = None,
                    pace_weight: float | None = None, td_luck_weight: float | None = None,
-                   qb_boost: float | None = None) -> str:
+                   qb_boost: float | None = None, coverage_trend_weight: float | None = None) -> str:
     """Tune how much each factor moves a player. Rebuilds the board.
 
     td_luck_weight controls how hard a player's red zone touchdown rate gets
@@ -1108,12 +1108,23 @@ def model_settings(consistency_weight: float | None = None, injury_weight: float
     hit rate in general -- that alone doesn't justify this) before setting it
     above 0. It stacks with, and doesn't replace, the roster-need discount that
     already stops the model from wanting a second QB once you have one.
+
+    coverage_trend_weight is the same kind of supplied belief as qb_boost, and
+    also defaults to 0. It rewards WR/TE with a short-area profile (high TPRR,
+    low aDOT) over boundary/vertical receivers, and RBs with real receiving role
+    (target_share), on the theory that 2025's shift to zone coverage and, later,
+    back to base personnel (linebackers instead of nickel corners covering the
+    slot/backfield) favors those archetypes. Unlike separation or td_luck, this
+    isn't backed by a per-player real signal this project can backtest -- open
+    data has no man/zone or personnel-package split (see separation.py) -- so
+    treat any nonzero value as an opinion you're choosing to weight in, not a
+    validated adjustment, and re-check the underlying rates each season.
     """
     league, weights = _settings()
     for name, val in [("consistency_weight", consistency_weight), ("injury", injury_weight),
                       ("oline", oline_weight), ("schedule", schedule_weight),
                       ("pace_volume", pace_weight), ("td_luck", td_luck_weight),
-                      ("qb_boost", qb_boost)]:
+                      ("qb_boost", qb_boost), ("coverage_trend", coverage_trend_weight)]:
         if val is not None:
             setattr(weights, name, float(val))
     save_settings(league, weights)

@@ -200,12 +200,12 @@ def build_player_table(league: LeagueSettings, weights: ModelWeights,
         if not sep.empty:
             tbl = tbl.merge(
                 sep[["player_id", "sep_score", "avg_separation", "avg_cushion",
-                     "yprr", "tprr", "yac_oe", "seasons_qualified"]],
+                     "yprr", "tprr", "yac_oe", "adot", "seasons_qualified"]],
                 on="player_id", how="left",
             )
     except Exception as exc:
         print(f"separation data unavailable ({type(exc).__name__})")
-    for c in ("sep_score", "yprr", "tprr", "avg_separation"):
+    for c in ("sep_score", "yprr", "tprr", "avg_separation", "adot"):
         if c not in tbl.columns:
             tbl[c] = np.nan
     tbl["is_rookie"] = False
@@ -359,6 +359,29 @@ def project(tbl: pd.DataFrame, league: LeagueSettings, weights: ModelWeights) ->
             sep_z.loc[catchers] = t.loc[catchers, "sep_score"].clip(-2.5, 2.5)
     t["m_separation"] = bounded(sep_z, w.separation)
 
+    # Coverage-scheme trend, opt-in via w.coverage_trend (defaults to 0 -- see
+    # ModelWeights.coverage_trend docstring for why this stays off by default).
+    # For WR/TE: reward a short-area profile (high TPRR, low aDOT) over a
+    # boundary/vertical one, since that's the archetype that beats zone coverage
+    # and draws linebackers rather than nickel corners. For RB: reward receiving
+    # role (target_share) directly, since backs already schemed into the passing
+    # game are the ones positioned to exploit the same trend.
+    ct_z = pd.Series(0.0, index=t.index)
+    if w.coverage_trend:
+        catchers = t["position"].isin(["WR", "TE"]) & t.get(
+            "tprr", pd.Series(np.nan, index=t.index)).notna()
+        if catchers.any():
+            tprr_z = features._zscore(t.loc[catchers, "tprr"])
+            adot = t.loc[catchers, "adot"]
+            adot_z = features._zscore(adot.fillna(adot.mean()))
+            ct_z.loc[catchers] = ((tprr_z - adot_z) / 2).clip(-2.5, 2.5)
+        is_rb = t["position"].eq("RB") & t.get(
+            "target_share", pd.Series(np.nan, index=t.index)).notna()
+        if is_rb.any():
+            ts = t.loc[is_rb, "target_share"]
+            ct_z.loc[is_rb] = features._zscore(ts).clip(-2.5, 2.5)
+    t["m_coverage_trend"] = bounded(ct_z, w.coverage_trend)
+
     # Touchdown luck: a player's own red zone conversion rate, regressed toward what
     # his position converts on average. Touchdowns dominate fantasy scoring and are
     # much noisier than yardage — a back who scored on 40% of his red zone carries
@@ -381,7 +404,7 @@ def project(tbl: pd.DataFrame, league: LeagueSettings, weights: ModelWeights) ->
 
     t["adj_ppg"] = (t["baseline_ppg"] * t["m_oline"] * t["m_volume"] * t["m_schedule"]
                     * t["m_divisional"] * t["m_injury"] * t["m_age"] * t["m_separation"]
-                    * t["m_td_luck"])
+                    * t["m_td_luck"] * t["m_coverage_trend"])
     t["proj_points"] = t["adj_ppg"] * t["exp_games"]
 
     # Full-PPR equivalent of the same projection. Published consensus rankings are
@@ -639,6 +662,7 @@ def explain(row: pd.Series) -> str:
         ("O-line", "m_oline"), ("volume/pace", "m_volume"),
         ("schedule", "m_schedule"), ("age curve", "m_age"),
         ("separation", "m_separation"), ("touchdown regression", "m_td_luck"),
+        ("coverage trend", "m_coverage_trend"),
     ]:
         v = row.get(key)
         if v is not None and np.isfinite(v) and abs(v - 1) > 0.02:

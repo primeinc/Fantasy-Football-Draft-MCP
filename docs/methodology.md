@@ -191,6 +191,30 @@ a part-time receiver posts a flattering YPRR that says nothing about a real work
 **Man/zone splits are not reproducible** from open data. That needs per-play coverage
 classification, which only manual charting provides.
 
+## Coverage-scheme trend (opt-in, off by default)
+
+`coverage_trend_weight` (via `model_settings`) is a supplied belief, the same category
+as `qb_boost`: it adjusts `draft_score`, but not from a real per-player signal this
+project can validate the way `separation` or `td_luck` can. Man-vs-zone and
+nickel-vs-base personnel rates aren't in any open dataset — see the man/zone caveat
+under Separation above — so there's no equivalent of `matchup_backtest` or
+`redzone_shift_backtest` to check it against real outcomes. It exists because external
+2025-season analysis (PFF, MatchQuarters, Sharp Football) found defenses shifted hard
+toward zone coverage (man coverage down to 22.6% of snaps, from 33%+ seven years prior)
+and, later in the season, from nickel back to base personnel (nickel ~68%→61%, base
+~23%→29%) once split-safety shells stopped working. Base personnel means a linebacker,
+not a nickel corner, more often ends up covering the slot receiver or a back releasing
+into the flat — a mismatch that rewards short-area quickness over boundary/vertical
+separation.
+
+When enabled, it rewards WR/TE with a short-area profile — high TPRR, low `adot`
+(average intended air yards, from the same NGS receiving data `separation` uses) —
+over vertical/boundary receivers, and RBs with real receiving role (`target_share`)
+directly. Defaults to 0, like `qb_boost`, because it's an opinion about the league
+environment rather than something derived from any player's own history. The
+underlying rates are season-specific and will decay — re-verify them before trusting a
+nonzero value in a future season.
+
 ## Team drive efficiency and red zone identity
 
 Two team-level signals surfaced through `team_context`, informational only -- like
@@ -244,5 +268,7 @@ fabricated bust sitting in the middle of the results.
 - **ADP is format- and league-specific.** Consensus is a decent default; your platform's
   export is better.
 - **No in-season usage updates.** This is a draft tool.
-- **Man/zone coverage splits** are unavailable.
+- **Man/zone coverage splits** are unavailable. `coverage_trend_weight` proxies for
+  the trend qualitatively (TPRR/aDOT for WR/TE, target_share for RB) but defaults to
+  0 and isn't backtested — see "Coverage-scheme trend" above.
 - **Kickers and defenses** aren't modelled. Take them last anyway.

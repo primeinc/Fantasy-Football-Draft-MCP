@@ -169,6 +169,21 @@ class ModelWeights:
     # only, e.g. 0.12 for +12%. Re-run that check before trusting a value here for a
     # league you haven't verified it in -- this isn't a universal constant.
     qb_boost: float = 0.0
+    # Same "supplied belief, not derived from this player's own history" convention
+    # as qb_boost, defaulting to off for the same reason: unlike separation/td_luck,
+    # this isn't backed by a per-player real signal this codebase can backtest --
+    # man-vs-zone and personnel-package rates aren't in any open dataset (see
+    # separation.py's docstring), so there's no equivalent of matchup_backtest or
+    # redzone_shift_backtest to validate it against. The belief, from 2025-season
+    # external analysis (PFF, MatchQuarters, Sharp Football): defenses shifted hard
+    # to zone (man coverage 22.6% of snaps, down from 33%+) and, later in the
+    # season, from nickel back to base personnel (nickel ~68%->61%, base ~23%->29%)
+    # after split-safety shells stopped working. Base personnel means a linebacker,
+    # not a nickel corner, increasingly covers the slot/backfield -- a mismatch that
+    # rewards short-area quickness over boundary/vertical separation, and backs
+    # already schemed into the passing game. Re-derive these rates for the season
+    # you're drafting before trusting a nonzero value here; they will decay.
+    coverage_trend: float = 0.0
 
 
 LEAGUES_PATH = STATE_DIR / "leagues.json"
