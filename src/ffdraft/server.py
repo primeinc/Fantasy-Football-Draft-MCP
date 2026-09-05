@@ -62,6 +62,7 @@ from . import features, model, names, sources
 from .config import (
     CURRENT_SEASON,
     DATA_DIR,
+    SPECIAL_POSITIONS,
     STATE_DIR,
     LeagueSettings,
     ModelWeights,
@@ -147,7 +148,7 @@ def _build_board(force: bool = False) -> pd.DataFrame:
             or "espn_rank" not in b.columns
             or "adp_match" not in b.columns)
         if stale_key or stale_join or repriced:
-            b = _price_board(bd.strip_adp(b), league)
+            b = _price_board(bd.strip_adp(b), league, weights)
             changed = True
         if changed:
             b.to_parquet(path, index=False)
@@ -156,13 +157,14 @@ def _build_board(force: bool = False) -> pd.DataFrame:
 
     tbl = model.build_player_table(league, weights)
     proj = model.project(tbl, league, weights)
-    proj = _price_board(_attach_byes(proj), league)
+    proj = _price_board(_attach_byes(proj), league, weights)
     proj.to_parquet(path, index=False)
     _BOARDS[key] = proj
     return proj
 
 
-def _price_board(proj: pd.DataFrame, league: LeagueSettings) -> pd.DataFrame:
+def _price_board(proj: pd.DataFrame, league: LeagueSettings,
+                 weights: ModelWeights | None = None) -> pd.DataFrame:
     try:
         adp = bd.load_adp(
             csv_path=(_CACHE["adp_csv"] or {}).get(league.name),
@@ -171,9 +173,42 @@ def _price_board(proj: pd.DataFrame, league: LeagueSettings) -> pd.DataFrame:
     except Exception as exc:
         print(f"ADP unavailable ({type(exc).__name__}); using model rank as proxy")
         adp = None
+    # A reprice starts from whatever is cached, which may already carry the K and
+    # D/ST rows added below; drop them and rebuild from the list just fetched.
+    proj = proj[~proj["position"].isin(SPECIAL_POSITIONS)] if "position" in proj.columns \
+        else proj
     proj = bd.attach_adp(proj, adp)
     proj["key_version"] = names.KEY_VERSION
-    return bd.convert_adp_format(proj, _scoring_label(league))
+    priced = bd.convert_adp_format(proj, _scoring_label(league))
+    return _add_special_teams(priced, adp, league, weights or _settings()[1])
+
+
+def _add_special_teams(board: pd.DataFrame, adp: pd.DataFrame | None,
+                       league: LeagueSettings, weights: ModelWeights) -> pd.DataFrame:
+    """Append the ESPN-projected kickers and defenses to a priced board.
+
+    They join here rather than in `model.build_player_table` because they have
+    no modelled features at all: nothing upstream of `project()` has a row for
+    them, and adding an empty one would push a NaN through every multiplier.
+    They are scored against the board only after the board exists.
+
+    `overall_rank` and `adp_delta` are re-derived over the combined board. A
+    kicker that outranks two hundred players has to be in that ranking or
+    `value_picks` and `adp_delta` would be reading a board that no longer
+    matches the one the recommender uses.
+    """
+    special = bd.espn_special_teams(adp)
+    if special.empty:
+        return board
+    special = model.score_special_teams(special, board, league, weights)
+    special["bye_week"] = special["team"].map(features.team_bye_weeks(CURRENT_SEASON))
+    for col in ("key_version", "market_join_version", "adp_format"):
+        if col in board.columns and len(board):
+            special[col] = board[col].iloc[0]
+    out = pd.concat([board, special], ignore_index=True)
+    out["overall_rank"] = out["draft_score"].rank(ascending=False, method="min").astype(int)
+    out["adp_delta"] = out["adp"] - out["overall_rank"]
+    return out.sort_values("draft_score", ascending=False).reset_index(drop=True)
 
 
 def _attach_byes(b: pd.DataFrame) -> pd.DataFrame:

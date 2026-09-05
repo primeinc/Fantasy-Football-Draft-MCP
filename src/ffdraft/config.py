@@ -23,6 +23,12 @@ SEASONS = [int(s) for s in os.environ["FFDRAFT_SEASONS"].split(",")] if os.envir
 RECENCY_WEIGHTS = [0.05, 0.10, 0.17, 0.28, 0.40]
 
 FANTASY_POSITIONS = ("QB", "RB", "WR", "TE")
+# Positions the projection model has no production history for: nflverse box
+# scores carry no kicking or team-defence stats, so these players reach the
+# board only through ESPN's own season projection. Kept out of FANTASY_POSITIONS
+# so nothing that walks the modelled positions (aging curves, red zone role,
+# separation, replacement baselines in project()) has to special-case them.
+SPECIAL_POSITIONS = ("K", "DST")
 
 # Weekly point thresholds that count as a "startable" week, by position.
 # Used for the consistency / floor score.
@@ -115,8 +121,18 @@ class LeagueSettings:
         # scaled to league size.
         scale = t / 12
         bench_pad = {"QB": 4, "RB": 12, "WR": 14, "TE": 4}
-        return {p: max(1, base.get(p, 1) + round(bench_pad.get(p, 0) * scale))
-                for p in FANTASY_POSITIONS}
+        out = {p: max(1, base.get(p, 1) + round(bench_pad.get(p, 0) * scale))
+               for p in FANTASY_POSITIONS}
+        # Kickers and defenses get no bench pad. Nobody rosters a second one --
+        # they are streamed off waivers, not benched -- so the replacement is
+        # simply the last one a team would start, the (teams x slots)th best.
+        # Without an entry here they have no replacement level, which is why
+        # they had no VOR and no draft_score and sat off the board entirely.
+        for pos in SPECIAL_POSITIONS:
+            slots = self.starters.get(pos, 0)
+            if slots:
+                out[pos] = max(1, slots * t)
+        return out
 
     def roster_slots(self) -> int:
         return sum(self.starters.values()) + self.superflex

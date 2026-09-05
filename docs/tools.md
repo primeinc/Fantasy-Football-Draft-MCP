@@ -96,6 +96,28 @@ the per-position shift, base rate 0.250, on 1060 forecasts at 122 picks.
 `draft_audit` warns on every recommended player in that state and on players
 ESPN does not project at all.
 
+**Kickers and defenses** are on the board. nflverse box scores carry no kicking
+and no team-defense production, so K and D/ST used to be off the board
+entirely and the recommender had nothing to say in the two rounds where the
+league forces you to fill both slots. They now come from ESPN's own player list
+(`board.espn_special_teams`): its full-season projection under this league's
+scoring is their `proj_points` — for a defense that is the yards-allowed and
+points-allowed bands `league_rules` reads out of `pointsOverrides` — and
+`model.score_special_teams` gives them a replacement level (the last one a team
+would start, `replacement_ranks()["K"]` / `["DST"]`), a VOR and a `draft_score`
+on the board's own scale. They carry the board's mean consistency, which is a
+deliberate absence of a claim rather than a measurement, so `why` does not
+report one for them.
+
+They are priced on marginal value alone — the 20% share of raw `draft_score`
+every other candidate keeps is a scarcity escape hatch, and neither position is
+ever scarce (ESPN lists 32 of each for a league that needs one apiece). They
+get their own positional need, so filling the slot registers without changing
+the need of any other position. Defenses are named the way a drafted one is
+recorded ("Denver Broncos D/ST", not ESPN's "Broncos D/ST"), so a drafted
+defense stops showing as available and `draft_audit` no longer counts it as a
+pick the board cannot resolve.
+
 ### `best_available`
 Next best on the board. `sort_by`: `draft_score` (balanced), `vor`, `consistency`,
 `proj_points`, or `value` (biggest ADP-to-model gap). Filter with `position`.

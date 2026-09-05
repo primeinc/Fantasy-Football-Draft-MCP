@@ -573,6 +573,112 @@ class TestRoleUnknown:
         assert "left unscaled" in joined and "Anthony Richardson" in joined
 
 
+class TestSpecialTeams:
+    def _adp(self):
+        adp = pd.DataFrame({
+            "name": ["Broncos D/ST", "Texans D/ST", "Rams D/ST", "Brandon Aubrey",
+                     "Cameron Dicker", "Jobless Kicker", "Jakobi Meyers"],
+            "position": ["DST", "DST", "DST", "K", "K", "K", "WR"],
+            "pro_team_id": [7, 34, 14, 6, 24, 9, 30],
+            "adp": [99.5, 93.0, 101.8, 84.1, 112.4, 170.0, 122.4],
+            "espn_id": ["-16007", "-16034", "-16014", "1", "2", "3", "4"],
+            "espn_rank": [179, 176, 243, 119, 159, 800, 112],
+            "espn_proj": [130.8, 129.1, 124.4, 171.5, 161.9, 0.0, 181.9],
+            "espn_injury": [None, None, None, "ACTIVE", "ACTIVE", "ACTIVE", "ACTIVE"],
+            "source": ["espn_adp"] * 7})
+        adp["_key"] = adp["name"].map(board.norm_name)
+        return adp
+
+    def test_defenses_are_named_the_way_a_drafted_one_is_recorded(self):
+        out = board.espn_special_teams(self._adp())
+        # ESPN's list says "Broncos D/ST"; _espn_player_name records
+        # "Denver Broncos D/ST". Keyed differently, a drafted defense would
+        # stay on the board as available.
+        assert "Denver Broncos D/ST" in out["name"].tolist()
+        assert board._espn_player_name(-16007, {}) in out["name"].tolist()
+        assert out.set_index("name").loc["Denver Broncos D/ST", "team"] == "DEN"
+        assert out.set_index("name").loc["Los Angeles Rams D/ST", "team"] == "LA"
+
+    def test_only_kickers_and_defenses_espn_actually_projects(self):
+        out = board.espn_special_teams(self._adp())
+        assert set(out["position"]) == {"DST", "K"}
+        # A kicker projected at exactly 0 is ESPN saying he has no job.
+        assert "Jobless Kicker" not in out["name"].tolist()
+        assert "Jakobi Meyers" not in out["name"].tolist()
+        assert out["proj_points"].tolist() == out["espn_proj"].tolist()
+
+    def test_no_market_frame_gives_an_empty_frame_not_a_crash(self):
+        assert board.espn_special_teams(None).empty
+        assert board.espn_special_teams(pd.DataFrame()).empty
+
+    def test_scored_against_the_last_starter_at_the_position(self):
+        from ffdraft import model
+        from ffdraft.config import LeagueSettings, ModelWeights
+
+        league = LeagueSettings(name="t", teams=2)
+        rows = board.espn_special_teams(self._adp())
+        scored = model.score_special_teams(
+            rows, pd.DataFrame({"consistency": [0.4, 0.6]}), league, ModelWeights())
+        dst = scored[scored["position"] == "DST"].set_index("name")
+        # 2 teams, one D/ST slot: the replacement is the 2nd best, 129.1.
+        assert dst.loc["Denver Broncos D/ST", "replacement_points"] == 129.1
+        assert dst.loc["Denver Broncos D/ST", "vor"] == pytest.approx(1.7)
+        # draft_score is (1 - consistency_weight) * VOR: the board's mean
+        # consistency contributes nothing, which is what an average-consistency
+        # player on the board already gets.
+        cw = ModelWeights().consistency_weight
+        assert dst.loc["Denver Broncos D/ST", "draft_score"] == pytest.approx((1 - cw) * 1.7)
+        assert scored["consistency"].unique().tolist() == [0.5]
+
+    def test_recommend_prices_a_defense_without_letting_it_lead_early(self):
+        from ffdraft import model
+        from ffdraft.config import LeagueSettings
+
+        league = LeagueSettings(name="t", teams=16)
+        # Two defenses, so waiting has a real value to be marginal against: a
+        # position with one row can never have a marginal value at all.
+        b = pd.DataFrame({
+            "name": ["Jakobi Meyers", "Houston Texans D/ST", "Los Angeles Rams D/ST"],
+            "position": ["WR", "DST", "DST"],
+            "team": ["JAX", "HOU", "LA"], "proj_points": [204.7, 129.1, 124.4],
+            "draft_score": [59.1, 29.8, 26.8], "adp": [122.4, 93.0, 101.8],
+            "pos_rank": [21, 2, 3], "overall_rank": [98, 119, 125],
+            "consistency": [0.61, 0.42, 0.42], "espn_proj": [181.9, 129.1, 124.4],
+            "espn_rank": [112.0, 176.0, 243.0], "drafted": [False, False, False],
+            "adj_ppg": [13.5, 7.6, 7.3],
+        })
+        b["_key"] = b["name"].map(board.norm_name)
+        roster = {"QB": 1, "RB": 3, "WR": 2, "TE": 1}
+        out = model.recommend(b, league, current_pick=125, next_pick=132,
+                              roster=roster).set_index("name")
+        # The defense is priced -- it is on the list with a real number, where it
+        # used to be off the board entirely -- but does not outrank a starter.
+        assert out.loc["Houston Texans D/ST", "pick_value"] > 0
+        assert out.index[0] == "Jakobi Meyers"
+        # Priced on marginal value alone: no share of raw draft_score.
+        row = out.loc["Houston Texans D/ST"]
+        assert row["pick_value"] == pytest.approx(row["marginal_value"] * row["need_mult"])
+        assert row["need_mult"] == 1.18
+        why = model.explain(row)
+        assert "DST2 by projection" in why
+        # A defense has no week-to-week history and ESPN files no injury status.
+        assert "consistency" not in why and "nan" not in why
+
+    def test_a_filled_defense_slot_stops_wanting_another(self):
+        from ffdraft import model
+        from ffdraft.config import LeagueSettings
+
+        league = LeagueSettings(name="t", teams=16)
+        need = model._positional_need(league, {"DST": 1, "K": 0})
+        assert need["DST"] == 0.02
+        assert need["K"] == 1.18
+        # Nothing about the modelled positions moved.
+        assert need["QB"] == model._positional_need(
+            LeagueSettings(name="t", teams=16,
+                           starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}),
+            {"DST": 1, "K": 0})["QB"]
+
+
 class TestSyncEspnLive:
     def test_in_progress_draft_uses_socket_snapshot(self, monkeypatch):
         import sys

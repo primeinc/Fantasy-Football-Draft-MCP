@@ -102,6 +102,24 @@ class TestCacheKey:
         assert base.cache_key() != other.cache_key()
 
 
+class TestSpecialTeamsReplacement:
+    def test_kicker_and_defense_replacement_is_the_last_starter(self):
+        repl = LeagueSettings(name="t", teams=16).replacement_ranks()
+        # One slot each and no bench pad -- nobody rosters a second kicker -- so
+        # the replacement is the 16th best in a 16-team league.
+        assert repl["K"] == 16
+        assert repl["DST"] == 16
+        assert set(repl) == {"QB", "RB", "WR", "TE", "K", "DST"}
+
+    def test_the_modelled_positions_are_untouched(self):
+        with_special = LeagueSettings(name="t", teams=12).replacement_ranks()
+        without = LeagueSettings(
+            name="t", teams=12,
+            starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}).replacement_ranks()
+        assert "K" not in without and "DST" not in without
+        assert {p: with_special[p] for p in ("QB", "RB", "WR", "TE")} == without
+
+
 class TestModelWeights:
     def test_defaults_are_bounded(self):
         w = ModelWeights()

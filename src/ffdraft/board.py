@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 
 from . import names, sources
-from .config import CURRENT_SEASON, STATE_DIR, LeagueSettings
+from .config import CURRENT_SEASON, SPECIAL_POSITIONS, STATE_DIR, LeagueSettings
 
 # Name handling lives in names.py so every join in the codebase resolves identically.
 norm_name = names.normalize
@@ -110,13 +110,15 @@ def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
         if adp is None or not p.get("fullName"):
             continue
         rows.append({"name": p["fullName"], "adp": float(adp), "espn_id": str(p.get("id")),
+                     "pro_team_id": p.get("proTeamId"),
                      "position": _ESPN_POSITION_NAMES.get(str(p.get("defaultPositionId"))),
                      "espn_rank": ((p.get("draftRanksByRankType") or {}).get("PPR") or {}).get("rank"),
                      "percent_owned": (p.get("ownership") or {}).get("percentOwned"),
                      "espn_proj": espn_season_projection(p, season),
                      "espn_injury": p.get("injuryStatus")})
-    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "position", "espn_rank",
-                                      "percent_owned", "espn_proj", "espn_injury"])
+    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "pro_team_id", "position",
+                                      "espn_rank", "percent_owned", "espn_proj",
+                                      "espn_injury"])
     out["_key"] = out["name"].map(norm_name)
     out["source"] = "espn_adp"
     return out.dropna(subset=["adp"]).drop_duplicates("_key").reset_index(drop=True)
@@ -373,7 +375,7 @@ KEY_ONLY_JOIN = "key_only"
 # the same reason names.KEY_VERSION exists: the projections in the parquet are
 # still good, but the market columns beside them were derived by rules that no
 # longer hold, and nothing else in the cache gate would notice.
-MARKET_JOIN_VERSION = 2
+MARKET_JOIN_VERSION = 3
 
 
 def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
@@ -968,6 +970,79 @@ _ESPN_SLOT_NAMES = {"0": "QB", "2": "RB", "4": "WR", "6": "TE", "16": "DST", "17
                     "20": "BENCH", "21": "IR", "23": "FLEX", "7": "OP", "3": "RB/WR",
                     "5": "WR/TE"}
 _ESPN_POSITION_NAMES = {"1": "QB", "2": "RB", "3": "WR", "4": "TE", "5": "K", "16": "DST"}
+
+# ESPN's proTeamId -> the abbreviation the board and the nfldata schedule use,
+# so a kicker or a defense gets the same team (and therefore the same bye week)
+# as every other row. Los Angeles Rams are "LA" upstream, not "LAR".
+_ESPN_TEAM_ABBR = {
+    1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE", 6: "DAL", 7: "DEN", 8: "DET",
+    9: "GB", 10: "TEN", 11: "IND", 12: "KC", 13: "LV", 14: "LA", 15: "MIA", 16: "MIN",
+    17: "NE", 18: "NO", 19: "NYG", 20: "NYJ", 21: "PHI", 22: "ARI", 23: "PIT",
+    24: "LAC", 25: "SF", 26: "SEA", 27: "TB", 28: "WAS", 29: "CAR", 30: "JAX",
+    33: "BAL", 34: "HOU",
+}
+
+
+def espn_special_teams(adp: pd.DataFrame | None) -> pd.DataFrame:
+    """Kicker and team-defense rows for the board, from the ESPN player list.
+
+    The board is built from nflverse box scores, which carry no kicking and no
+    team-defense production, so K and D/ST never reached it: the recommender
+    saw them as off_board and had nothing to say in the two rounds where the
+    league forces you to fill both slots. ESPN publishes a full-season
+    projection for both under this league's own scoring -- for a defense that
+    means the yards-allowed and points-allowed bands `league_rules` reads out
+    of `pointsOverrides` -- so that projection is what the board uses.
+
+    Only rows ESPN actually projects above zero are kept. A kicker projected at
+    exactly 0 (ten of the 55 on the live list) is ESPN saying he has no job, not
+    a player worth a pick.
+
+    Defenses are named the way `_espn_player_name` records a drafted one --
+    "Denver Broncos D/ST", where ESPN's own list says "Broncos D/ST" -- or the
+    draft state and the board would key the same defense differently and a
+    drafted defense would keep showing up as available.
+    """
+    cols = ["name", "position", "team", "adp", "espn_id", "espn_rank", "espn_proj",
+            "espn_injury", "proj_points", "adj_ppg", "pos_rank", "adp_source",
+            "adp_match", "_key"]
+    if adp is None or adp.empty or "position" not in adp.columns:
+        return pd.DataFrame(columns=cols)
+    src = adp[adp["position"].isin(SPECIAL_POSITIONS)].copy()
+    if src.empty or "espn_proj" not in src.columns:
+        return pd.DataFrame(columns=cols)
+    src["espn_proj"] = pd.to_numeric(src["espn_proj"], errors="coerce")
+    src = src[src["espn_proj"] > 0]
+    if src.empty:
+        return pd.DataFrame(columns=cols)
+    team_id = pd.to_numeric(src.get("pro_team_id"), errors="coerce")
+    out = pd.DataFrame({
+        "name": np.where(src["position"] == "DST",
+                         team_id.map(_ESPN_PRO_TEAMS).fillna("") + " D/ST",
+                         src["name"]),
+        "position": src["position"].to_numpy(),
+        "team": team_id.map(_ESPN_TEAM_ABBR).to_numpy(),
+        "adp": pd.to_numeric(src["adp"], errors="coerce").to_numpy(),
+        "espn_id": src["espn_id"].to_numpy() if "espn_id" in src.columns else None,
+        "espn_rank": (pd.to_numeric(src["espn_rank"], errors="coerce").to_numpy()
+                      if "espn_rank" in src.columns else np.nan),
+        "espn_proj": src["espn_proj"].to_numpy(),
+        "espn_injury": (src["espn_injury"].to_numpy()
+                        if "espn_injury" in src.columns else None),
+    })
+    # A defense with no proTeamId cannot be named or given a bye week.
+    out = out[out["name"].str.strip() != "D/ST"].reset_index(drop=True)
+    # ESPN's projection is the projection. adj_ppg is it spread over a full
+    # season, which is what `explain` prints; there is no games-played model
+    # for a defense.
+    out["proj_points"] = out["espn_proj"]
+    out["adj_ppg"] = out["espn_proj"] / 17.0
+    out["pos_rank"] = out.groupby("position")["proj_points"].rank(ascending=False,
+                                                                 method="min")
+    out["adp_source"] = "espn"
+    out["adp_match"] = EXACT_JOIN
+    out["_key"] = out["name"].map(norm_name)
+    return out.drop_duplicates("_key").reset_index(drop=True)
 
 
 def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,

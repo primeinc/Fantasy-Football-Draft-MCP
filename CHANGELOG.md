@@ -102,6 +102,72 @@ All notable changes to this project. Format follows
 - `draft_strength`: every team's draft ranked by projected starter points
   (`board.team_strength`), with bench projection and open starter slots.
 
+**Kickers and defenses are priced, not guessed**
+
+- K and D/ST are on the board. nflverse box scores carry no kicking and no team
+  defense production, so neither position ever reached it: the recommender saw
+  them as `off_board` and said nothing in the two rounds where the league forces
+  you to fill both slots. `board.espn_special_teams` builds their rows from
+  ESPN's own player list — its full-season projection under this league's
+  scoring is their `proj_points`, which for a defense is the yards-allowed and
+  points-allowed bands `league_rules` already reads out of `pointsOverrides` —
+  and `model.score_special_teams` puts them on the board's own `draft_score`
+  scale. Live board at 122 picks: 632 rows -> 696 (32 defenses, 32 kickers).
+- `LeagueSettings.replacement_ranks()` now covers K and DST. It did not, which
+  is why they had no VOR and no `draft_score`. No bench pad: nobody rosters a
+  second one, so the replacement is the last one a team would start, the
+  (teams x slots)th best. In this 16-team league that puts D/ST replacement at
+  83.1 and K at 141.8, so the top defense is worth 47.6 points over replacement
+  and the top kicker 29.6 — the gap that makes a defense worth a pick and a
+  kicker much less so, now priced instead of asserted. The modelled positions'
+  entries are unchanged.
+- They carry the board's *mean* consistency, so `draft_score` is
+  (1 - consistency_weight) x VOR: exactly what any average-consistency player on
+  the board already gets. There is no week-to-week history for a kicker or a
+  defense in this codebase and inventing a consistency for them would have been
+  the only made-up number in the change. `explain` does not report it for them.
+- `recommend` prices them on marginal value alone. The 20% share of raw
+  `draft_score` every other candidate keeps is a scarcity escape hatch, and
+  neither position is ever scarce — ESPN lists 32 of each for a league that
+  needs one apiece — so keeping it priced the top defense as if passing on it
+  cost you the slot. Measured: with the raw share, the Houston Texans D/ST came
+  second at pick 125 (round 8 of 14, pick_value 8.83 against Jakobi Meyers'
+  9.58) and first at 164, 189 and 196. On marginal value alone it is fourth at
+  125 (2.23) and second from 132 on, which is where the league actually forces
+  the slot.
+- Their own positional need (1.18 for an open slot, 0.02 once filled), so
+  filling the slot registers without touching the need of any other position:
+  `FANTASY_POSITIONS` is unchanged and the new `SPECIAL_POSITIONS` carries K
+  and DST separately, so nothing that walks the modelled positions — aging
+  curves, red zone role, separation, `project()`'s replacement baselines — has
+  to special-case them.
+- Defenses are named the way `_espn_player_name` records a drafted one ("Denver
+  Broncos D/ST"; ESPN's list says "Broncos D/ST"), or the board and the draft
+  state would key the same defense differently and a drafted defense would keep
+  reading as available. Live: `draft_audit`'s unresolved picks went 5 -> 3, with
+  Brandon Aubrey and Denver Broncos D/ST now resolving on the board.
+- Evidence, live board at 122 picks, recommendation at each of the seven picks
+  left (pick_value). Before, no K or D/ST existed at any pick. After: pick 125
+  Meyers 9.58, Marks 2.96, Deebo 2.95, **Texans D/ST 2.23**, Schultz 2.08; pick
+  157 Meyers 11.24, **Texans D/ST 4.87**, Deebo 4.61, Marks 3.06; pick 189
+  Meyers 12.52, **Texans D/ST 7.04**, Deebo 5.89, **Rams D/ST 3.49**, Marks
+  3.42, **Cameron Dicker K 2.89**. `plan_my_draft` takes the Detroit Lions D/ST
+  at 164 where it previously took Dalton Schultz. No backtest is possible here:
+  the mock-draft loop scores weekly best lineups from box scores, which do not
+  exist for kickers or defenses.
+- Known limitation: the plan still takes no kicker. Its availability filter
+  drops the pool to a handful of synthetic-ADP rows by pick 189 (the same
+  sentinel-ADP defect recorded under the role-unknown entry below), and most
+  kickers sit at ESPN's undrafted default of ~170 and are filtered out with
+  everyone else.
+- `explain` printed "ESPN status nan" on every defense: NaN is truthy and ESPN
+  files no injury status for a team defense.
+- `board.load_espn_adp` carries `pro_team_id`, and `board._ESPN_TEAM_ABBR` maps
+  it to the abbreviation the board and the nfldata schedule use, so a kicker or
+  a defense gets a real team and therefore a real bye week.
+- `MARKET_JOIN_VERSION` 3: a cached board built before this has no K or D/ST
+  rows and reprices on load.
+
 **ESPN projections as a role check**
 - `load_espn_adp` also carries `espn_proj` (ESPN's season projection under the
   league's scoring: stats entry statSourceId 1, scoringPeriodId 0) and
