@@ -43,6 +43,8 @@ class DraftWatch:
         self.picks_seen = 0
         self.connected = False
         self.last_line = ""
+        # Set once the INIT snapshot has been applied; callers wait on this.
+        self.ready = asyncio.Event()
 
     # -- socket loop
 
@@ -107,6 +109,7 @@ class DraftWatch:
                 self.state.record(self._name(p["player_id"]), p["overall"],
                                   self.slot_of.get(p["team_id"]))
             self.picks_seen = len(picks)
+            self.ready.set()
             s = self.state.summary()
             await self.notify(
                 f"draft room joined: {s['picks_made']} picks made, pick {s['on_the_clock']} "

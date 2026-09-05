@@ -1216,13 +1216,19 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
     if ctx_info["my_team_id"] is None:
         return json.dumps({"error": "no team owned by ESPN_SWID in this league"})
 
+    from mcp import types as _types
+
     league, _ = _settings()
     board_df = _build_board()
-    connection = ctx.connection
+    # The session outlives this request; a notification with no related request
+    # id rides the connection's standalone channel.
+    session = ctx.session
+    channel_event = _types.Notification[dict[str, Any], str]
 
     async def notify(content: str, meta: dict[str, str]) -> None:
-        await connection.notify("notifications/claude/channel",
-                                {"content": content, "meta": meta})
+        await session.send_notification(channel_event(
+            method="notifications/claude/channel",
+            params={"content": content, "meta": meta}))
 
     await stop_watch(league_id)
     w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
