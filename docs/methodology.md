@@ -443,6 +443,12 @@ The same rule in its other clothes: **restore the defect and require the tests t
 fail.** A regression test that has never been run against the defect it names is
 a hypothesis.
 
+> Three tests written for the waiver drop-candidate fix were controlled that way
+> and all three failed on the restored defect, one with the production traceback.
+> Two tests written for a traded-player crash *passed* against it, because the
+> fixture moved the player at the boundary between windows rather than inside
+> one; the control run found that, not the tests.
+
 Restore **the whole change**, not a part of it. A partial revert that fails one
 test is a control built to agree with you.
 
@@ -451,11 +457,7 @@ test is a control built to agree with you.
 > revert" would have been a true sentence and a wrong conclusion. Only reverting
 > both halves fails all three. freddy had written three confirmed-by-plant claims
 > that day, checked every time that the plant applied, and not once checked that
-> it covered every half of what he had changed. Three tests written for the waiver drop-candidate fix were
-controlled that way and all three failed on the restored defect, one with the
-production traceback. Two tests written for a traded-player crash *passed* against
-it, because the fixture moved the player at the boundary between windows rather
-than inside one; the control run found that, not the tests.
+> it covered every half of what he had changed.
 
 ### Blocks, and what agreement is worth
 
