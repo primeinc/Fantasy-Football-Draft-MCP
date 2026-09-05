@@ -431,6 +431,8 @@ points, so the season that drove the original conclusion is inside the harness's
 own noise — the earlier single-block figure of -19.2 for 2024 was one half of
 that pair. The penalty is close to inert in any case, changing 5, 6, 15 and 10
 rosters out of 24 per season, so it stays informational like `matchup_z`.
+Those numbers were measured before `expected_best_at_next_pick` changed and will
+not reproduce exactly on a head that has that change; see CHANGELOG.md.
 Kickers and defenses are not modelled, so their byes are yours to check.
 
 ### `bye_backtest`
