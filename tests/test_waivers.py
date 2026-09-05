@@ -527,6 +527,34 @@ class TestTheTool:
         assert all(c["claim_priority"]["faab_bid"] is None for c in out["claims"])
         assert all(c["drop"]["player"] == "Bench Man" for c in out["claims"])
 
+    def test_positions_come_from_the_board_map_even_when_an_id_is_missing(
+            self, monkeypatch):
+        """One map, one key type, and a dtype the payload gets to decide.
+
+        The copy that stood in `_waiver_inputs` was int-keyed while the board's
+        is string-keyed. That was a maintenance fork, not a wrong answer: it
+        computed the same positions, and a change to either could never reach
+        the other.
+
+        The dtype hazard belongs to the fix rather than to what it replaced, and
+        saying so is the point of this test. Measured: one row without the field
+        makes the whole column float64, `.map` with an int-keyed dict still
+        resolves `3.0` (Python hashes it equal to `3`), and the string lookup
+        does not -- `str(3.0)` is "3.0" and matches nothing, silently, as a blank
+        position column rather than a raise. With every id present the column is
+        int64 and `str(v)` works, so the broken version ships green and fails on
+        the first pull that is missing a field. `int()` is what holds it.
+        """
+        rows = self.rows() + [("No Position Guy", None, "ACTIVE", 0.4, 0.0)]
+        server = self.wire(monkeypatch, rows)
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        found = {c["player"]: c["position"] for c in out["claims"]}
+        assert found["Breakout Guy"] == "WR"
+        assert found["Handcuff Guy"] == "RB"
+        assert bd._ESPN_POSITION_NAMES["3"] == "WR", (
+            "the board's map is the one source; if its keys stop being strings "
+            "the tool's lookup goes silently blank rather than raising")
+
     def test_an_empty_pool_still_round_trips_and_says_it_is_broken(self, monkeypatch):
         server = self.wire(monkeypatch, [])
         out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)

@@ -1913,11 +1913,22 @@ def _waiver_inputs(league_id: str, week: int, season: int):
     players, settings = waivers.fetch_pool_and_settings(league_id, season)
     pool = waivers.free_agents(players)
     if not pool.empty:
-        # ESPN's numeric position id, mapped to the names the rest of the model
-        # uses. A row the map does not cover keeps an empty position rather than
-        # a guessed one.
-        pool["position"] = pool["position_id"].map(
-            {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DST"}).fillna("")
+        # ESPN's numeric position id, mapped through the board's own table rather
+        # than a second copy of it. The copy that stood here was int-keyed while
+        # `board._ESPN_POSITION_NAMES` is string-keyed, so the two had already
+        # diverged in the only way that matters -- a change to either could not
+        # reach the other. Found by marge; it is the `_discount` fork at its
+        # beginning.
+        #
+        # The ids are normalised through `to_numeric` because the column's dtype
+        # is decided by the payload: a pull where every row carries the field
+        # gives int, and one missing row anywhere makes it float, at which point
+        # `str(v)` is "2.0" and matches nothing. A row the table does not cover
+        # keeps an empty position rather than a guessed one.
+        ids = pd.to_numeric(pool["position_id"], errors="coerce")
+        pool["position"] = ["" if pd.isna(v)
+                            else bd._ESPN_POSITION_NAMES.get(str(int(v)), "")
+                            for v in ids]
     changes = waivers.role_change(sources.weekly_stats([season]),
                                   sources.snap_counts([season]), season, week)
     injury = {} if pool.empty else dict(zip(pool["name"], pool["injury_status"]))
