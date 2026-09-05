@@ -91,18 +91,37 @@ All notable changes to this project. Format follows
   `sample` with a seed available). Reports the roster the model would have
   built, projected starter points against the real roster, and the substitution
   at every turn. Labelled `simulation: true`.
+- Three timelines run in step. The real one only fits the predictor. The model
+  arm is the intervention. The **control** arm is the same simulated room with
+  the target team mirroring its real picks (falling back to the predictor where
+  the room has already taken one, counted as `control_picks_unavailable`), so
+  `starters_proj.delta_vs_control` holds the room fixed and is the intervention
+  alone, while `delta_vs_real` also carries the difference between the
+  predictor's room and the real one. Without the control the only available
+  number mixed the two and read as if it were the first.
 - A real pick the board cannot model (kicker, defense, unprojected player) is
-  mirrored rather than predicted, so the simulated team does not eat a modelled
-  player who really was still on the board.
+  mirrored rather than predicted for the *other* teams, so the simulated room
+  does not eat a modelled player who really was still on the board. It is not
+  mirrored at the target slot: the real pick scores 0 there whatever happens,
+  and those are the turns a substitution is most likely to be worth points.
+  Pool exhaustion is a separate branch with its own counter, not folded into
+  the off-board one.
+- Players are held by board row, not by normalised name: two rows can share a
+  key (the same player listed twice, or two players with one name at different
+  positions), and a name-keyed pool removes both at once. A recorded pick is
+  resolved to a row by position where it has one.
 - `board.lineup_value` is `team_strength`'s per-team scoring extracted, so a
-  simulated roster is scored by exactly the logic that scores a recorded one.
-  `choice.WalkForward.probabilities` exposes one predictor's distribution over
-  an arbitrary pool without training on it.
-- On the live record (122 picks, slot 4, argmax): projected starter points 1479
-  simulated vs 1343 real, +136; 6 of 7 turns substituted; 105 of 111 other-team
-  picks differ from the real draft and 5 off-board picks were mirrored. The
-  divergence number is the point — a counterfactual this far from the real room
-  is a simulation of the predictor's room, not of that draft.
+  simulated roster is scored by exactly the logic that scores a recorded one;
+  it now takes a pick at its word when the pick carries its own `proj_points`,
+  which recorded picks never do. `choice.WalkForward.probabilities` exposes one
+  predictor's distribution over an arbitrary pool without training on it.
+- On the live record (122 picks, slot 4, argmax): projected starter points,
+  model 1494, control 1058, real 1343 — the intervention is +436 against the
+  control and +151 against the real roster. 7 of 7 turns substituted. 106 of
+  111 other-team picks differ from the real draft, 4 off-board picks mirrored,
+  and the control could not have 3 of its 7 real picks. Those numbers are the
+  point as much as the delta is: the predictor's room is not that draft's room,
+  and a control missing three of its own picks is not quite the real drafter.
 
 **Walk-forward choice model**
 - `choice.py`: four conditional-logit predictors of what the room takes

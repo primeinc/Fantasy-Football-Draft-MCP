@@ -979,7 +979,13 @@ def lineup_value(board: pd.DataFrame, picks: list[dict],
     toward the position they were recorded under with 0 projected points, so the
     slot shows filled while the number stays honest. `picks` is any list of
     `{"name", "position"}` dicts, so a simulated roster scores the same way a
-    recorded one does."""
+    recorded one does.
+
+    A pick that carries its own `proj_points` is taken at its word, position and
+    all. Recorded picks never do, so `team_strength` is unaffected; a caller that
+    knows exactly which board row it took (`replay.counterfactual_draft`) passes
+    it, which is the only way to score two board rows sharing one normalised
+    name without both resolving to whichever came last."""
     proj = dict(zip(board["_key"], board["proj_points"])) if "_key" in board.columns else {}
     pos_of = dict(zip(board["_key"], board["position"])) if "_key" in board.columns else {}
     starters = {p: n for p, n in league.starters.items() if n and p in ("QB", "RB", "WR", "TE")}
@@ -987,10 +993,14 @@ def lineup_value(board: pd.DataFrame, picks: list[dict],
     have: dict[str, list[float]] = {}
     for p in picks:
         key = norm_name(p["name"])
-        pos = pos_of.get(key) or p.get("position")
+        given = p.get("proj_points")
+        if given is None:
+            pos, value = pos_of.get(key) or p.get("position"), float(proj.get(key) or 0.0)
+        else:
+            pos, value = p.get("position") or pos_of.get(key), float(given)
         if not pos:
             continue
-        have.setdefault(str(pos), []).append(float(proj.get(key) or 0.0))
+        have.setdefault(str(pos), []).append(value)
     have = {pos: sorted(v, reverse=True) for pos, v in have.items()}
     start = sum(sum(have.get(pos, [])[:n]) for pos, n in starters.items())
     leftovers = sorted((v for pos, n in starters.items() for v in have.get(pos, [])[n:]

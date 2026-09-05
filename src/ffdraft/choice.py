@@ -16,6 +16,8 @@ per team is too little to move a weight further than the penalty pulls it back.
 """
 from __future__ import annotations
 
+from collections.abc import Hashable
+
 import numpy as np
 import pandas as pd
 
@@ -192,10 +194,13 @@ class WalkForward:
         self.models = models
         self.rows: list[dict] = []
 
-    def observe(self, recs: pd.DataFrame, chosen_key: str | None,
+    def observe(self, recs: pd.DataFrame, chosen_key: Hashable | None,
                 recent_positions: list[str], pick: int, slot: int | None = None) -> dict:
         """Score the predictors on this pick, then let them learn from it.
         Returns each predictor's rank of and probability for the real pick.
+        `chosen_key` is whatever labels `recs` -- a name key when the caller
+        indexes by name, a board row when it indexes by row -- or None when the
+        pick is not in the pool, which scores nothing and trains nothing.
         `slot` is the team on the clock; only `blend_team` uses it."""
         f = features(recs, recent_positions)
         keys = list(recs.index)

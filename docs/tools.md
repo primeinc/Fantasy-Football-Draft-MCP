@@ -150,21 +150,33 @@ fitted prequentially on the *real* picks up to that point, so nothing from later
 in the draft leaks in. `policy` is `argmax` (the predictor's likeliest player,
 deterministic) or `sample` (drawn from its distribution, with `seed`).
 
-Returns `model_roster` and `real_roster`, `starters_proj` (model, real and the
-delta, scored by `board.lineup_value` — the same best-lineup logic
-`draft_strength` uses), `bench_proj`, `open_starter_slots`, and `substitutions`:
-one row per turn of that team with the real pick, the model's pick, both
-projections and whether they agree. `divergence` says how far the simulated room
-drifted from the real one — how many other-team picks differ, and how many
-off-board picks were mirrored.
+Three timelines run in step: the real draft (which only fits the predictor), the
+**model** arm, and a **control** arm — the same simulated room with the target
+team mirroring its real picks instead. That control is what makes the answer
+readable. `starters_proj` carries `model`, `control`, `real`,
+`delta_vs_control` and `delta_vs_real`; the first delta holds the room fixed and
+is the intervention alone, the second also carries the difference between the
+predictor's room and the real one, which is usually the larger term. Where the
+predictor's room has already taken one of the real picks, the control falls back
+to the predictor as well and the pick is counted under
+`divergence.control_picks_unavailable` — read that before the delta, because the
+more of them there are, the less the control is the real drafter.
+
+Also returned: `model_roster`, `control_roster` and `real_roster`; `bench_proj`
+and `open_starter_slots` for each; `substitutions`, one row per turn of that team
+with the real, model and control picks side by side; and `divergence`
+(other-team picks and how many differ, off-board picks mirrored, picks past an
+exhausted pool). Rosters are scored by `board.lineup_value` — the same
+best-lineup logic `draft_strength` uses.
 
 Two things bound what it means. A real pick the board cannot model (a kicker, a
-defense, a player with no projection) is *mirrored* rather than predicted: the
-simulated team takes the same player, worth 0 points, because predicting one
-instead would eat a modelled player who really was still there. And the whole
-simulation is priced with today's projections, ADP and room drift, so it is no
-more as-of than `draft_replay` is. `just counterfactual [slot] [policy] [seed]`
-prints the same without a server.
+defense, a player with no projection) is *mirrored* rather than predicted for
+the **other** teams: predicting one instead would eat a modelled player who
+really was still there. At the target slot it is not mirrored — the real pick
+scores 0 whatever happens, and those are the turns a substitution is most likely
+to be worth points. And the whole simulation is priced with today's projections,
+ADP and room drift, so it is no more as-of than `draft_replay` is.
+`just counterfactual [slot] [policy] [seed]` prints the same without a server.
 
 ### `predict_pick`
 For the team on the clock, or a given `slot`: `should` is the model's

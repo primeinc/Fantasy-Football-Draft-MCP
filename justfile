@@ -228,16 +228,22 @@ counterfactual $slot='0' $policy='argmax' $seed='0':
           f"substitutions {out['substitutions_made']} of {len(out['substitutions'])}")
     d = out["divergence"]
     print(f"other teams: {d['other_team_picks_changed']} of {d['other_team_picks']} picks differ from the real draft; "
-          f"{d['mirrored_off_board']} off-board picks mirrored")
+          f"{d['mirrored_off_board']} off-board picks mirrored, {d['pool_exhausted']} picks past an empty pool; "
+          f"the control could not have {d['control_picks_unavailable']} of its real picks")
     s, bn, o = out["starters_proj"], out["bench_proj"], out["open_starter_slots"]
-    print(f"projected starter points: model {s['model']}  real {s['real']}  delta {s['delta']:+}")
-    print(f"bench: model {bn['model']} real {bn['real']}   open starter slots: model {o['model']} real {o['real']}")
-    print("substitutions (real -> model)")
+    print(f"projected starter points: model {s['model']}  control {s['control']}  real {s['real']}")
+    print(f"  vs control (same room, real picks mirrored): {s['delta_vs_control']:+}   <- the intervention")
+    print(f"  vs real    (also carries the room difference): {s['delta_vs_real']:+}")
+    print(f"bench: model {bn['model']} control {bn['control']} real {bn['real']}   "
+          f"open starter slots: model {o['model']} control {o['control']} real {o['real']}")
+    print("substitutions (real -> model, and what the control took)")
     for r in out["substitutions"]:
         mark = "  =" if r["same"] else "  ->"
+        control = "" if r["control_is_real"] else f"   control {r['control']} {r['control_proj']!s}"
         print(f"  pick {r['pick']:>3} r{r['round']:<2} {r['real']:<26} {r['real_position']!s:<3} {r['real_proj']!s:>6}"
-              f"{mark} {r['model']:<26} {r['model_position']!s:<3} {r['model_proj']!s:>6}")
-    for label, rows in (("model roster", out["model_roster"]), ("real roster", out["real_roster"])):
+              f"{mark} {r['model']:<26} {r['model_position']!s:<3} {r['model_proj']!s:>6}{control}")
+    for label, rows in (("model roster", out["model_roster"]), ("control roster", out["control_roster"]),
+                        ("real roster", out["real_roster"])):
         print(label)
         for r in rows:
             print(f"  pick {r['pick']:>3} r{r['round']:<2} {r['player']:<26} {r['position']!s:<3} {r['proj_points']!s:>6}")

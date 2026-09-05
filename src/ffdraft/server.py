@@ -1510,12 +1510,20 @@ def draft_counterfactual(slot: int = 0, league_id: str = "", policy: str = "argm
     later in the draft leaks in. `policy` is `argmax` (the likeliest player,
     deterministic) or `sample` (drawn from the distribution, with `seed`).
 
-    Returns the roster the model would have built, its projected starter points
-    against the real roster's, and the substitution made at every one of that
-    team's turns. Real picks the board cannot model (kickers, defenses) are
-    mirrored rather than predicted. This is not a measurement: it assumes the
-    rest of the room behaves like the predictor and prices everything with
-    today's projections and ADP."""
+    Returns three rosters for that slot — `model_roster`, `control_roster` (the
+    same simulated room with the team mirroring its real picks) and
+    `real_roster` — plus `starters_proj` for each. **Read
+    `starters_proj.delta_vs_control`**: it holds the room fixed and is the
+    intervention alone. `delta_vs_real` also carries the difference between the
+    predictor's room and the real one, which `divergence` sizes and which is
+    usually the larger term. `substitutions` gives every one of that team's
+    turns with the real, model and control picks side by side.
+
+    Real picks the board cannot model (kickers, defenses) are mirrored rather
+    than predicted for the other teams; at the target slot the model picks from
+    the board every turn. This is not a measurement: it assumes the rest of the
+    room behaves like the predictor and prices everything with today's
+    projections and ADP."""
     from . import replay
 
     state = _state()
