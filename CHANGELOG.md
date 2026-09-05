@@ -1685,6 +1685,19 @@ All notable changes to this project. Format follows
   neither table, so the next one added cannot repeat this quietly. Nothing the
   draft built is overwritten, which is the whole reason the object is kept.
 
+**The queue says which of its players are already gone**
+- `draft_queue` returns `as_echoed` with `drafted_at` on every row, and
+  `effective`, the queue minus the drafted, which is what autopick draws from.
+  ESPN sends no `DRAFT_LIST` when a pick empties a slot in the queue, so the last
+  echo keeps naming players who are gone: at pick 135 it still listed one taken
+  thirteen picks earlier. Nothing broke, because autopick skips them; the payload
+  simply stated a queue ESPN would not use.
+- The pick that took each player comes from the watch's own log through
+  `espn_live.replay_picks`, the same INIT-plus-events reducer the dump uses.
+- The echo history is deliberately not annotated. It records what ESPN said at
+  the time, and marking those rows with what happened afterwards would make a log
+  of the past disagree with itself.
+
 **Pick queue: merge, do not replace**
 - `set_draft_queue` merges by default. ESPN's `DRAFT_LIST` carries the whole
   queue rather than a change, and the queue has two authors, so a call that sent

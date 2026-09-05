@@ -7,11 +7,12 @@ is what these tests are about.
 """
 import asyncio
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from ffdraft import board, server, watch
+from ffdraft import board, espn_live, server, watch
 from ffdraft.config import LeagueSettings
 
 # ESPN ids, and the names the fake crosswalk gives them.
@@ -242,6 +243,78 @@ class TestItWaitsForEspnsOwnEchoBeforeRefusing:
 
         assert out["mode"] == "merge"
         assert live.watch.queue_echo is None
+
+
+class TestAQueuedPlayerWhoHasBeenDrafted:
+    """ESPN sends no DRAFT_LIST when a pick empties a slot in your queue, so the
+    last echo keeps naming players who are gone.
+
+    Live at pick 135: the echo still had Jayden Reed at rank 3, taken thirteen
+    picks earlier. Autopick skips him, so nothing breaks -- the payload simply
+    stated a queue ESPN would not use.
+    """
+
+    FIXTURE = Path(__file__).parent / "fixtures" / "espn_draft_init.b64"
+    # Ids the captured snapshot has NOT drafted. The module-level USER_QUEUE
+    # cannot be used here: two of its three are already picks 1 and 4 in that
+    # snapshot, so every row would come back marked drafted and the test would
+    # assert nothing about the annotation.
+    QUEUE = [3916433, 4429205, 4429059]
+
+    def _joined(self, live):
+        """The watch joined with the captured snapshot, so it has a pick log."""
+        live.echo("INIT " + self.FIXTURE.read_text().strip())
+        return len(espn_live.picks_from_init(
+            espn_live.decode_init(self.FIXTURE.read_text().strip())))
+
+    def test_a_drafted_queue_entry_is_marked_and_left_out_of_effective(self, live):
+        joined = self._joined(live)
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+        # ESPN takes the second man on the queue, and sends no new DRAFT_LIST.
+        live.echo(f"SELECTED 7 {self.QUEUE[1]} 4 {{A}}")
+
+        out = json.loads(asyncio.run(server.draft_queue(league_id="L")))
+
+        assert _ids(out["as_echoed"]) == self.QUEUE, "what ESPN said, verbatim"
+        marked = {r["espn_id"]: r["drafted_at"] for r in out["as_echoed"]}
+        assert marked[self.QUEUE[1]] == joined + 1, "the pick that took him"
+        assert marked[self.QUEUE[0]] is None and marked[self.QUEUE[2]] is None
+        # What autopick would actually draw from, renumbered.
+        assert _ids(out["effective"]) == [self.QUEUE[0], self.QUEUE[2]]
+        assert [r["rank"] for r in out["effective"]] == [1, 2]
+        assert out["drafted_since_the_echo"] == 1
+
+    def test_an_untouched_queue_says_so_on_every_row(self, live):
+        self._joined(live)
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+
+        out = json.loads(asyncio.run(server.draft_queue(league_id="L")))
+
+        assert all(r["drafted_at"] is None for r in out["as_echoed"])
+        assert _ids(out["effective"]) == self.QUEUE
+        assert out["drafted_since_the_echo"] == 0
+
+    def test_the_echo_history_is_not_annotated(self, live):
+        """It records what ESPN said at the time. Marking those rows with what
+        happened afterwards would make a log of the past disagree with itself."""
+        self._joined(live)
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+        live.echo(f"SELECTED 7 {self.QUEUE[1]} 4 {{A}}")
+
+        out = json.loads(asyncio.run(server.draft_queue(league_id="L")))
+
+        assert all(r["drafted_at"] is None for r in out["echoes"][0]["queue"])
+
+    def test_a_watch_with_no_snapshot_still_reports_the_queue(self, live):
+        """The annotation needs the INIT payload. Without it the queue is still
+        worth showing, so nothing is marked rather than nothing returned."""
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+
+        out = json.loads(asyncio.run(server.draft_queue(league_id="L")))
+
+        assert _ids(out["as_echoed"]) == self.QUEUE
+        assert _ids(out["effective"]) == self.QUEUE
+        assert all(r["drafted_at"] is None for r in out["as_echoed"])
 
 
 class TestTheInitQueueIsObservedNotUsed:

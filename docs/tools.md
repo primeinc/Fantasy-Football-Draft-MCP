@@ -735,10 +735,22 @@ queue when a client session ends, so the watch clears it on every connect and
 `draft_queue` reports which connection each echo came from. A list that shrank
 across a connection boundary was not necessarily edited by anyone.
 
-`draft_queue` reads the last echo and also returns `echoes`, every echo seen with
-a timestamp and a connection number. Since ESPN sends the whole list rather than
-a change, comparing consecutive echoes is the only way to answer "when did this
-player leave my queue".
+`draft_queue` returns two lists. `as_echoed` is what ESPN last sent, verbatim,
+with `drafted_at` on every row naming the pick that took that player or `null`
+if he is still available. `effective` is the same queue minus the drafted, which
+is what autopick would actually draw from, renumbered.
+
+Both are needed because **ESPN sends no `DRAFT_LIST` when a pick empties a slot
+in your queue**. At pick 135 the echo still listed a player taken thirteen picks
+earlier. Autopick skips him, so nothing breaks, but the echo alone states a queue
+ESPN will not use. `drafted_since_the_echo` counts the difference.
+
+It also returns `echoes`, every echo seen with a timestamp and a connection
+number. Since ESPN sends the whole list rather than a change, comparing
+consecutive echoes is the only way to answer "when did this player leave my
+queue". Those rows are **not** annotated: they record what ESPN said at the time,
+and marking them with what has happened since would make a log of the past
+disagree with itself.
 
 `removed` and `kept_from_the_users_queue` are both computed from what ESPN
 echoed back, never from what was sent. ESPN drops ids it rejects — an

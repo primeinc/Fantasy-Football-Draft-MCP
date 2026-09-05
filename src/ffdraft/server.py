@@ -73,7 +73,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import adp as adp_mod
 from . import board as bd
-from . import features, model, names, sources, trade, watchstore
+from . import espn_live, features, model, names, sources, trade, watchstore
 from .config import (
     CURRENT_SEASON,
     DATA_DIR,
@@ -2114,22 +2114,64 @@ async def _await_first_echo(w, timeout: float | None = None) -> list[int] | None
     return w.queue
 
 
-def _queue_rows(w, ids: list[int]) -> list[dict]:
-    return [{"rank": i + 1, "espn_id": pid, "name": bd._espn_player_name(pid, w.espn_map)}
+def _drafted_by_pick(w) -> dict[int, int]:
+    """ESPN player id -> the overall pick that took him, from the watch's own log.
+
+    ESPN sends no `DRAFT_LIST` when a pick removes someone from your queue, so
+    the last echo keeps naming players who are gone. The watch already holds
+    what is needed to say which: the INIT snapshot's picks plus every SELECTED
+    line since, which is exactly `espn_live.replay_picks`.
+
+    Returns an empty map rather than raising. This annotates a report; a queue
+    that cannot be annotated is still a queue worth showing.
+    """
+    if not getattr(w, "init_b64", None):
+        return {}
+    try:
+        init = espn_live.decode_init(w.init_b64)
+        picks = espn_live.replay_picks(init, [line for _ts, line in w.lines])
+    except Exception:
+        _log.exception("could not read the pick log for league %s", w.league_id)
+        return {}
+    return {p["player_id"]: p["overall"] for p in picks if p.get("player_id") is not None}
+
+
+def _queue_rows(w, ids: list[int], drafted: dict[int, int] | None = None) -> list[dict]:
+    taken = drafted or {}
+    return [{"rank": i + 1, "espn_id": pid, "name": bd._espn_player_name(pid, w.espn_map),
+             # None when he is still available. Present on every row rather than
+             # only the drafted ones, so "not drafted" is a stated fact and not
+             # an absent key a reader has to interpret.
+             "drafted_at": taken.get(pid)}
             for i, pid in enumerate(ids)]
 
 
 @mcp.tool()
 async def draft_queue(league_id: str) -> str:
     """Your ESPN pick queue (what autopick uses), as ESPN last echoed it over the
-    watch's socket. `source` says where the list came from."""
+    watch's socket, and what is left of it.
+
+    ESPN sends no `DRAFT_LIST` when a pick takes someone off your queue, so the
+    last echo keeps naming players who are gone: at pick 135 the echo still had
+    Jayden Reed at rank 3, taken thirteen picks earlier. Autopick skips them, so
+    nothing breaks, but the echo alone states a queue ESPN will not use.
+
+    `as_echoed` is what ESPN last said, verbatim, with `drafted_at` on every row
+    naming the pick that took him or null if he is still there. `effective` is
+    what autopick would actually draw from. `source` says where the list came
+    from."""
     w, err = _watch_or_error(league_id)
     if err:
         return err
+    drafted = _drafted_by_pick(w)
+    # The echo history is deliberately NOT annotated: it records what ESPN said
+    # at the time, and marking those rows with what has happened since would make
+    # a log of the past disagree with itself.
     history = [{"at_ms": ts, "connection": conn, "size": len(ids),
                 "queue": _queue_rows(w, ids)} for ts, conn, ids in w.queue_echoes]
     if w.queue is None:
-        return _emit({"source": "none", "queue": [], "echoes": history,
+        return _emit({"source": "none", "as_echoed": [], "effective": [],
+                      "echoes": history,
                       "connection": w.connection,
                       "note": "ESPN has not sent a DRAFT_LIST on this connection, so "
                               "the queue it holds is unknown; set_draft_queue will "
@@ -2139,10 +2181,18 @@ async def draft_queue(league_id: str) -> str:
     # change, so the only way to answer "when did X leave my queue" is to compare
     # consecutive echoes. Each row carries its connection, because a list that
     # shrank across a reconnect was not necessarily edited by anyone.
-    return _emit({"source": "socket", "queue": _queue_rows(w, w.queue),
-                  "connection": w.connection, "echoes": history,
-                  # Observation, not a source. See watch._check_init_queue.
-                  "init_queue_checks": w.init_queue_checks}, indent=2)
+    still_there = [pid for pid in w.queue if pid not in drafted]
+    return _emit({
+        "source": "socket",
+        "as_echoed": _queue_rows(w, w.queue, drafted),
+        # The queue autopick would actually draw from. Ranks renumber, because a
+        # rank is a position in the list that will be used, not in the one ESPN
+        # last happened to send.
+        "effective": _queue_rows(w, still_there, drafted),
+        "drafted_since_the_echo": len(w.queue) - len(still_there),
+        "connection": w.connection, "echoes": history,
+        # Observation, not a source. See watch._check_init_queue.
+        "init_queue_checks": w.init_queue_checks}, indent=2)
 
 
 @mcp.tool()
