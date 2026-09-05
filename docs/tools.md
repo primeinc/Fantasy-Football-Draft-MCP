@@ -111,7 +111,16 @@ One watch per league; `stop_watch(league_id)` ends it.
 
 ### `draft_room`
 Who is in the ESPN draft room right now and the latest room chat, from the running
-watch's socket, with team and owner names from the league member list.
+watch's socket, with team and owner names from the league member list. `upcoming`
+lists the next five picks in order: pick number, slot, team and owner, whether
+that team is in the room, and whether the pick is yours.
+
+### `draft_strength`
+Every team's draft so far ranked by projected starter points: the best lineup
+its picks fill under the league's starting slots, bench projection, starting
+slots still open, and pick count. Names come from the running watch when
+`league_id` is given; otherwise teams are labelled by slot. Picks the board
+cannot model fill their slot at 0 points.
 
 ### `league_rules`
 The ESPN league's rules as ESPN states them, from the `mSettings` view: draft

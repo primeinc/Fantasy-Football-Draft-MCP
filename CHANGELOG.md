@@ -51,6 +51,12 @@ All notable changes to this project. Format follows
   (`espn` / `consensus` / `modelled`); a board cached under consensus is
   repriced in place on the next load (`server._price_board`).
 
+**Room order and team strength**
+- `draft_room.upcoming`: the next five picks with team and owner names, room
+  presence and whether the pick is yours (`DraftWatch.upcoming`).
+- `draft_strength`: every team's draft ranked by projected starter points
+  (`board.team_strength`), with bench projection and open starter slots.
+
 **ESPN projections as a role check**
 - `load_espn_adp` also carries `espn_proj` (ESPN's season projection under the
   league's scoring: stats entry statSourceId 1, scoringPeriodId 0) and

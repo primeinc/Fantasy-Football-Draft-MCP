@@ -919,6 +919,47 @@ def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
     }
 
 
+def team_strength(board: pd.DataFrame, state: DraftState,
+                  labels: dict[int, str] | None = None) -> pd.DataFrame:
+    """Every team's draft so far, scored as projected starter points: the best
+    lineup its picks can fill under the league's starting slots, plus bench
+    projection and the starting slots still empty. Sorted strongest first.
+
+    Picks the board cannot model (kickers, defenses, unmodelled players) count
+    toward the position they were recorded under with 0 projected points, so
+    the slot shows filled while the number stays honest."""
+    proj = dict(zip(board["_key"], board["proj_points"])) if "_key" in board.columns else {}
+    pos_of = dict(zip(board["_key"], board["position"])) if "_key" in board.columns else {}
+    starters = {p: n for p, n in state.league.starters.items()
+                if n and p in ("QB", "RB", "WR", "TE")}
+    flex = state.league.starters.get("FLEX", 0)
+    by_slot: dict[int, dict[str, list[float]]] = {}
+    for p in state.picks:
+        key = norm_name(p["name"])
+        pos = pos_of.get(key) or p.get("position")
+        if not pos:
+            continue
+        by_slot.setdefault(p["slot"], {}).setdefault(pos, []).append(float(proj.get(key) or 0.0))
+    rows = []
+    for slot in range(1, state.league.teams + 1):
+        have = {pos: sorted(v, reverse=True) for pos, v in by_slot.get(slot, {}).items()}
+        start = sum(sum(have.get(pos, [])[:n]) for pos, n in starters.items())
+        leftovers = sorted((v for pos, n in starters.items() for v in have.get(pos, [])[n:]
+                            if pos in state.league.flex_eligible), reverse=True)
+        start += sum(leftovers[:flex])
+        bench = sum(leftovers[flex:])
+        empty = sum(max(0, n - len(have.get(pos, []))) for pos, n in starters.items())
+        empty += max(0, flex - len(leftovers))
+        rows.append({"slot": slot, "team": (labels or {}).get(slot, f"slot {slot}"),
+                     "starters_proj": round(start), "bench_proj": round(bench),
+                     "open_starter_slots": empty,
+                     "picks": sum(len(v) for v in have.values()),
+                     "mine": slot == state.my_slot})
+    out = pd.DataFrame(rows).sort_values("starters_proj", ascending=False).reset_index(drop=True)
+    out.insert(0, "rank", range(1, len(out) + 1))
+    return out
+
+
 def espn_league_directory(league_id: str, season: int = CURRENT_SEASON,
                           swid: str | None = None, espn_s2: str | None = None) -> dict[int, dict]:
     """ESPN team id -> team name and owner display names, for labelling room events."""

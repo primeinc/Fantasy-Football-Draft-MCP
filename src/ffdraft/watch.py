@@ -231,11 +231,7 @@ class DraftWatch:
 
     def room(self, chat_limit: int = 10) -> dict:
         """Who is in the draft room and what was said, with names from the directory."""
-        def label(team_id: int) -> str:
-            d = self.directory.get(team_id, {})
-            owners = ", ".join(d.get("owners") or [])
-            return f"{d.get('name') or f'team {team_id}'}" + (f" ({owners})" if owners else "")
-
+        label = self.team_label
         online = sorted(t for t, on in self.online.items() if on)
         return {
             "connected": self.connected,
@@ -245,8 +241,29 @@ class DraftWatch:
                      for ts, t, _owner, text in self.chat[-chat_limit:]],
             "recent": [{"at_ms": ts, "team": label(t), "event": ev}
                        for ts, t, ev in self.presence[-chat_limit:]],
+            "upcoming": self.upcoming(),
             **self.state.summary(),
         }
+
+    def team_label(self, team_id: int) -> str:
+        d = self.directory.get(team_id, {})
+        owners = ", ".join(d.get("owners") or [])
+        return f"{d.get('name') or f'team {team_id}'}" + (f" ({owners})" if owners else "")
+
+    def upcoming(self, count: int = 5) -> list[dict]:
+        """The next picks in order: who is on the clock and who follows, by name,
+        with whether each is in the room right now."""
+        team_of_slot = {slot: team for team, slot in self.slot_of.items()}
+        total = self.league.teams * self.league.rounds
+        out = []
+        for overall in range(self.state.on_the_clock, min(total, self.state.on_the_clock + count - 1) + 1):
+            slot = self.state.slot_for_pick(overall)
+            team = team_of_slot.get(slot)
+            out.append({"pick": overall, "slot": slot, "team_id": team,
+                        "team": self.team_label(team) if team is not None else f"slot {slot}",
+                        "online": bool(self.online.get(team)) if team is not None else None,
+                        "mine": slot == self.state.my_slot})
+        return out
 
     # -- actions
 

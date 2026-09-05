@@ -132,6 +132,34 @@ class TestRepriceCachedBoard:
         server._BOARDS.pop(league.cache_key(), None)
 
 
+class TestTeamStrength:
+    def test_ranks_best_lineups_and_counts_open_slots(self, tmp_path, monkeypatch):
+        from ffdraft.config import LeagueSettings
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=2, rounds=4, draft_slot=2,
+                                starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                          "K": 0, "DST": 0})
+        b = pd.DataFrame({"name": ["QB One", "RB One", "RB Two", "WR One", "WR Two"],
+                          "position": ["QB", "RB", "RB", "WR", "WR"],
+                          "proj_points": [300.0, 200.0, 150.0, 180.0, 120.0]})
+        b["_key"] = b["name"].map(board.norm_name)
+        st = board.DraftState(league)
+        st.record("RB One", 1, 1)
+        st.record("QB One", 2, 2)
+        st.record("Some Kicker", 3, 2, position="K")
+        st.record("RB Two", 4, 1)
+
+        out = board.team_strength(b, st, {1: "Alpha", 2: "Beta"})
+        assert out["team"].tolist() == ["Beta", "Alpha"]
+        beta, alpha = out.iloc[0], out.iloc[1]
+        assert beta["starters_proj"] == 300 and beta["open_starter_slots"] == 2
+        assert beta["picks"] == 2 and bool(beta["mine"])
+        assert alpha["starters_proj"] == 200 and alpha["bench_proj"] == 150
+        assert alpha["open_starter_slots"] == 2 and not alpha["mine"]
+        assert out["rank"].tolist() == [1, 2]
+
+
 class TestLeagueRules:
     def test_surfaces_first_party_settings_and_bye_topology(self, monkeypatch):
         from ffdraft import features

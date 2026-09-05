@@ -198,6 +198,25 @@ def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
     assert all(r["at_ms"] > 0 for r in room["recent"])
 
 
+def test_room_names_the_next_pickers(tmp_path, monkeypatch):
+    w, _events = _watch(tmp_path, monkeypatch)
+    asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+    team_of_slot = {slot: team for team, slot in w.slot_of.items()}
+    w.directory = {team_of_slot[14]: {"name": "Fourteen", "owners": ["Ada"]},
+                   3: {"name": "adverse possession", "owners": ["Will Peters"]}}
+    asyncio.run(w.handle_line(f"JOINED {team_of_slot[14]} {{X}}"))
+    asyncio.run(w.handle_line(f"LEFT {team_of_slot[13]} {{Y}} 1"))
+
+    up = w.room()["upcoming"]
+    # 114 picks made: 115 is on the clock in round 8 (reverse), slot 14; the
+    # user's slot 4 comes at 125.
+    assert [u["pick"] for u in up] == [115, 116, 117, 118, 119]
+    assert up[0]["slot"] == 14 and up[0]["team"] == "Fourteen (Ada)" and up[0]["online"] is True
+    assert up[1]["slot"] == 13 and up[1]["online"] is False and up[1]["mine"] is False
+    assert [u["pick"] for u in w.upcoming(11) if u["mine"]] == [125]
+    assert w.upcoming(11)[-1]["team"] == "adverse possession (Will Peters)"
+
+
 def test_set_queue_sends_full_list_and_returns_echo(tmp_path, monkeypatch):
     w, _events = _watch(tmp_path, monkeypatch)
     sent = []

@@ -1455,6 +1455,24 @@ async def draft_room(league_id: str, chat_limit: int = 10) -> str:
 
 
 @mcp.tool()
+def draft_strength(league_id: str = "") -> str:
+    """Every team's draft so far, ranked by projected starter points under the
+    league's starting slots, with bench projection, open starter slots and pick
+    count. Team names come from the running watch for `league_id` when there
+    is one; otherwise teams are labelled by draft slot."""
+    state = _state()
+    b = _build_board()
+    labels: dict[int, str] = {}
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None:
+        w, _task = entry
+        labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
+    tbl = bd.team_strength(b, state, labels)
+    return json.dumps({"picks_made": len(state.picks), "my_slot": state.my_slot,
+                       "teams": tbl.to_dict(orient="records")}, indent=2)
+
+
+@mcp.tool()
 async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_SEASON) -> str:
     """Write everything ESPN reports about this league's draft under
     `<out_dir>/espn_dump_<league>_<season>_<stamp>/`: every read-API view as
