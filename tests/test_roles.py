@@ -194,20 +194,6 @@ class TestTheModelHook:
         assert np.allclose(a["pick_value"], b["pick_value"])
         assert np.allclose(a["pick_value"], c["pick_value"])
 
-    def test_a_start_probability_of_zero_is_bounded_not_infinite(self):
-        # A bench player's pick_value is negative and p_start can be exactly 0.
-        # The reflection sends him to twice his own magnitude — as far down as
-        # the rule allows — rather than dividing by an epsilon, which would
-        # inflate one pick enough to dominate any sum built from pick_value.
-        values = pd.Series([-4.0, 4.0])
-        out = model._discount(values, pd.Series([0.0, 0.0]))
-        assert list(out) == [-8.0, 0.0]
-        assert np.isfinite(out).all()
-        # And the multiplier is monotone: a smaller one is never a promotion.
-        worse = model._discount(pd.Series([-4.0]), pd.Series([0.25]))
-        better = model._discount(pd.Series([-4.0]), pd.Series([0.75]))
-        assert worse[0] < better[0] < 0
-
     def test_the_start_probability_term_is_additive_in_draft_score(self):
         # (m - 1) * draft_score * need is exactly the difference between
         # recommend's pick_value and the same arithmetic on m * draft_score, so

@@ -687,40 +687,6 @@ def score_special_teams(special: pd.DataFrame, board: pd.DataFrame,
 DISCOUNT_CEILING = 2.0
 
 
-def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
-    """Apply a pick_value multiplier so that below 1 always means further down
-    the list, and above 1 always means further up.
-
-    Multiplication alone does not do that. Almost every candidate on a live
-    board has a negative pick_value -- 564 of 577 available rows at pick 123 of
-    the recorded draft -- because most players are worth less than what waiting
-    is expected to return. Multiplying a negative number by a discount moves it
-    *toward* zero, so the ordering inside the negative half comes out inverted:
-    with need_mult 0.04 for a second quarterback, the worse the backup the
-    higher he ranked, and recommendation ranks 17 to 22 were six consecutive
-    backup QBs ordered by how bad they are.
-
-    A multiplier of `m` is read as "move this by (1 - m) of its own size", which
-    is what multiplying already means for a positive value and is applied by
-    reflection to a negative one: `v * (2 - m)`. Dividing would express the same
-    ordering, and was the first fix here, but it is unbounded -- `need_mult`
-    bottoms out at 0.02, so a negative value could be inflated fiftyfold. That
-    is invisible in a ranking and ruinous in a sum: `replay` sums `pick_regret`
-    per team and sorts the team table on it, and one backup quarterback at pick
-    108 gave his team a regret of 8641 against 398 for the next worst. The
-    reflection is bounded at twice the magnitude, so no single pick can take
-    over an aggregate.
-
-    Every multiplier in `recommend` goes through here, so they cannot drift
-    apart on this. The defect was found independently in `role_mult`,
-    `need_mult` and `roles_mult`; it is one missing invariant, not three bugs.
-    """
-    v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
-    m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
-    m = np.clip(m, 0.0, DISCOUNT_CEILING)
-    return np.where(v >= 0, v * m, v * (2.0 - m))
-
-
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
@@ -800,12 +766,12 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     if role_weights:
         from . import roles
 
-        # Both roles terms are additive in pick_value's own units, so neither
-        # goes through _discount. The start-probability term is the algebraic
-        # equivalent of scaling a candidate's draft_score before the fallback
-        # subtraction; a multiplier on pick_value cannot express it, because
-        # scaling a positive value toward zero promotes it past the negative
-        # 98% of the board. See roles.start_prob_adjustment.
+        # Both roles terms are additive in pick_value's own units, so neither is
+        # a multiplier. The start-probability term is the algebraic equivalent of
+        # scaling a candidate's draft_score before the fallback subtraction; a
+        # multiplier on pick_value cannot express it, because scaling a positive
+        # value toward zero promotes it past the negative 96% of the board. See
+        # roles.start_prob_adjustment.
         avail["roles_mult"] = roles.pick_value_multiplier(
             avail, league, mine,
             start_prob_weight=float(role_weights.get("start_prob", 0.0)))
