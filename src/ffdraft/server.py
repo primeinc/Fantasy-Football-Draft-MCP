@@ -2323,6 +2323,16 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
         # what is left when the echo genuinely never comes.
         await _await_first_echo(w)
     existing = list(w.queue) if w.queue is not None else None
+    from_init = False
+    init_queue = getattr(w, "init_queue", None)
+    if not replace and existing is None and init_queue is not None:
+        # INIT carries the queue ESPN holds. On the live resume of 2026-09-05
+        # (connection 1) INIT's five entries matched the first DRAFT_LIST entry
+        # for entry, while no echo arrived inside the wait: the resume then
+        # replaced a queue ESPN was holding, and said ESPN held none. A queue
+        # INIT reports is the user's, so it is merged into, never replaced.
+        existing = list(init_queue)
+        from_init = True
     if not replace and existing is None:
         return {
             "error": ("no queue echo on this connection yet; pass replace=True to send "
@@ -2363,7 +2373,7 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
     if league_id and accepted:
         watchstore.update_queue(league_id, accepted, from_user=len(kept))
     return {
-        "mode": "replace" if replace else "merge",
+        "mode": "replace" if replace else ("merge_from_init" if from_init else "merge"),
         "pick_log": pick_log,
         "sent": _queue_rows(w, send, drafted),
         "accepted": _queue_rows(w, accepted, drafted),
@@ -3513,17 +3523,18 @@ def _resume_message(out: dict) -> str:
     if queue.get("error"):
         return head + f"; the queue was NOT re-sent ({queue['error']})"
     if queue.get("mode") == "replace":
-        # No echo means ESPN held no queue, which is the ordinary state after a
-        # restart. Nothing of the user's could be kept because there was nothing
-        # to keep -- and the one case where that is wrong, a queue edited in the
-        # app during the downtime that ESPN never echoed, is the cost of saying
-        # it, so it is said.
+        # Reached only when INIT carried no queue and no echo came: ESPN said
+        # twice that it held nothing. The one case that is still wrong, a queue
+        # edited in the app during the downtime that ESPN then reported in
+        # neither place, is the cost of sending, so it is said.
         return (head + f"; queue re-sent from the record, {queue['entries']} entries; "
-                "ESPN echoed no queue on this connection, so it was holding none and "
-                "nothing of yours could be kept -- an edit made in the app while the "
-                "server was down would have been overwritten")
+                "ESPN reported no queue on this connection (none in INIT, no echo), "
+                "so it was holding none and nothing of yours could be kept -- an edit "
+                "made in the app while the server was down would have been overwritten")
+    tail = (" (merged into the queue ESPN's INIT reported; no DRAFT_LIST echo came "
+            "within the wait)" if queue.get("mode") == "merge_from_init" else "")
     return (head + f"; queue re-sent, {queue['entries']} entries, "
-            f"{queue['from_the_user']} of them yours")
+            f"{queue['from_the_user']} of them yours" + tail)
 
 
 async def resume_watches() -> list[dict]:

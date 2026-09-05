@@ -25,6 +25,30 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**Resume replaced a queue ESPN was holding, and said it held none (#50)**
+- On the live resume of 2026-09-05 ESPN's INIT carried the user's five
+  entries and no `DRAFT_LIST` echo arrived inside the wait; the record went out
+  as a replace over a queue ESPN held, and the channel message said ESPN was
+  holding nothing. `merge_queue_ids` now merges into the queue INIT reported
+  when no echo has landed (`mode: merge_from_init`) and replaces only when INIT
+  carried no queue either. The resume message names which happened.
+
+**Every tool run once live: six lied or swallowed**
+- `team_context.drive_efficiency` grouped drives by (season, team, drive
+  number); drive numbers restart every game, so a season showed 28 drives.
+  Grouped by game as well: HOU 2025 reads 217.
+- `draft_backtest` on a season the league never drafted raised through the SDK
+  as "Error executing tool". A named refusal carries the exception.
+- `model_settings()` with no arguments saved settings, dropped the board and
+  deleted its cache file. A call that changes nothing reports `board:
+  unchanged`; a change lists `changed`.
+- `on_the_clock` called `sync_draft` under a running watch, which the server's
+  instructions forbid and which sees zero picks mid-draft. Skipped, and said.
+- `DraftState.on_the_clock` was the pick count plus one, so a hand-logged
+  board with a gap reported the wrong pick. It is the highest overall plus one.
+- `mock_draft` unlinked its scratch draft file only after a completed loop;
+  three abandoned files sat in the real state dir. Removed in a `finally`.
+
 **One `drafted_at: null` carried three different meanings (#66)**
 - `_queue_rows` took the annotation as an optional argument. Two call sites passed
   it and **seven** did not, so every row from those seven said `drafted_at: null`

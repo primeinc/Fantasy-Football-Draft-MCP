@@ -272,8 +272,33 @@ class TestResumingOnStart:
         # Not "0 of them yours", which would read as a loss. Nothing of the
         # user's was kept because ESPN was holding nothing to keep.
         assert "nothing of yours could be kept" in said[-1]
+        assert "none in INIT" in said[-1]
         # The cost of sending anyway, in the same sentence as the send.
         assert "would have been overwritten" in said[-1]
+
+    def test_an_init_queue_with_no_echo_is_merged_and_the_message_says_so(
+            self, watch_dir, monkeypatch):
+        """Live resume, 2026-09-05: INIT carried the queue, no echo came inside
+        the wait, and the record was sent as a replace over a queue ESPN held."""
+        calls = self._stub(monkeypatch, echo=True, sent={
+            "mode": "merge_from_init",
+            "accepted": [{"espn_id": 11}, {"espn_id": 22}, {"espn_id": 33}],
+            "kept_from_the_users_queue": [{"espn_id": 33}]})
+        watchstore.save(_record(queue=[11, 22]))
+        said: list = []
+
+        def capture(content, meta):
+            said.append(content)
+            return _done()
+
+        monkeypatch.setattr(server, "_channel", capture)
+
+        asyncio.run(server.resume_watches())
+
+        assert calls["sends"] == [{"ids": [11, 22], "replace": False}]
+        assert "queue re-sent, 3 entries, 1 of them yours" in said[-1]
+        assert "INIT" in said[-1]
+        assert "overwritten" not in said[-1]
 
     def test_an_echo_is_merged_and_never_replaced(self, watch_dir, monkeypatch):
         """The guard the fallback must not swallow: once ESPN has said what it

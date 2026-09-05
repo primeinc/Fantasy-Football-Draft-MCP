@@ -370,12 +370,9 @@ class DraftWatch:
     def _check_init_queue(self, echo: list[int]) -> None:
         """Record whether INIT's apparent queue matched this connection's first echo.
 
-        Observation, never a decision: nothing reads the result to choose a
-        behaviour. If the two agree across many connections the field becomes
-        something a future change could rely on; if they ever disagree, that is
-        found out before anything depends on it. Seeding the queue from INIT was
-        considered and refused on one observation, which is what this exists to
-        stop being the state of the evidence forever.
+        `merge_queue_ids` merges into `init_queue` when no echo has landed, so
+        a mismatch here is the evidence that would make that wrong. Matched on
+        every live connection checked so far (2026-09-05: one).
         """
         self.init_queue_checks.append({
             "connection": self.connection,
@@ -456,7 +453,6 @@ class DraftWatch:
             self.online = {t.team_id: any(o is not None and o.is_online for o in t.owners)
                            for t in teams if t is not None}
             self.online_at_init = dict(self.online)
-            # Read, recorded, never acted on. See `_check_init_queue`.
             self.init_queue = espn_live.queue_from_init(init)
             picks = espn_live.picks_from_init(init)
             self.state.reset()

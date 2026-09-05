@@ -431,6 +431,34 @@ class TestAnUnknownQueueIsNotOverwritten:
         assert out["removed"] == []
 
 
+class TestAnInitQueueIsMergedIntoWhenNoEchoComes:
+    """The resume of 2026-09-05: INIT carried the user's five entries, no
+    DRAFT_LIST arrived inside the wait, and the queue was replaced with a
+    message saying ESPN held none. INIT is ESPN saying what it holds."""
+
+    def test_the_users_init_queue_is_kept_and_the_mode_says_where_it_came_from(
+            self, live, monkeypatch):
+        monkeypatch.setattr(server, "QUEUE_ECHO_WAIT_SECONDS", 0.01)
+        live.watch.init_queue = list(USER_QUEUE)
+        assert live.queue is None
+
+        out = _call(player_names="Bijan Robinson")
+
+        assert out["mode"] == "merge_from_init"
+        assert _ids(out["sent"]) == [4429205] + USER_QUEUE
+        assert _ids(out["kept_from_the_users_queue"]) == USER_QUEUE
+        assert out["removed"] == []
+
+    def test_an_echo_still_wins_over_init(self, live):
+        live.watch.init_queue = [4429795]
+        _seed_user_queue(live)
+
+        out = _call(player_names="Bijan Robinson")
+
+        assert out["mode"] == "merge"
+        assert _ids(out["kept_from_the_users_queue"]) == USER_QUEUE
+
+
 class TestAReconnectDoesNotCarryTheQueueForward:
     """`run()` reconnects, and the queue belongs to one socket session.
 
