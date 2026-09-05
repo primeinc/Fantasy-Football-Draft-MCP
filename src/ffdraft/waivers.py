@@ -328,16 +328,31 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
                 bench: pd.DataFrame | None, limit: int = 8) -> list[dict]:
     """The ranked claim list: who to add, at what priority, dropping whom.
 
-    Ordered by `role_change`, because it is the only one of the four signals that
-    is about the thing waivers exist for — a role that moved this week. The other
-    three qualify rather than order: contingency is worth nothing while the
-    starter plays, a claim at a position I cannot start is not a claim, and the
-    projection lag says whether the market has already repriced him.
+    Two reasons a player is here, and each row says which: his role moved, or
+    his starter is out. They are listed rather than traded off, because trading
+    them off needs a rate — how much contingent value equals how much role
+    change — and no such rate has been measured.
 
-    No weighted blend, and that is deliberate. Three of the four scores are
-    UNMEASURED, so any weight over them would be a number I made up sitting in
-    front of a number nobody has tested. They are reported side by side and the
-    ordering uses the one that names the question.
+    Ordering inside the list is role-movers first by `role_change`, then live
+    contingencies by `contingent_value`. That is a stated policy about which
+    question to read first, not a claim that one is worth more.
+
+    There is no weighted blend, and that is deliberate — but it is not the
+    absence of a choice. It is weight 1 on `role_change` and 0 on the rest for
+    ordering, which is a maximally strong UNMEASURED choice; marge's point, and
+    the docstring says it that way so the next reader does not think a decision
+    was avoided. It is still the better call: the four numbers stay in the row
+    where a human can override them, where a soft blend would hide four invented
+    weights inside one score nobody can decompose. What licenses changing it is
+    milestone 3's backtest, and until that lands no weight from anyone.
+
+    The contingency is resolved for the **whole pool before truncation**. It used
+    to be read after `.head(limit)`, which meant it was only ever consulted for
+    rows that had already survived a cut made on `role_change` — and a handcuff's
+    role_change is 0.000 by construction, because a role that has not moved is
+    what makes him a handcuff. In any pool larger than `limit` he sat in a block
+    of ties with no breaker, so whether the user saw a live 30-point contingency
+    depended on the order of rows in the input frame. Found by marge.
     """
     if pool is None or pool.empty or changes.empty:
         return []
@@ -362,11 +377,9 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
         })
     if not rows:
         return []
-    out = pd.DataFrame(rows).sort_values("role_change", ascending=False).head(limit)
+    frame = pd.DataFrame(rows)
 
-    # The contingency qualifies a claim rather than ordering it: it is worth
-    # nothing at all while the starter plays, so it belongs beside the row, not
-    # inside the sort.
+    # Resolved over the whole pool, before anything is cut.
     live: dict[str, float] = {}
     starter_of: dict[str, str] = {}
     if contingency is not None and not contingency.empty and "name" in contingency.columns:
@@ -374,16 +387,34 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
             if c.get("starter_is_out"):
                 live[str(c["name"])] = float(c["contingent_value"])
                 starter_of[str(c["name"])] = str(c["starter"])
+    frame["contingent_value"] = frame["player"].map(live).fillna(0.0)
+    frame["handcuff_for"] = frame["player"].map(starter_of)
+    frame["reason"] = np.where(
+        frame["contingent_value"] > 0,
+        np.where(frame["role_change"] > 0, "role moved; starter out", "starter out"),
+        "role moved")
+
+    # mergesort is stable and name breaks the remaining ties, so the answer does
+    # not depend on the order of rows in the pool. Most of a real Tuesday pool
+    # ties at role_change 0.000, and quicksort's ordering inside a tie is an
+    # implementation detail — it decided which claims the user saw at all.
+    movers = frame[frame["role_change"] > 0].sort_values(
+        ["role_change", "player"], ascending=[False, True], kind="mergesort")
+    contingents = frame[(frame["contingent_value"] > 0) & (frame["role_change"] <= 0)] \
+        .sort_values(["contingent_value", "player"], ascending=[False, True],
+                     kind="mergesort")
+    out = pd.concat([movers, contingents]).head(limit)
 
     drop = drop_candidate(bench, league, mine) if bench is not None else {
         "player": None, "reason": "no bench supplied"}
     claims = []
     for rank, (_, r) in enumerate(out.iterrows(), start=1):
-        name = str(r["player"])
         claims.append({
             **r.to_dict(),
-            "contingent_value": round(live.get(name, 0.0), 1),
-            "handcuff_for": starter_of.get(name),
+            # +0.0 normalises the negative zero the share arithmetic leaves
+            # behind: -0.0 renders as "-0.0" in JSON and reads like a signal.
+            "role_change": round(float(r["role_change"]), 3) + 0.0,
+            "contingent_value": round(float(r["contingent_value"]), 1),
             "claim_priority": claim_priority(rank, rules),
             "drop": drop,
             "evidence": {

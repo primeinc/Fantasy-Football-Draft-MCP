@@ -258,36 +258,41 @@ class TestRankedClaims:
             waivers.contingent_value(self.board(), set(out_now)),
             league(), rules, mine=None, bench=self.bench())
 
-    def test_the_breakout_outranks_the_noise_mover(self):
-        # Noise Guy scored 34 in the window against Breakout Guy's 28. A tool
-        # ranking on points buys him; this one ranks on the role having moved.
-        names = [c["player"] for c in self.claims()]
-        assert names[0] == "Breakout Guy"
-        assert names.index("Breakout Guy") < names.index("Noise Guy")
+    def test_the_noise_mover_is_not_a_claim_at_all(self):
+        # He scored 34 in the window against the breakout's 28. A points-ranked
+        # tool buys him. His role did not move and no starter of his is out, so
+        # there is no reason to claim him and he is not in the list. The zero is
+        # still inspectable in the role-change frame, which is where the
+        # evidence lives.
+        assert "Noise Guy" not in [c["player"] for c in self.claims()]
+        assert changes().loc["Noise Guy", "role_change"] == pytest.approx(0.0, abs=1e-9)
 
-    def test_the_noise_mover_is_reported_with_a_zero_role_change(self):
-        noise = next(c for c in self.claims() if c["player"] == "Noise Guy")
-        assert noise["role_change"] == 0.0
-        assert noise["snap_share_change"] == 0.0
+    def test_a_claim_says_which_of_the_two_reasons_put_it_there(self):
+        by_name = {c["player"]: c for c in self.claims()}
+        assert by_name["Breakout Guy"]["reason"] == "role moved"
+        assert by_name["Handcuff Guy"]["reason"] == "starter out"
 
     def test_the_handcuff_carries_a_live_contingency_and_names_the_starter(self):
         hc = next(c for c in self.claims() if c["player"] == "Handcuff Guy")
         assert hc["contingent_value"] > 0
         assert hc["handcuff_for"] == "Starter Back"
-        # And nothing at all while the starter plays.
-        healthy = next(c for c in self.claims(out_now=()) if c["player"] == "Handcuff Guy")
-        assert healthy["contingent_value"] == 0.0
-        assert healthy["handcuff_for"] is None
+        # With his starter healthy he has no reason to be claimed either.
+        assert "Handcuff Guy" not in [c["player"] for c in self.claims(out_now=())]
 
-    def test_the_contingency_does_not_reorder_the_list(self):
-        # It qualifies a claim; it does not outrank a role that actually moved.
+    def test_a_role_mover_still_outranks_a_contingency(self):
+        # Listed rather than traded off, but role-movers are read first.
         assert self.claims()[0]["player"] == "Breakout Guy"
 
     def test_every_claim_carries_a_priority_in_this_league_s_units(self):
         for c in self.claims():
             assert c["claim_priority"]["faab_bid"] is None
             assert "FAAB is off" in c["claim_priority"]["basis"]
-        assert [c["claim_priority"]["order"] for c in self.claims()] == [1, 2, 3]
+        assert [c["claim_priority"]["order"] for c in self.claims()] == [1, 2]
+
+    def test_no_role_change_renders_as_negative_zero(self):
+        # The share arithmetic leaves -0.0 behind, which reads like a signal.
+        for c in self.claims():
+            assert not str(c["role_change"]).startswith("-0.0")
 
     def test_every_claim_names_a_drop(self):
         for c in self.claims():
@@ -313,6 +318,51 @@ class TestRankedClaims:
                                   waivers.contingent_value(self.board(), set()),
                                   league(), rules, None, self.bench())
         assert "Ghost" not in [c["player"] for c in out]
+
+    def padded(self, handcuff_last: bool):
+        """A real Tuesday pool: two players with a reason and twelve quiet ones.
+
+        The quiet twelve all tie at role_change 0.000, which is what most of a
+        free-agent pool looks like. marge's reproduction.
+        """
+        quiet = pd.DataFrame([{"name": f"Quiet {i:02d}", "position": "WR",
+                               "percent_owned": 1.0, "percent_change": 0.0}
+                              for i in range(12)])
+        base = self.pool()
+        base = base[base["name"] != "Noise Guy"]
+        first, hc = base.iloc[[0]], base[base["name"] == "Handcuff Guy"]
+        pool = (pd.concat([first, quiet, hc], ignore_index=True) if handcuff_last
+                else pd.concat([first, hc, quiet], ignore_index=True))
+        noise = changes().reset_index()
+        noise = noise[noise["name"] == "Noise Guy"]
+        ch = pd.concat([changes().reset_index()]
+                       + [noise.assign(name=f"Quiet {i:02d}") for i in range(12)],
+                       ignore_index=True)
+        rules = waivers.league_rules_from_settings({})
+        return waivers.rank_claims(
+            pool, ch, waivers.contingent_value(self.board(), {"Starter Back"}),
+            league(), rules, mine=None, bench=self.bench(), limit=8)
+
+    def test_a_live_contingency_survives_truncation(self):
+        # It used to be read after .head(limit), so a handcuff -- whose
+        # role_change is 0.000 by construction -- sat in a block of ties with no
+        # breaker and was cut before his 30-point contingency was ever looked at.
+        for handcuff_last in (False, True):
+            names = [c["player"] for c in self.padded(handcuff_last)]
+            assert "Handcuff Guy" in names, f"handcuff_last={handcuff_last}"
+
+    def test_the_answer_does_not_depend_on_the_order_of_the_pool(self):
+        # quicksort is not stable, so the tie block's order -- and therefore
+        # which claims the user saw at all -- was decided by input row order.
+        assert [c["player"] for c in self.padded(handcuff_last=False)] == \
+            [c["player"] for c in self.padded(handcuff_last=True)]
+
+    def test_players_with_no_reason_do_not_crowd_out_one_with_a_reason(self):
+        names = [c["player"] for c in self.padded(handcuff_last=True)]
+        assert names[0] == "Breakout Guy"
+        assert "Handcuff Guy" in names
+        # The quiet twelve have neither a moved role nor a live starter.
+        assert not any(n.startswith("Quiet") for n in names)
 
     def test_an_empty_pool_makes_no_claims(self):
         rules = waivers.league_rules_from_settings({})
