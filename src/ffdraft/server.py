@@ -2816,8 +2816,18 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
             # Still joining. The state says a watch exists because one does, and
             # the message says so too rather than claiming a failure that would
             # contradict what `draft_room` and `draft_status` will answer.
+            #
+            # This future is dropped: `_finish_resume` builds its own. Left
+            # pending it outlives the call and a room that never sends INIT ends
+            # the process with "Task was destroyed but it is pending".
+            ready.cancel()
             asyncio.create_task(_finish_resume(w, task, record),
                                 name=f"ffdraft-finish-resume-{record.league_id}")
+            # Not `resumed: False`. The watch is up; what is outstanding is the
+            # draft state. A boolean that says "no" beside a `why` saying "joined"
+            # is the same field-against-field contradiction this branch exists to
+            # remove, and living in a field nobody reads yet is not a defence.
+            out["resumed"] = "joining"
             out["why"] = (f"joined; ESPN had not sent INIT after "
                           f"{RESUME_READY_SECONDS:.0f}s, so the picks and the queue "
                           f"are still to come")

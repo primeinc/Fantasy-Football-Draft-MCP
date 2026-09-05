@@ -364,7 +364,10 @@ class TestARefusalIsSaidOutLoud:
 
         out = asyncio.run(server.resume_watches())
 
-        assert out[0]["resumed"] is False, "not finished, so not yet a resume"
+        # Not False: the watch is up and only the draft state is outstanding. A
+        # boolean saying "no" beside a `why` saying "joined" is the same
+        # field-against-field contradiction this branch removes.
+        assert out[0]["resumed"] == "joining"
         assert "still to come" in out[0]["why"]
         content, meta = said[-1]
         assert "has not sent the draft state yet" in content
@@ -420,6 +423,34 @@ class TestARefusalIsSaidOutLoud:
 
         assert calls["ids"] == [11, 22]
         assert "queue re-sent, 2 entries, 1 of them yours" in said[-1][0]
+
+    def test_the_first_ready_future_is_not_left_pending(self, watch_dir, monkeypatch):
+        """`_finish_resume` builds its own. Left pending, the first one outlives
+        the call and a room that never sends INIT ends the process with
+        "Task was destroyed but it is pending"."""
+        TestResumingOnStart()._stub(monkeypatch, never_ready=True)
+        monkeypatch.setattr(server, "RESUME_READY_SECONDS", 0.01)
+        watchstore.save(_record())
+        monkeypatch.setattr(server, "_channel", lambda content, meta: _done())
+
+        async def go():
+            await server.resume_watches()
+            leftovers = [t for t in asyncio.all_tasks()
+                         if t is not asyncio.current_task()
+                         and not t.get_name().startswith("ffdraft-finish-resume")
+                         and "draft-watch" not in t.get_name()]
+            # Await the handles rather than counting scheduler turns: a task
+            # cancelled a moment ago is not `done()` until the loop comes back
+            # to it, so "still pending" and "already cancelled" look identical
+            # at this instant.
+            outcomes = await asyncio.gather(*leftovers, return_exceptions=True)
+            return [(t.get_name(), o) for t, o in zip(leftovers, outcomes)]
+
+        left = asyncio.run(go())
+
+        still_running = [name for name, outcome in left
+                         if not isinstance(outcome, asyncio.CancelledError)]
+        assert still_running == [], f"left running: {still_running}"
 
 
 class TestTheStoreSurvivesACrashMidWrite:
