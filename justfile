@@ -755,6 +755,7 @@ takerate:
         print(f"   best available: {top['name']} (adp {float(top['adp']):.0f}, "
               f"draft_score {float(top['draft_score']):.1f})")
         scores = rows["draft_score"].tolist()
+        held = st.held_by_slot(b)
         print(f"   {'pick':>4} {'next':>4} {'h':>3} {'left':>5} {'slots':>5} "
               f"{'forced':>6} {'takers':>7} {'ADP p0':>7} {'cnt p0':>7} "
               f"{'ADP fb':>7} {'cnt fb':>7} {'ADP mg':>7} {'cnt mg':>7}")
@@ -762,9 +763,10 @@ takerate:
             h = nxt - cur
             picks_left = max(0, total - cur)
             slots_left = max(0, need - got)
-            forced = model.forced_takes(slots_left, picks_left, h)
-            takers = model.expected_takers(r_obs, h, slots_left, picks_left)
-            counting = model.counting_survival(takers, len(scores))
+            hz = model.pick_hazards(league, held, cur, nxt, pos, r_obs)
+            forced = sum(1 for x in hz if x > r_obs)
+            takers = sum(hz)
+            counting = model.counting_survival(hz, len(scores), slots_left)
             adp_p = model.survival_probability_vec(
                 rows["adp"].to_numpy(), cur, nxt)
 
@@ -788,7 +790,8 @@ takerate:
     nxt = st.pick_after_next()
     for label, extra in (("ADP survival (before)", {}),
                          ("room survival (after)",
-                          {"room_picks": taken, "picks_so_far": n})):
+                          {"room_picks": taken, "picks_so_far": n,
+                           "room_held": st.held_by_slot(b)})):
         recs = model.recommend(b, league, current_pick=cur, next_pick=nxt,
                                roster=st.my_roster(b), top_n=5, mine=st.my_rows(b),
                                bye_weight=weights.bye, **extra)
@@ -817,7 +820,8 @@ takerate:
     for cur2, nxt2 in ((196, 221), (221, None)):
         recs = model.recommend(b, league, current_pick=cur2, next_pick=nxt2,
                                roster=st.my_roster(b), top_n=3, mine=st.my_rows(b),
-                               bye_weight=weights.bye, room_picks=taken, picks_so_far=n)
+                               bye_weight=weights.bye, room_picks=taken, picks_so_far=n,
+                               room_held=st.held_by_slot(b))
         head = recs.iloc[0]
         print(f"   pick {cur2} (next {nxt2}): {head['name']} ({head['position']}) "
               f"value {float(head['pick_value']):.2f} survives "

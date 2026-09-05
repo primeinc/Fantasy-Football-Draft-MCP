@@ -501,7 +501,8 @@ class DraftWatch:
                                bye_weight=self.bye_weight,
                                adp_shift=room_drift(b, self.state)["shift"],
                                room_picks=self.state.picks_by_position(b),
-                               picks_so_far=len(self.state.picks))
+                               picks_so_far=len(self.state.picks),
+                               room_held=self.state.held_by_slot(b))
         if recs.empty:
             return "No recommendation: board empty."
         names = [f"{r['name']} ({r['position']}, {float(r['p_available_next']):.0%} lasts"

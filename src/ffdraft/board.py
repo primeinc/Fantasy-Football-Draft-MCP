@@ -725,6 +725,22 @@ class DraftState:
                 counts[str(pos)] = counts.get(str(pos), 0) + 1
         return counts
 
+    def held_by_slot(self, board: pd.DataFrame) -> dict[int, dict[str, int]]:
+        """Counted positions each team already holds, by draft slot.
+
+        What decides whether the team on the clock can still defer a kicker or a
+        defense: its own unfilled slots against its own remaining picks. Board
+        spelling first, recorded position as the fallback, same as `my_roster`.
+        """
+        idx = board.set_index("_key")["position"].to_dict() if "_key" in board.columns else {}
+        out: dict[int, dict[str, int]] = {}
+        for p in self.picks:
+            pos = idx.get(norm_name(p["name"])) or p.get("position")
+            if pos in SPECIAL_POSITIONS:
+                team = out.setdefault(int(p["slot"]), {})
+                team[str(pos)] = team.get(str(pos), 0) + 1
+        return out
+
     def my_roster(self, board: pd.DataFrame) -> dict[str, int]:
         mine = [p for p in self.picks if p["slot"] == self.my_slot]
         counts: dict[str, int] = {}

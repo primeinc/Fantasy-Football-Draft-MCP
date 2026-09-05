@@ -5,8 +5,6 @@ headlined the Houston Texans D/ST with a 0.11 chance of lasting 25 picks, in a
 room that had taken one defense in 125. Both halves are wrong -- the number is a
 false statement about the room, and it drove the headline.
 """
-import math
-
 import pandas as pd
 
 from ffdraft import model
@@ -52,75 +50,97 @@ def _board():
 ROSTER = {"QB": 1, "RB": 2, "WR": 2, "TE": 1}
 
 
-class TestForcedTakes:
-    """The floor: what the league can no longer defer past your next pick."""
+class TestPickHazards:
+    """One hazard per pick between now and your next turn."""
 
-    def test_zero_while_the_remainder_can_still_absorb_every_slot(self):
-        # 15 defenses to fill, 92 picks left, your next pick 25 away: all 15
-        # could go in the 67 picks after it, so none is forced into the horizon.
-        assert model.forced_takes(slots_left=15, picks_left=92, horizon=25) == 0
+    def test_nobody_is_compelled_in_the_middle_of_the_draft(self):
+        # At 132 every team still has far more picks left than counted slots to
+        # fill, so the room's own habit is the only evidence.
+        hz = model.pick_hazards(_league(), {}, 132, 157, "DST", 1 / 125)
+        assert len(hz) == 24, len(hz)
+        assert all(h == 1 / 125 for h in hz), hz
 
-    def test_rises_once_the_tail_is_too_short_to_hold_them(self):
-        # 28 picks left and 25 of them before your next: only 3 can come after,
-        # so 12 of the 15 are forced inside.
-        assert model.forced_takes(slots_left=15, picks_left=28, horizon=25) == 12
+    def test_everyone_is_compelled_at_the_end(self):
+        # By 197 no team has more picks left than the two slots it must fill, so
+        # every pick is forced and splits between K and D/ST.
+        hz = model.pick_hazards(_league(), {}, 196, 221, "DST", 1 / 125)
+        assert len(hz) == 24
+        assert all(h == 0.5 for h in hz), hz
 
-    def test_is_monotone_in_the_horizon(self):
-        seen = [model.forced_takes(15, 40, h) for h in range(0, 41)]
-        assert seen == sorted(seen), seen
-        assert seen[0] == 0 and seen[-1] == 15
+    def test_a_team_that_already_holds_one_crosses_the_boundary_later(self):
+        # The whole point of reading it per team. Slot 5 picks at 197 and 220
+        # and already holds a kicker, so at 197 it has two picks against one
+        # unfilled slot and can still defer, where its neighbours cannot. By
+        # 220 it is down to one pick and must take the defense.
+        league = _league()
+        hz = model.pick_hazards(league, {5: {"K": 1}}, 196, 221, "DST", 1 / 125)
+        by_pick = dict(zip(range(197, 221), hz))
+        assert model.slot_for_pick(league, 197) == 5
+        assert model.slot_for_pick(league, 220) == 5
+        assert by_pick[197] == 1 / 125, by_pick[197]
+        assert by_pick[220] == 1.0, by_pick[220]
+        # A neighbour holding nothing is compelled at its own first pick here.
+        assert by_pick[198] == 0.5, by_pick[198]
 
-    def test_a_position_with_nothing_left_to_fill_forces_nothing(self):
-        assert model.forced_takes(slots_left=0, picks_left=4, horizon=4) == 0
+    def test_the_horizon_is_walked_rather_than_read_at_its_first_pick(self):
+        # A horizon that straddles the boundary. Reading the forced count once
+        # at 189 reports nothing forced; the picks late in the window are.
+        hz = model.pick_hazards(_league(), {}, 189, 196, "DST", 1 / 125)
+        assert len(hz) == 6
+        assert min(hz) == 1 / 125 and max(hz) == 0.5, hz
+        assert sum(hz) > 1.0, sum(hz)
 
-
-class TestExpectedTakers:
-    """How many of the position go before your next turn."""
-
-    def test_is_the_observed_rate_over_the_horizon_while_nothing_is_forced(self):
-        # 1 defense in 125 picks, 25 picks to your next turn.
-        assert abs(model.expected_takers(1 / 125, 25, 15, 92) - 25 / 125) < 1e-12
-
-    def test_the_floor_takes_over_at_the_end(self):
-        # 15 defenses into 28 remaining picks with your next turn 25 away: 12
-        # cannot wait, and that is far above anything the room's rate predicts.
-        assert model.expected_takers(1 / 125, 25, 15, 28) == 12.0
-
-    def test_no_horizon_is_no_takers(self):
-        assert model.expected_takers(1 / 125, 0, 15, 1) == 0.0
+    def test_a_position_already_filled_everywhere_forces_nothing(self):
+        held = {slot: {"K": 1, "DST": 1} for slot in range(1, 17)}
+        hz = model.pick_hazards(_league(), held, 196, 221, "DST", 1 / 125)
+        assert all(h == 1 / 125 for h in hz), hz
 
 
 class TestCountingSurvival:
     """P(K <= i) by index: if k go, the k best go."""
 
     def test_the_top_player_carries_the_whole_risk(self):
-        # With 0.2 defenses expected, the best one survives with P(K = 0) and
-        # the second is nearly safe. A flat number would give them the same.
-        p = model.counting_survival(0.2, 5)
-        assert abs(p[0] - math.exp(-0.2)) < 1e-12
+        # 24 picks at the room's rate. The best defense survives with P(K = 0)
+        # and the second is nearly safe; a flat number would give them the same.
+        hz = [1 / 125] * 24
+        p = model.counting_survival(hz, 5, 15)
+        assert abs(p[0] - (1 - 1 / 125) ** 24) < 1e-12
         assert p[0] < p[1] < p[2]
-        assert 0.80 < p[0] < 0.83, p[0]
+        assert 0.80 < p[0] < 0.84, p[0]
         assert p[1] > 0.98
 
     def test_rises_with_index_and_never_leaves_the_unit_interval(self):
-        for takers in (0.0, 0.2, 4.0, 12.0, 40.0):
-            p = model.counting_survival(takers, 31)
-            assert list(p) == sorted(p), (takers, p)
-            assert (p >= 0).all() and (p <= 1).all(), (takers, p)
+        for hz in ([], [0.0] * 5, [1 / 125] * 24, [0.5] * 24, [1.0] * 24):
+            p = model.counting_survival(hz, 31, 15)
+            assert list(p) == sorted(p), (hz[:2], p)
+            assert (p >= 0).all() and (p <= 1).all(), (hz[:2], p)
 
     def test_a_forced_end_of_draft_buries_the_top_of_the_board(self):
-        # 12 expected takers: the best twelve defenses are gone, and the top one
-        # is not close to surviving.
-        p = model.counting_survival(12.0, 31)
+        p = model.counting_survival([0.5] * 24, 31, 15)
         assert p[0] < 0.001, p[0]
-        assert p[11] < 0.65 and p[20] > 0.98, (p[11], p[20])
+        assert p[20] > 0.99, p[20]
+
+    def test_puts_no_mass_above_the_picks_that_exist(self):
+        # The reason this is a Poisson binomial and not a Poisson: with 24 picks
+        # at hazard 0.5, more than 24 cannot go, and everyone from index 24 on
+        # is certain. A Poisson on the same mean leaves mass above it.
+        p = model.counting_survival([0.5] * 24, 40, None)
+        assert p[24] == 1.0, p[24]
+        assert p[23] < 1.0
+
+    def test_truncating_at_the_slots_left_is_what_caps_it(self):
+        # The league cannot take more defenses than it has defense slots open.
+        loose = model.counting_survival([0.5] * 24, 40, None)
+        capped = model.counting_survival([0.5] * 24, 40, 15)
+        assert capped[15] == 1.0, capped[15]
+        assert capped[12] > loose[12]
 
     def test_no_takers_means_everyone_survives(self):
-        p = model.counting_survival(0.0, 4)
+        p = model.counting_survival([0.0] * 10, 4, 15)
         assert (p == 1.0).all(), p
 
     def test_an_empty_position_returns_an_empty_array(self):
-        assert len(model.counting_survival(3.0, 0)) == 0
+        assert len(model.counting_survival([0.5] * 4, 0, 15)) == 0
 
 
 class TestRecommend:

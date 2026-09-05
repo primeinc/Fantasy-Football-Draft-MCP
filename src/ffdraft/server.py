@@ -510,7 +510,8 @@ def who_should_i_pick(limit: int = 6) -> str:
                            roster=roster, top_n=limit, mine=state.my_rows(b),
                            bye_weight=weights.bye, adp_shift=drift["shift"],
                            room_picks=state.picks_by_position(b),
-                           picks_so_far=len(state.picks))
+                           picks_so_far=len(state.picks),
+                           room_held=state.held_by_slot(b))
 
     # Roster-dependent, so `player_report` cannot show them: what each candidate
     # is worth to *this* roster rather than to an average one. Reported, not
@@ -693,7 +694,8 @@ def draft_audit(limit: int = 10) -> str:
                                roster=state.my_roster(b), top_n=limit, mine=state.my_rows(b),
                                bye_weight=weights.bye,
                                room_picks=state.picks_by_position(b),
-                               picks_so_far=len(state.picks))
+                               picks_so_far=len(state.picks),
+                               room_held=state.held_by_slot(b))
     out = bd.audit_state(b, state, recs)
     # Board rows the market join could not price are the Estimé shape: a
     # synthetic ADP where a real one may exist under another spelling.

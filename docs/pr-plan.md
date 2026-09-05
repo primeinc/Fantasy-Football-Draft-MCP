@@ -269,14 +269,18 @@ parallel.
   the branch and carries no code; write each PR's entry fresh rather than
   porting hunks.
 - This file ships in no PR.
-- Two negative results belong in PR 4's description, because they are why
-  `_absorbed_by` and `_plan_pool` ship as they do. Replacing even absorption
-  with a curve fitted to the room's observed K/D-ST timing makes the plan worse,
-  taking a defense in round 9 of 14; and making pool membership and survival
-  agree by counting makes it worse by the same mechanism, because a count is an
-  expectation and the step function treats it as fact. Both are recorded in the
-  changelog with their measurements. The honest fix needs a spread parameter
-  fitted from pick-by-pick position records across many drafts, which is not a
-  data source this repo has.
+- Three results about one question belong in PR 4's description, because
+  together they are why `_absorbed_by`, `_plan_pool` and the K/D-ST survival
+  term ship as they do. Replacing even absorption with a curve fitted to the
+  room's observed timing makes the plan worse, taking a defense in round 9 of 14
+  (#33); making pool membership and survival agree by counting makes it worse by
+  the same mechanism, because a count is an expectation and a step function
+  treats it as fact (#35); and the survival term itself was miscalibrated for
+  defenses, which #37 fixes by counting the room's own record per board index.
+- Say in the description that three separate changes to K/D-ST survival each
+  tried to move the same pick into round 9, and that the third is the one that
+  did not. The pattern is the argument for the shape #37 settled on, and a
+  reviewer who sees only the third change will not know the first two were
+  measured and rejected.
 - `5874482` ignores `.claude/worktrees/`. It is an artifact of how this branch
   was built and ships in no PR.
