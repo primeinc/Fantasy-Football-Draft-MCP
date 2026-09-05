@@ -713,7 +713,8 @@ def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
 
     Every multiplier in `recommend` goes through here, so they cannot drift
     apart on this. The defect was found independently in `role_mult`,
-    `need_mult` and `roles_mult`; it is one missing invariant, not three bugs.
+    `need_mult` and `roles_mult`; it is one missing invariant, not three bugs,
+    and `roles_mult` is routed through here for that reason.
     """
     v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
     m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
