@@ -78,12 +78,13 @@ place the statement is true. Only value above replacement is scaled:
 `draft_score` is value over replacement, not points, so a player already below it
 is not made better by playing less.
 
-Measured at pick 125 holding two backs who never miss a game, 553 of 575 rows
+Measured at pick 125 holding two backs who never miss a game, 560 of 575 rows
 negative: a bench RB the term says can hardly ever start goes from `pick_value`
-7.3 at **rank 3** to 0.6 at **rank 16**, while a receiver the term does not touch
-stays at rank 1 with an unchanged 13.3.
+7.2 at **rank 3** to 0.5 at **rank 9**, while a receiver the term does not touch
+stays at rank 1 with an unchanged 12.7.
 
-**What this does not fix.** Rank 16 is still ahead of the 553 negative rows.
+**What this does not fix.** The value is cut by 93% and the rank moves six
+places, because 0.5 is still ahead of the 560 negative rows.
 `pick_value`'s zero means "exactly as good as waiting", not "worthless", so
 anything positive outranks the whole negative field however small it is. Scaling
 the position also scales what that position offers at your next pick — correctly,
@@ -112,10 +113,11 @@ gating there squares a probability `contingent_points` has already applied.
 Left in, it made holding the starter *lower* his handcuff's value than not
 holding him, the exact reverse of the intent.
 
-Neither roles term is a multiplier on `pick_value`: both are additive in its own
-units, for the reason above. The multipliers that remain (`role_mult`,
-`need_mult`, `bye_mult`) share a separate problem on the negative half of the
-board and are handled by `model._discount` on the K/DST branch.
+Neither roles term is a multiplier on `pick_value`: the start-probability term
+scales `draft_score` before anything reads it, and the handcuff term is additive
+in `pick_value`'s own units. The multipliers that remain (`need_mult`,
+`role_mult`, `bye_mult`) all go through `model._discount`, which handles the
+separate problem those have on the negative half of the board.
 
 `just roles [what] [seasons] [trials] [seed]` is the evidence. `what`: `shares`
 prints opportunity-share coverage on the live board and checks `pick_value` does
