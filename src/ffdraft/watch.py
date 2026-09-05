@@ -191,6 +191,12 @@ class DraftWatch:
         self.own_pick: asyncio.Future | None = None
         # Our pick queue as ESPN last echoed it (DRAFT_LIST line); None until seen.
         self.queue: list[int] | None = None
+        # Every echo, (epoch ms, ids), oldest first. The queue is the one piece of
+        # draft state with two authors -- the user in the ESPN app and this server
+        # -- and ESPN sends no diff, only the whole list. Without the history,
+        # "who took X out of my queue" has no answer at all; with it, the echo
+        # before a player disappeared says whether he was there and when he went.
+        self.queue_echoes: list[tuple[int, list[int]]] = []
         self.queue_echo: asyncio.Future | None = None
 
     # -- socket loop
@@ -357,9 +363,15 @@ class DraftWatch:
         elif kind == "CHAT" and len(fields) >= 5:
             self.chat.append((int(fields[3]), int(fields[1]), fields[2], unquote_plus(fields[4])))
         elif kind == "DRAFT_LIST":
-            self.queue = [int(f) for f in fields[1:] if f.lstrip("-").isdigit()]
-            if self.queue_echo and not self.queue_echo.done():
-                self.queue_echo.set_result(list(self.queue))
+            # Through the one reader, which lets `int` decide what an id is. The
+            # lstrip-then-isdigit split that used to be written here accepts
+            # "--5" and then raises inside the session that was reading it.
+            parsed = espn_live.queue_from_lines([line])
+            if parsed is not None:
+                self.queue = parsed
+                self.queue_echoes.append((int(time.time() * 1000), list(parsed)))
+                if self.queue_echo and not self.queue_echo.done():
+                    self.queue_echo.set_result(list(parsed))
         elif kind == "ERROR":
             if self.own_pick and not self.own_pick.done():
                 self.own_pick.set_exception(RuntimeError(line))

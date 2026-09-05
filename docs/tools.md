@@ -647,10 +647,30 @@ change fired on, which is a post-treatment variable, so it is not another view o
 
 ### `draft_queue` / `set_draft_queue`
 Your ESPN pick queue, the list autopick draws from if you miss the clock.
-`set_draft_queue(league_id, "Name, Name, ...")` replaces it in that order over the
-watch's socket (`DRAFT_LIST id id ...`, the room's own message for add, remove and
-reorder); an empty string clears it. Returns what ESPN echoed back. `draft_queue`
-reads the last echo on this connection.
+
+**The queue has two authors and ESPN's protocol has no add or remove.**
+`DRAFT_LIST id id ...` carries the whole list, so anything a call does not send
+is deleted. The user edits this queue in the ESPN app; the server edits it here;
+neither sees the other's change except as a new echo of the entire list.
+
+`set_draft_queue(league_id, "Name, Name, ...")` therefore **merges** by default:
+it reads the queue ESPN last echoed, puts the named players at the front in the
+order given, and keeps everything else the user had behind them. The result
+reports `added`, `kept_from_the_users_queue`, `removed` and `queue_before`, so
+what happened to the user's own list is on the face of it.
+
+`replace=True` sends only the named players and drops the rest. It is the old
+behaviour and now has to be asked for; its result names every player removed.
+
+With no echo yet on this connection the queue ESPN holds is **unknown**, and a
+merge is refused rather than guessed — sending anyway is how a queue the user
+built gets overwritten with nobody able to say what was in it. The refusal says
+how to get an echo, and `replace=True` still works because it was asked for.
+
+`draft_queue` reads the last echo and also returns `echoes`, every echo this
+connection has seen with a timestamp. Since ESPN sends the whole list rather
+than a change, comparing consecutive echoes is the only way to answer "when did
+this player leave my queue".
 
 ### `make_pick`
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the

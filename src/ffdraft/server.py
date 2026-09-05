@@ -1854,20 +1854,41 @@ async def draft_queue(league_id: str) -> str:
     w, err = _watch_or_error(league_id)
     if err:
         return err
+    history = [{"at_ms": ts, "size": len(ids), "queue": _queue_rows(w, ids)}
+               for ts, ids in w.queue_echoes]
     if w.queue is None:
-        return _emit({"source": "none", "queue": [],
-                           "note": "ESPN has not sent a DRAFT_LIST on this connection; "
-                                   "set_draft_queue returns the authoritative list"})
-    return _emit({"source": "socket", "queue": _queue_rows(w, w.queue)}, indent=2)
+        return _emit({"source": "none", "queue": [], "echoes": history,
+                      "note": "ESPN has not sent a DRAFT_LIST on this connection, so "
+                              "the queue it holds is unknown; set_draft_queue will "
+                              "refuse to merge into it"}, indent=2)
+    # Every echo, not just the latest: ESPN sends the whole list rather than a
+    # change, so the only way to answer "when did X leave my queue" is to compare
+    # consecutive echoes.
+    return _emit({"source": "socket", "queue": _queue_rows(w, w.queue),
+                  "echoes": history}, indent=2)
 
 
 @mcp.tool()
-async def set_draft_queue(league_id: str, player_names: str) -> str:
-    """Replace your ESPN pick queue with these players, in this order. Comma-separated
-    names; an empty string clears the queue. This is what ESPN autopicks from if
-    you miss your clock. Sends the room's DRAFT_LIST message and returns the list
-    ESPN accepted. Confirm the order with the user before calling this.
-    """
+async def set_draft_queue(league_id: str, player_names: str, replace: bool = False) -> str:
+    """Put these players at the front of your ESPN pick queue, keeping the rest.
+
+    Comma-separated names, in the order you want them. This is what ESPN
+    autopicks from if you miss your clock. Confirm the order with the user before
+    calling this.
+
+    The queue has two authors: the user, in the ESPN app, and this server. ESPN's
+    protocol has no add or remove, only `DRAFT_LIST` carrying the whole list, so
+    anything the user queued and this call does not send is gone. By default the
+    queue ESPN last echoed is read first and everything already on it is kept
+    behind the names given here.
+
+    `replace=True` sends only these players and drops the rest. It is the old
+    behaviour, it is now something you have to ask for, and the result names
+    every player it removed.
+
+    With no echo yet on this connection the existing queue is unknown, and a
+    merge is refused rather than guessed: sending anyway is exactly how a queue
+    the user built gets overwritten without either of us noticing."""
     w, err = _watch_or_error(league_id)
     if err:
         return err
@@ -1881,11 +1902,44 @@ async def set_draft_queue(league_id: str, player_names: str) -> str:
             ids.append(pid)
     if unresolved:
         return _emit({"error": "unresolved names; nothing sent", "unresolved": unresolved})
+
+    existing = list(w.queue) if w.queue is not None else None
+    if not replace and existing is None:
+        return _emit({
+            "error": "the queue ESPN holds is unknown, so nothing was sent",
+            "why": ("ESPN has not echoed a DRAFT_LIST on this connection, and its "
+                    "protocol sends the whole queue rather than a change. Sending now "
+                    "would replace whatever the user has queued in the app without "
+                    "either of us seeing what was lost."),
+            "do": ("open the draft room's queue and change it once so ESPN echoes it, "
+                   "then call this again; or pass replace=True to send only these "
+                   "players and accept losing the rest"),
+            "would_send": _queue_rows(w, ids)}, indent=2)
+
+    if replace:
+        send = ids
+        removed = [pid for pid in (existing or []) if pid not in set(ids)]
+    else:
+        # Ours first, in the order asked for, then everything the user already had
+        # that we are not already sending.
+        send = ids + [pid for pid in (existing or []) if pid not in set(ids)]
+        removed = []
     try:
-        accepted = await w.set_queue(ids)
+        accepted = await w.set_queue(send)
     except TimeoutError:
-        return _emit({"error": "ESPN did not echo the queue within 10s", "sent": _queue_rows(w, ids)})
-    return _emit({"sent": _queue_rows(w, ids), "accepted": _queue_rows(w, accepted)}, indent=2)
+        return _emit({"error": "ESPN did not echo the queue within 10s",
+                      "sent": _queue_rows(w, send)}, indent=2)
+    kept = [pid for pid in accepted if pid in set(existing or []) and pid not in set(ids)]
+    return _emit({
+        "mode": "replace" if replace else "merge",
+        "sent": _queue_rows(w, send),
+        "accepted": _queue_rows(w, accepted),
+        "added": _queue_rows(w, ids),
+        "kept_from_the_users_queue": _queue_rows(w, kept),
+        "removed": _queue_rows(w, removed),
+        "queue_before": _queue_rows(w, existing or []),
+        "echoes_seen": len(w.queue_echoes),
+    }, indent=2)
 
 
 @mcp.tool()

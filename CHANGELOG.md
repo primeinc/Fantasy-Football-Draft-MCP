@@ -1541,6 +1541,23 @@ All notable changes to this project. Format follows
   the simulator did not have, and no test of this module alone would have shown
   it. The simulation is self-consistent; it is wrong only relative to a week
   nobody had told it about.
+**Pick queue: merge, do not replace**
+- `set_draft_queue` merges by default. ESPN's `DRAFT_LIST` carries the whole
+  queue rather than a change, and the queue has two authors, so a call that sent
+  only its own names deleted whatever the user had queued in the app. The tool
+  now reads the queue ESPN last echoed, puts its players at the front, and keeps
+  the rest; the result names what was added, what was kept and what was removed.
+- `replace=True` is the old behaviour and now has to be asked for. Its result
+  names every player it removed.
+- A merge with no echo yet on the connection is refused rather than guessed: the
+  queue ESPN holds is unknown, and sending anyway is exactly how a queue gets
+  overwritten with nobody able to say what was in it.
+- `DraftWatch.queue_echoes` records every echo with a timestamp and `draft_queue`
+  returns them, so "when did this player leave my queue" has an answer. Comparing
+  consecutive echoes is the only way to get one from a protocol with no diff.
+- The watch's own `DRAFT_LIST` parse now goes through `espn_live.queue_from_lines`
+  rather than repeating the lstrip-then-`isdigit` test that accepts `--5` and
+  then raises inside the live session.
 
 **Draft dump**
 - `dump_draft` tool and `just dump <league_id> [out_dir]` (`espn_dump.py`):
