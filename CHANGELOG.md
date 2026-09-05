@@ -148,16 +148,40 @@ All notable changes to this project. Format follows
   start are not points. Gated, the same 8 paired drafts per season give 2024
   +37.9 and 2025 +22.1, overall +30.0 — the gate alone is worth +141 weekly
   points in 2024.
-- `model.recommend` applies `roles_mult` as `pv * m` above zero and `pv / m`
-  below it, so below 1 always means further down the list. `pick_value` goes
-  negative deep in the board, and multiplying a negative by a start probability
-  of 0.3 moves it *toward* zero — promoting exactly the bench players the
-  discount exists to bury. Found by reading marge's identical fix for
-  `role_mult` on the K/DST branch, after a first `start_prob` measurement had
-  already been taken against the broken form and had to be thrown away. Otto
-  measured the same defect a third time in `need_mult`, so it is one missing
-  invariant at three sites rather than three bugs; a shared `_discount` helper
-  is being proposed and this site should join it.
+- **Neither roles term is a multiplier on `pick_value`, and that took three
+  goes.** The first version multiplied, which promoted the bench players the
+  discount existed to bury: `pick_value` is negative deep in the board and
+  multiplying a negative by 0.3 moves it toward zero. Found by reading marge's
+  identical fix for `role_mult`, after a `start_prob` measurement had already
+  been taken against the broken form and had to be thrown away; otto measured
+  the same defect a third time in `need_mult`, so it was one missing invariant
+  at four sites, now `model._discount`.
+  The second version routed through that helper, and marge then measured what
+  the helper cannot fix: `_discount(v > 0, m = 0)` is exactly 0.0, and with 96%
+  of available rows negative a `pick_value` of 0 sorts near the top. At pick 125
+  holding two backs who never miss a game, a bench RB the term said could hardly
+  ever start ranked **3rd of 575**. No multiplier can express exclusion on a
+  board shaped like that, at any factor, and the old `1e-6` floor did the same
+  thing — which is why the trap survived three fixes to the negative half.
+  The third version applies the term where it is true. A player in the lineup a
+  fraction `m` of the time is worth `m` of his projection, and `draft_score` is
+  built from that projection, so `draft_score` is what should be scaled — before
+  the fallback subtraction, not after. The difference that makes to `pick_value`
+  is exactly `(m - 1) * draft_score * need_mult`, so it is an addition, not a
+  multiplication, and needs no change to `recommend`'s shape. Same player, same
+  pick: **rank 204**, while a receiver the term does not touch stays at rank 1
+  with an unchanged `pick_value`. Exclusion falls out with no sentinel, because a
+  candidate who can never start loses his whole `draft_score`.
+  Only value above replacement is scaled: `draft_score` is value over
+  replacement, not points, so a player already below it is not made better by
+  playing less. Unclipped it lifted them, and the same receiver fell from rank 1
+  to rank 13 while his own value had not changed at all.
+- `roles.START_PROB_FLOOR` (0.05) keeps start probability off exactly zero. The
+  model sees a man ahead injured or on his bye and nothing else — not a trade, a
+  cut, a benching or a mid-season role loss — and `start_probability`'s own
+  docstring calls the result a floor rather than an estimate, so 0 asserts a
+  certainty it cannot have. Policy, not fitted, and not a workaround: the
+  arithmetic above is what makes zero safe.
 
 **Draft room presence**
 - `draft_room_stats` and `just roomstats [dump_dir]` (`roomstats.py`): who was
