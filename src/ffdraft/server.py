@@ -2540,6 +2540,20 @@ def set_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         return _emit({"error": f"could not read the roster for week {week}: "
                                f"{type(exc).__name__}: {exc}"}, indent=2)
 
+    if priced.empty:
+        # A named refusal, not an empty lineup with `projected_points: 0.0`.
+        # Running this against the live league returned exactly that, and 0.0 is
+        # a number a reader can mistake for an answer -- "your best lineup scores
+        # nothing" rather than "there is no roster to build one from". The read
+        # API withholds rosters until a draft completes, so this is the ordinary
+        # state before the season, not an edge case.
+        return _emit({"error": f"no roster to build a week {week} lineup from: "
+                               f"ESPN returned no players for your team. Rosters "
+                               f"are withheld by the read API until the draft "
+                               f"completes.",
+                      "week": week, "season": season,
+                      "shape": rosters.UNVERIFIED_SHAPE}, indent=2)
+
     starters, bench = lineup.starting_lineup(priced, league,
                                              value=lineup.WEEK_VALUE)
     slots = []
@@ -2570,6 +2584,12 @@ def set_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         # How many of the pool ESPN gave a weekly projection for, so the reader
         # can see how much of the lineup rests on the fallback.
         "espn_weekly_projections_seen": weekly_seen,
+        # And how this roster's own rows were priced. `projected_points` sums
+        # numbers from several bases, including zeros for players nothing could
+        # price, so the total is not readable without knowing the mix. Flagged
+        # by lena: a slot filled by a man with no basis at all is invisible in
+        # `unfilled_slots`, because the slot is filled.
+        "priced_by": priced[lineup.WEEK_BASIS].value_counts().to_dict(),
         "shape": rosters.UNVERIFIED_SHAPE,
     }), indent=2)
 

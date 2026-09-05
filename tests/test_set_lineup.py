@@ -173,6 +173,28 @@ class TestFailures:
         monkeypatch.setenv("ESPN_SWID", "{SOMEONE-ELSE}")
         assert "error" in _call()
 
+    def test_an_empty_roster_is_a_named_refusal_not_a_zero_point_lineup(
+            self, monkeypatch):
+        # What running this against the live league actually produced before the
+        # fix: lineup [], projected_points 0.0, every slot unfilled. None of it
+        # false, and "0.0" is a number a reader can take for an answer. Rosters
+        # are withheld until a draft completes, so this is the ordinary state
+        # before the season rather than an edge case.
+        _wire(monkeypatch, entries=[])
+        out = _call()
+        assert "error" in out
+        assert "no roster" in out["error"]
+        assert "projected_points" not in out
+
+    def test_the_payload_says_how_the_roster_was_priced(self, monkeypatch):
+        # projected_points sums several bases including zeros, so the total is
+        # not readable without the mix. A slot filled by a man nothing could
+        # price is invisible in unfilled_slots, because the slot is filled.
+        _wire(monkeypatch, weekly={"1005": 40.0})
+        by_basis = _call()["priced_by"]
+        assert by_basis[lineup.BASIS_ESPN] == 1
+        assert sum(by_basis.values()) == len(ROSTER)
+
     def test_a_failed_pull_is_an_error_payload(self, monkeypatch):
         _wire(monkeypatch)
 

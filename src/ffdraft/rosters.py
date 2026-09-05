@@ -21,6 +21,7 @@ view for `tradeBlock` and `waiverRank` and the wrong one for players.
 """
 from __future__ import annotations
 
+import json
 import os
 
 import pandas as pd
@@ -160,9 +161,15 @@ def fetch_roster_teams(league_id: str, season: int = CURRENT_SEASON,
     and everything else is pure. Cookies and URL come from `board`, which had
     five copies of that construction before this and does not need a sixth.
     """
-    params: dict[str, str] = {"view": "mRoster"}
+    # BOTH views, and mTeam is not optional. mRoster's team objects carry only
+    # `id` and `roster` -- no `owners` -- so `my_team_id` against an mRoster-only
+    # response always returns None and every caller refuses with "no team in this
+    # league is owned by ESPN_SWID". Found by running this against the live
+    # league rather than by reading it: the fixture supplies `owners` because I
+    # wrote the fixture from the shape I expected.
+    params: list[tuple[str, str]] = [("view", "mRoster"), ("view", "mTeam")]
     if week:
-        params["scoringPeriodId"] = str(int(week))
+        params.append(("scoringPeriodId", str(int(week))))
     resp = requests.get(espn_league_url(league_id, season), params=params,
                         cookies=espn_cookies(swid, espn_s2), timeout=30,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
@@ -199,13 +206,22 @@ def fetch_weekly_projections(league_id: str, season: int = CURRENT_SEASON,
     live pull carried a weekly row for 397 of 1036 players, which is why every
     caller of this needs a stated fallback rather than treating a miss as zero.
     """
+    # The filter is load-bearing, not tuning. Without it ESPN answers with a
+    # default slice -- 36 players against the live league -- so nearly every
+    # rostered player misses his weekly row and falls back, silently and for a
+    # reason that has nothing to do with him. `waivers.POOL_FILTER` is the same
+    # filter `espn_dump` captures with, so the pull here and the pull the field
+    # shapes were documented from are the same pull.
+    from .waivers import POOL_FILTER
+
     params: dict[str, str] = {"view": "kona_player_info"}
     if week:
         params["scoringPeriodId"] = str(int(week))
     resp = requests.get(espn_league_url(league_id, season), params=params,
                         cookies=espn_cookies(swid, espn_s2), timeout=30,
                         headers={"User-Agent": "ffdraft-mcp/1.0",
-                                 "X-Fantasy-Source": "kona"})
+                                 "X-Fantasy-Source": "kona",
+                                 "X-Fantasy-Filter": json.dumps(POOL_FILTER)})
     resp.raise_for_status()
     return weekly_projections(resp.json().get("players") or [], week)
 

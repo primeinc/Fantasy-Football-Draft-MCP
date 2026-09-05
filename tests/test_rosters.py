@@ -194,15 +194,30 @@ class TestFetch:
         monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
         rosters.fetch_roster_teams("123", season=2026, week=9)
         # Sent as a string: requests encodes an int identically on the wire, and
-        # a homogeneous dict is what the params type wants.
-        assert captured["params"] == {"view": "mRoster", "scoringPeriodId": "9"}
+        # a homogeneous list is what the params type wants.
+        assert ("scoringPeriodId", "9") in captured["params"]
         assert captured["url"].endswith("/seasons/2026/segments/0/leagues/123")
 
     def test_no_week_asks_for_the_current_period(self, monkeypatch):
         captured: dict = {}
         monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
         rosters.fetch_roster_teams("123", season=2026)
-        assert captured["params"] == {"view": "mRoster"}
+        assert not any(k == "scoringPeriodId" for k, _ in captured["params"])
+
+    def test_mteam_is_requested_beside_mroster(self, monkeypatch):
+        # Not optional and not tidiness. mRoster's team objects carry only `id`
+        # and `roster`, with no `owners`, so `my_team_id` against an mRoster-only
+        # response returns None and every caller refuses with "no team in this
+        # league is owned by ESPN_SWID". The live league returned exactly that.
+        # The fixture below cannot catch it, because I wrote the fixture with
+        # `owners` on it -- from the shape I expected rather than the one ESPN
+        # sends. Only the live run found it, which is why this asserts the
+        # request rather than the parse.
+        captured: dict = {}
+        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        rosters.fetch_roster_teams("123", season=2026, week=9)
+        views = [v for k, v in captured["params"] if k == "view"]
+        assert sorted(views) == ["mRoster", "mTeam"]
 
     def test_cookies_come_from_the_shared_builder_brace_wrapped(self, monkeypatch):
         # ESPN rejects a bare SWID. The wrapping lived in five copies before
