@@ -346,6 +346,14 @@ All notable changes to this project. Format follows
   measured against nothing — seven of ten in the 2022 week-10 role top had a
   single recent game. So the tightest configuration is the one admitting players
   whose baseline does not exist, which is worth knowing next to the numbers.
+- **The spread half of that table does not support a comparison**, and marge said
+  so about her own numbers rather than leaving it to be found. Requiring a full
+  prior window removes the no-baseline players *and* shrinks the sample, so some
+  of the widening is fewer cohorts rather than more instability, and the two were
+  not separated. The direction of the effect change is sound; the spread column
+  is two changes at once. It is recorded because the effect column is the
+  counterweight that matters, not because the spreads are readable — and the
+  spreads were already not a noise estimate for the overlap reason above.
 - **Window sweep**, promised when the two-week/three-week choice was made, and
   the sign does not depend on it. `(recent, prior)` against effect and worst
   spread: (1,2) -8.61/7.05, (1,3) -8.62/10.50, (2,2) -8.34/3.65, **(2,3)
