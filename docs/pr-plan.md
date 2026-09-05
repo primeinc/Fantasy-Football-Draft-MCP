@@ -134,6 +134,34 @@ root, so the silent configuration — both paths importable, the wrong one
 winning, everything green — fails loudly instead. Do not read "we have the
 revert check" as covering what that test exists for.
 
+### The one defect this codebase keeps making
+
+`NaN` is truthy, and pandas hands it back wherever a value is absent. Every
+idiom that treats "missing" as "falsy" is therefore wrong here, and reads as
+obviously correct. Three separate instances surfaced in a single integration
+session, in three modules, written by three people:
+
+    x or fallback              the fallback is never reached; NaN wins
+    bool(row.get(k, False))    a row with no value reports True
+    if row.get(k):             a missing value takes the branch
+
+What each one shipped, in the tool's own voice: a defense whose injury line read
+"ESPN status nan"; a board-priced player labelled a replacement-level stand-in
+with the user told his number is not real; and a roster reported as `"NaN": 1`,
+which then raised `TypeError: '<' not supported between instances of 'str' and
+'float'` when the tool sorted its own output.
+
+The remedy is the same each time and it is not a style choice. Ask the question
+you mean: `pd.notna(x)` for presence, `x is True` for a flag, `x is None` for
+absence of a key. Never let truthiness stand in for any of them. On review, the
+grep is cheap and worth running over any diff that reads a frame:
+`\bor\b.*get\(|bool\(.*get\(`.
+
+Serialisation is the same hazard wearing different clothes: `json.dumps` writes
+a float NaN as a bare `NaN` literal, which Python reads back and every other
+client rejects. That is why every tool payload leaves through one sanitising
+emit, with a static test that fails if a handler calls `json.dumps` directly.
+
 Keeping this document current is part of the merge, not a pass at the end. It
 went stale once by 46 commits, and the worst of it was a note telling the reader
 to work around a defect that had since been fixed.
