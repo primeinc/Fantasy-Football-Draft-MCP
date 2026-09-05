@@ -117,7 +117,10 @@ none exist in this league yet. Whether completed drafts post picks as transactio
 untested until a draft completes.
 
 Pick timing and presence over time exist only in a client that was connected; the watch
-records both from connect onward.
+records both from connect onward, and `dump_draft` writes them out (`live/lines.jsonl`).
+The join burst after `INIT` is `TOKEN`, `CLOCK`, `AUTOSUGGEST <playerId>` (ESPN's own
+suggestion for your next pick), then the chat replay. `leagueHistory/<id>` answers 404
+for this league with or without `seasonId`: a first-season league has no history there.
 
 ### Players the board cannot model
 

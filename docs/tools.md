@@ -167,6 +167,20 @@ session. Logs every event to `~/.ffdraft/state/watch_<league>.log` and keeps the
 pick state current so `who_should_i_pick` is right when you come back. Pauses if
 you open the draft room, like the tool.
 
+### `dump_draft` / `just dump <league_id> [out_dir]`
+Everything ESPN reports about the league's draft, written under
+`<out_dir>/espn_dump_<league>_<season>_<stamp>/` (default `out_dir` is the
+working directory; the pattern is gitignored because `mTeam` carries every
+member's name and SWID). `read_api/<view>.json` is one file per read-API view
+(`espn_dump.READ_VIEWS`, plus `kona_player_info` with the full player pool and
+`leagueHistory`), saved as received; a non-200 view is still written and listed
+under `errors` in `manifest.json`. `live/` holds the draft room's `INIT`
+payload raw (`init.b64`) and decoded (`init.json`), the picks with draft slots
+(`picks.json`), and `lines.jsonl`: every socket line with a receive timestamp
+in ms. From a running watch that is every line since it joined, the only
+timestamped record of picks that exists; `just dump` opens the room once
+instead and captures the join burst only, bumping a browser room or watch.
+
 ### `record_pick` / `undo_pick` / `reset_draft` / `draft_status`
 Manual board management. `record_pick` accepts shorthand.
 

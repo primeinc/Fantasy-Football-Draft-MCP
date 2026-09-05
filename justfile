@@ -68,6 +68,34 @@ watch $league_id:
     except KeyboardInterrupt:
         print("stopped", flush=True)
 
+# Dump everything ESPN reports about a league's draft into $out_dir (default: cwd).
+# Cookies come from .mcp.json. Opens the draft room once for the snapshot, which
+# bumps a browser room or a running watch; use the dump_draft tool while watching.
+[script]
+dump $league_id $out_dir='.':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import board as bd
+    from ffdraft import espn_dump
+    from ffdraft.config import CURRENT_SEASON
+
+    league_id, out_dir = os.environ["league_id"], os.environ["out_dir"]
+    season = int(os.environ.get("FFDRAFT_SEASON", CURRENT_SEASON))
+    info = bd.espn_league_context(league_id, season, env["ESPN_SWID"], env["ESPN_S2"])
+    m = espn_dump.dump_draft(league_id, out_dir, season, team_id=info["my_team_id"])
+    print(m["root"])
+    for e in m["read_api"]:
+        print(f"  {e['view']:<26} {e['status']} {e['bytes']:>9} bytes")
+    for e in m["live"]:
+        print(f"  live/{e['file']:<21} {json.dumps({k: v for k, v in e.items() if k != 'file'})}")
+    if m["errors"]:
+        print("errors:", *m["errors"], sep="\n  ")
+
 # Probe every external data surface; see docs/data-sources.md
 [script]
 surfaces:

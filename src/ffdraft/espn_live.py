@@ -650,6 +650,19 @@ def fetch_init(
     `SELECTED <teamId> <playerId> <slotId>`. The SWID keeps its braces and goes
     into the query string verbatim; a percent-encoded one is rejected.
     """
+    init_b64, others = fetch_init_b64(league_id, season, team_id, swid, espn_s2, timeout)
+    return decode_init(init_b64), others
+
+
+def fetch_init_b64(
+    league_id: str,
+    season: int,
+    team_id: int,
+    swid: str,
+    espn_s2: str,
+    timeout: float = 15.0,
+) -> tuple[str, list[str]]:
+    """fetch_init without the decode: the INIT payload as ESPN sent it."""
     from websockets.exceptions import ConnectionClosed
     from websockets.sync.client import connect
 
@@ -707,4 +720,4 @@ def fetch_init(
         except ConnectionClosed:
             pass
 
-    return decode_init(init_b64), others
+    return init_b64, others

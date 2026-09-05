@@ -67,6 +67,10 @@ class DraftWatch:
         self.picks_seen = 0
         self.connected = False
         self.last_line = ""
+        # Every line received since the watch started, with a receive timestamp:
+        # the only timestamped pick record ESPN lets anyone keep.
+        self.lines: list[tuple[int, str]] = []
+        self.init_b64: str | None = None
         # Set once the INIT snapshot has been applied; callers wait on this.
         self.ready = asyncio.Event()
         # `LEFT <team> <swid> 2` for our own team precedes a duplicate-connection close.
@@ -152,9 +156,11 @@ class DraftWatch:
 
     async def handle_line(self, line: str) -> None:
         self.last_line = line
+        self.lines.append((int(time.time() * 1000), line))
         fields = line.split(" ")
         kind = fields[0]
         if kind == "INIT" and len(fields) > 1:
+            self.init_b64 = fields[1]
             init = espn_live.decode_init(fields[1])
             self.slot_of = espn_live.slot_by_team(init)
             teams = init.league.draft_teams if init.league is not None else []

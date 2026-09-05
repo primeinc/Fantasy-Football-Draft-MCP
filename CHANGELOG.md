@@ -51,6 +51,14 @@ All notable changes to this project. Format follows
   (`espn` / `consensus` / `modelled`); a board cached under consensus is
   repriced in place on the next load (`server._price_board`).
 
+**Draft dump**
+- `dump_draft` tool and `just dump <league_id> [out_dir]` (`espn_dump.py`):
+  every read-API view as its own JSON file, the full player pool, league
+  history, the draft room's INIT payload raw and decoded, the picks, and a
+  timestamped log of every socket line the watch received. `DraftWatch`
+  now keeps `init_b64` and `lines` for it; `espn_live.fetch_init_b64` returns
+  the payload undecoded. Output is gitignored (`espn_dump_*/`).
+
 **League rules**
 - `league_rules`: the league's settings as ESPN states them (`mSettings`):
   draft, roster slots and position limits, every scoring item, schedule and

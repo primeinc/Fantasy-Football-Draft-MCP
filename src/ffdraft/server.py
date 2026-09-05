@@ -1452,6 +1452,36 @@ async def draft_room(league_id: str, chat_limit: int = 10) -> str:
 
 
 @mcp.tool()
+async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_SEASON) -> str:
+    """Write everything ESPN reports about this league's draft under
+    `<out_dir>/espn_dump_<league>_<season>_<stamp>/`: every read-API view as
+    its own JSON file, the player pool with ownership and ADP, league history,
+    and the draft room's INIT snapshot raw and decoded with the picks, plus a
+    timestamped log of every socket line the running watch has received. Uses
+    the watch's socket when one is running; otherwise opens the room once,
+    which bumps any other connection for your team. Returns the manifest with
+    the absolute path."""
+    import asyncio
+    import os
+
+    from . import espn_dump
+
+    entry = _WATCHES.get(league_id)
+    init_b64 = lines = None
+    team_id = None
+    if entry is not None:
+        w, _task = entry
+        init_b64, lines = w.init_b64, list(w.lines)
+    else:
+        info = bd.espn_league_context(league_id, season, os.environ.get("ESPN_SWID"),
+                                      os.environ.get("ESPN_S2"))
+        team_id = info["my_team_id"]
+    manifest = await asyncio.to_thread(
+        espn_dump.dump_draft, league_id, out_dir, season, None, None, init_b64, lines, team_id)
+    return json.dumps(manifest, indent=2)
+
+
+@mcp.tool()
 async def stop_watch(league_id: str) -> str:
     """Stop the draft-room watch for a league."""
     entry = _WATCHES.pop(league_id, None)
