@@ -924,6 +924,14 @@ All notable changes to this project. Format follows
   Even the two seasons whose blocks agree carry `blocks_agree_p_null` 0.5: two
   blocks of a term that does nothing agree half the time, so agreement here is
   an observation and not a pass. The conflicts stay informational.
+  **Baseline for those four rows: the model before #26.** `bye_backtest` runs
+  every trial through `recommend`, and #26 changed
+  `expected_best_at_next_pick`, so `marginal_value` moves for every position on
+  every board and these numbers will not reproduce exactly on a head that has
+  it. The change is far inside a spread that reaches 29.6, so nothing here is
+  expected to flip — but "expected" is the word this whole entry exists to
+  distrust, and the table should be re-run against the integrated head before
+  anyone quotes it as current. Flagged by marge, who made the change.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 

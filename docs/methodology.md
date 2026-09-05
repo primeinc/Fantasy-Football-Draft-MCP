@@ -209,6 +209,11 @@ that season was one half of a disagreeing pair, and it was the season the origin
 conclusion rested on. The conclusion (weight 0) survives; the evidence for it did not,
 and the entry in [CHANGELOG.md](../CHANGELOG.md) now says which.
 
+Every number from this harness carries the model it was measured against. Anything that
+changes `recommend` changes `_draft_trial`, which is the harness, so a figure quoted
+across such a change is quoting a different baseline — the bye rows above predate the
+`expected_best_at_next_pick` change and say so where they are recorded.
+
 Two things that follow, and neither is optional when quoting a number from it. The
 spread belongs to the term as much as to the harness — the bye penalty over 2022 gave
 +8.1 and +6.3 while changing five rosters, against forty for the roles weights — so read

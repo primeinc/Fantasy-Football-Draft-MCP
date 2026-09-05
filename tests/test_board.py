@@ -877,6 +877,39 @@ class TestAuditState:
                           "position": ["RB", "RB", "WR", "WR", "RB"]})
         return board.rekey(b)
 
+    def test_record_pick_stores_the_position_it_reports(self, tmp_path, monkeypatch):
+        # It matched the row, reported the position in the answer, and threw it
+        # away. Nothing counted picks by position until plan_my_draft did: it
+        # decides whether a required position can still be exhausted by
+        # comparing what is left against what the league has taken, so a
+        # hand-logged draft answers "none taken" for every position. Late in one
+        # that becomes `continue` and the position is dropped from the plan.
+        from ffdraft import board, server
+        from ffdraft.config import LeagueSettings
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=16, draft_slot=4, rounds=14)
+        monkeypatch.setattr(server, "_settings", lambda: (league, None))
+        monkeypatch.setattr(server, "_build_board", lambda: board.rekey(pd.DataFrame(
+            {"name": ["Ja'Marr Chase", "Atlanta Falcons D/ST"], "position": ["WR", "DST"]})))
+        server.record_pick("Ja'Marr Chase", 1, 4)
+        server.record_pick("Atlanta Falcons D/ST", 2, 5)
+        recorded = {p["name"]: p["position"] for p in board.DraftState(league).picks}
+        assert recorded == {"Ja'Marr Chase": "WR", "Atlanta Falcons D/ST": "DST"}
+
+    def test_record_pick_leaves_no_position_when_the_board_has_no_row(self, tmp_path,
+                                                                     monkeypatch):
+        from ffdraft import board, server
+        from ffdraft.config import LeagueSettings
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=16, draft_slot=4, rounds=14)
+        monkeypatch.setattr(server, "_settings", lambda: (league, None))
+        monkeypatch.setattr(server, "_build_board", lambda: board.rekey(pd.DataFrame(
+            {"name": ["Ja'Marr Chase"], "position": ["WR"]})))
+        server.record_pick("Nobody At All", 1, 4)
+        assert board.DraftState(league).picks[0]["position"] is None
+
     def test_unmodelled_own_pick_still_counts_by_recorded_position(self, tmp_path, monkeypatch):
         # MarShawn Lloyd: on the user's roster, no modelled season, so no board row.
         # ESPN's crosswalk still knows he is a running back.
