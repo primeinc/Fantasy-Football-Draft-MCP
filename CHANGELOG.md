@@ -112,6 +112,35 @@ All notable changes to this project. Format follows
   for the pick on the clock. Reported by `draft_replay`, `predict_pick`,
   `just replay` and `just predict`.
 
+**Team-specific effects in the choice model: measured, not adopted**
+- `choice.TeamConditionalLogit`: league weights plus a per-team deviation on the
+  three rank features and on new position indicators (`is_QB`/`is_RB`/`is_WR`/
+  `is_TE`), fitted by ascending one penalised average log-likelihood — `L2` on
+  the league weights, `TEAM_L2` (0.5, 25x stronger) on each team's deviation, so
+  a deviation has to survive a much harder penalty on seven or eight picks.
+  Roster need, positional run and injury stay league-wide: `need_mult` is already
+  computed from that team's own roster, so a deviation on it would fit the same
+  thing twice.
+- Off by default (`choice.TEAM_EFFECTS = False`). `replay_draft(team_effects=
+  True)` and `just teameffects [l2]` turn it on and add two predictors to the
+  same walk-forward pass: `blend_team` and its control `blend_pos`, which has
+  identical features and no deviations. Without that control a comparison
+  against the plain blend credits the deviations with the position intercepts'
+  work — which is exactly what happened on the first run here (`blend_team`
+  looked 0.043 better than `blend`, and all of it was the intercepts).
+- Live record, 122 picks, 117 scored out of sample, blend log loss 3.107,
+  blend_pos 3.058. `blend_team` minus `blend_pos` by shrinkage: TEAM_L2 0.02
+  +0.215, 0.05 +0.101, 0.2 +0.021, 0.5 +0.006, 2.0 +0.001. Worse at every level
+  and monotonically approaching the no-effects model as the penalty rises: the
+  best team-effects model on this record is the one with no team effects. The
+  code path therefore stays off and the default blend is unchanged.
+- Recorded because it is the more interesting half of the result: the *league*
+  position intercepts alone (`blend_pos`) do beat the blend on log loss (3.058
+  vs 3.107) and top-1 (0.197 vs 0.188) and top-5 (0.598 vs 0.564), but lose on
+  top-3 (0.453 vs 0.487). Not a clean win, one draft, and out of scope for a
+  change about per-team effects, so the shipped blend is left alone and the
+  numbers are here for whoever picks it up.
+
 **Predicting other teams**
 - `predict_pick` (`replay.predict_pick`, `replay.team_tendency`): the model's
   choice for another team's roster, ESPN's list order, how many higher-ranked

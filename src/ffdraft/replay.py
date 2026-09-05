@@ -65,12 +65,14 @@ def room_drift(board: pd.DataFrame, state: DraftState, last: int = 0) -> dict:
 
 def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
                  candidates: int = 10, adp_shift: float | dict[str, float] = 0.0,
-                 walk_forward: bool = True) -> dict:
+                 walk_forward: bool = True, team_effects: bool | None = None) -> dict:
     """Score every recorded pick against the model and return per-pick rows,
     per-team totals, and the survival model's calibration. `adp_shift` is
     passed to recommend() so the calibration can be read with and without the
     room's drift applied. With `walk_forward` the choice predictors are scored
-    prequentially as well and a forecast for the pick on the clock is returned."""
+    prequentially as well and a forecast for the pick on the clock is returned.
+    `team_effects` adds `choice`'s per-team predictor to that score sheet,
+    defaulting to `choice.TEAM_EFFECTS` (off)."""
     b = board.copy()
     if "_key" not in b.columns:
         b["_key"] = b["name"].map(norm_name)
@@ -81,7 +83,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
     rows: list[dict] = []
     forecasts: list[tuple[float, bool, int, str]] = []
     taken: set[str] = set()
-    wf = choice.WalkForward() if walk_forward else None
+    wf = choice.WalkForward(team_effects=team_effects) if walk_forward else None
     recent_positions: list[str] = []
 
     def recommend_for(slot: int, overall: int, pool: pd.DataFrame) -> tuple[pd.DataFrame, int | None]:
@@ -98,7 +100,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         pool = b[~b["_key"].isin(taken)]
         recs, next_pick = recommend_for(slot, overall, pool)
         if wf is not None and len(recs):
-            wf.observe(recs, key if key in recs.index else None, recent_positions, overall)
+            wf.observe(recs, key if key in recs.index else None, recent_positions, overall, slot)
         where = np.flatnonzero(recs.index.to_numpy() == key)
         rnd = (overall - 1) // league.teams + 1
         row = {
@@ -173,7 +175,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
             pool = b[~b["_key"].isin(taken)]
             recs, next_pick = recommend_for(slot, on_clock, pool)
             out["forecast"] = {"pick": on_clock, "slot": slot, "next_pick": next_pick,
-                               **wf.forecast(recs, recent_positions)}
+                               **wf.forecast(recs, recent_positions, slot=slot)}
     return out
 
 
@@ -265,7 +267,7 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
             take_pos, take_proj = str(row["position"]), round(float(row["proj_points"]), 1)
             basis = "model recommendation for the simulated roster"
         else:
-            p_blend = wf.probabilities(sim_recs, sim_recent)
+            p_blend = wf.probabilities(sim_recs, sim_recent, slot=team_slot)
             i = (int(np.argmax(p_blend)) if policy == "argmax"
                  else int(rng.choice(len(p_blend), p=p_blend)))
             row = sim_recs.iloc[i]
@@ -294,7 +296,8 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
         # it learn from it.
         real_recs = recs_for(team_slot, overall, real_taken, real_rosters)
         if len(real_recs):
-            wf.observe(real_recs, key if key in real_recs.index else None, real_recent, overall)
+            wf.observe(real_recs, key if key in real_recs.index else None, real_recent,
+                       overall, team_slot)
         real_pos = str(pos_of[key]) if on_board else p.get("position")
         if real_pos:
             count(real_rosters, team_slot, str(real_pos))

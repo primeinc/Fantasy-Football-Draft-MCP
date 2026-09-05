@@ -183,7 +183,18 @@ injury status), each fitted on picks 1..t-1 only and scored on pick t before
 learning it. `predictors` reports out-of-sample log loss, top-1/3/5 rates and
 median rank per predictor; `forecast` gives each predictor's top five with
 probabilities, the blend's probability by position, and the fitted weights.
-No team-specific effects: eight picks per team cannot support them.
+
+Team-specific effects exist in the code and are **off** (`choice.TEAM_EFFECTS`).
+`choice.TeamConditionalLogit` gives each team a deviation on the three rank
+features and on position indicators, shrunk to the league weights by an L2
+(`TEAM_L2`) an order of magnitude stronger than the league's. Turning it on
+(`replay_draft(team_effects=True)`, `just teameffects [l2]`) adds two predictors
+to the score sheet: `blend_team` and its control `blend_pos`, which has the same
+features without the deviations, so the pair separates what the position
+intercepts buy from what being per-team buys. On the live record the deviations
+are worse out of sample at every shrinkage tried — see the numbers in
+[CHANGELOG.md](../CHANGELOG.md). Seven or eight picks per team is not enough
+evidence to move a weight further than the penalty pulls it back.
 
 ### `draft_strength`
 Every team's draft so far ranked by projected starter points: the best lineup
