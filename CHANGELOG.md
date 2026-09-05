@@ -1277,6 +1277,24 @@ All notable changes to this project. Format follows
   yards-allowed bands carry `points` 0 and their real values per slot 16.
   Kicker and D/ST statIds are named from the espn-api map.
 
+**Trade evaluator**
+- `evaluate_trade(give, get, counterparty_slot, league_id)` and `trade.py`: both
+  rosters simulated week by week on their own starting lineups over the fantasy
+  season, with byes and injury availability, reported as points before and after
+  with per-position depth and the counterparty's draft-record tendencies.
+- Every estimate carries `block_spread` from disjoint seed blocks, and a side
+  whose blocks disagree in sign is reported as no call rather than as a win. The
+  agreement contract is `adp.block_agreement`, extracted from `_block_summary` so
+  the trade harness and the paired-draft backtests state it the same way instead
+  of growing two dialects of it.
+- A week pays the player's per-game rate, not his season projection: the board's
+  `proj_points` is `adj_ppg * exp_games`, so paying the projection and drawing
+  availability as well would charge the injury risk twice. Availability is
+  `roles.weekly_availability`, the same mapping `exp_games` feeds.
+- Availability draws are keyed by (seed, player, week) rather than taken from a
+  sequential stream, so a player the trade does not touch has an identical season
+  on both sides of it and the delta is the trade rather than the reshuffle.
+
 **Draft dump**
 - `dump_draft` tool and `just dump <league_id> [out_dir]` (`espn_dump.py`):
   every read-API view as its own JSON file, the full player pool, league

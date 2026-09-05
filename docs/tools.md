@@ -434,6 +434,44 @@ slots still open, and pick count. Names come from the running watch when
 `league_id` is given; otherwise teams are labelled by slot. Picks the board
 cannot model fill their slot at 0 points.
 
+### `evaluate_trade`
+Score a proposed trade for both sides over the rest of the season. `give` and
+`get` are comma-separated names: `give` leaves your roster, `get` arrives on it.
+`counterparty_slot` is their draft slot; with a running watch for `league_id`
+both teams are named.
+
+Each side's roster is simulated week by week on its own starting lineup, and
+each side is reported as points before and after, per-position depth before and
+after, and a verdict. The counterparty also gets their draft record's
+tendencies: picks by position and `mean_adp_delta`, which is positive when they
+let players fall to them and negative when they reached.
+
+Both sides can gain. The same player is worth different points to two different
+lineups, so a swap of two teams' surpluses improves both; two sides both losing
+is the tell that the trade empties a starting slot somebody was filling.
+
+Every estimate arrives beside `block_spread`, the distance between disjoint seed
+blocks of the same configuration, which is this harness's own noise. **A side
+whose blocks disagree in sign is reported as no call, not as even**: that
+difference has not been measured. Agreement is not a pass either, and
+`blocks_agree_p_null` says what it is worth — at the default of two blocks, one
+coin flip.
+
+What is simulated: a week is the player's per-game rate if he is available, and
+0 on his bye or when his availability draw fails. Availability comes from
+`roles.weekly_availability`, the same mapping the board's own `exp_games` feeds.
+The board's `proj_points` is `adj_ppg * exp_games`, so paying `proj_points` per
+week would charge the injury risk twice; it does not. Week-to-week scoring
+variance is deliberately **not** modelled: the board carries no distribution for
+it, and inventing one would move the very spread the reader is meant to judge
+the estimate against. Kicker and defense slots are not scored, which is
+`best_weekly_lineup`'s existing behaviour.
+
+Rosters come from the draft record, so a player added after the draft is not on
+it yet. Naming a player on the wrong roster, or one with no board row, stops the
+evaluation and says which: a trade scored without one of its own pieces is a
+different trade.
+
 ### `league_rules`
 The ESPN league's rules as ESPN states them, from the `mSettings` view: draft
 type, rounds and clock, starting slots, bench and IR, position limits, every

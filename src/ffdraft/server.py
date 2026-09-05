@@ -64,7 +64,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import adp as adp_mod
 from . import board as bd
-from . import features, model, names, sources
+from . import features, model, names, sources, trade
 from .config import (
     CURRENT_SEASON,
     DATA_DIR,
@@ -2061,6 +2061,50 @@ def draft_strength(league_id: str = "") -> str:
 
 
 @mcp.tool()
+def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
+                   league_id: str = "", n_trials: int = 0, blocks: int = 0,
+                   seed: int = 0) -> str:
+    """Score a proposed trade for both sides over the rest of the season.
+
+    `give` and `get` are comma-separated player names: `give` leaves your roster,
+    `get` arrives on it. `counterparty_slot` is their draft slot; with a running
+    watch for `league_id` the teams are named too.
+
+    Each side is simulated week by week on its own starting lineup, with byes and
+    injury availability, and reported as points before and after with the spread
+    between disjoint seed blocks beside it. A side whose blocks disagree in sign
+    is reported as no call rather than as a win: that difference is inside the
+    harness's own noise. Both sides can gain, because the same player is worth
+    different points to two different lineups.
+
+    Rosters come from the draft record, so a player added after the draft is not
+    on it yet."""
+    state = _state()
+    b = _build_board()
+    give_names = [n.strip() for n in give.split(",") if n.strip()]
+    get_names = [n.strip() for n in get.split(",") if n.strip()]
+    by_slot: dict[int, list[dict]] = {}
+    for p in state.picks:
+        by_slot.setdefault(p["slot"], []).append(p)
+    if counterparty_slot == state.my_slot:
+        return _emit({"ok": False,
+                      "errors": [f"counterparty_slot {counterparty_slot} is your own slot"]},
+                     indent=2)
+    out = trade.evaluate(
+        b, by_slot, state.league, state.my_slot, counterparty_slot,
+        give_names, get_names,
+        n_trials=n_trials or trade.DEFAULT_TRIALS,
+        blocks=blocks or trade.DEFAULT_BLOCKS, seed=seed)
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None and out.get("ok"):
+        w, _task = entry
+        labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
+        out["you"]["team"] = labels.get(state.my_slot)
+        out["counterparty"]["team"] = labels.get(counterparty_slot)
+    return _emit(out, indent=2, default=str)
+
+
+@mcp.tool()
 async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_SEASON) -> str:
     """Write everything ESPN reports about this league's draft under
     `<out_dir>/espn_dump_<league>_<season>_<stamp>/`: every read-API view as
@@ -2113,7 +2157,7 @@ async def stop_watch(league_id: str) -> str:
 # dependencies. server.py itself is reloaded last, in place.
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
-                "watch", "roomstats", "roles", "waivers")
+                "watch", "roomstats", "roles", "trade", "waivers")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

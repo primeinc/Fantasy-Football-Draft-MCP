@@ -981,20 +981,17 @@ def _paired_blocks(draft_pair, score, n_trials: int, blocks: int, seed: int,
     return _block_summary(rows)
 
 
-def _block_summary(rows: list[dict]) -> dict:
-    """Pool a set of block rows, keeping the spread and the agreement visible.
+def block_agreement(gains: list[float]) -> dict:
+    """The reporting contract for a set of per-block gains, whatever produced them.
 
-    `improvement` and `trials_improved_of_changed` are not two views of one
-    quantity and must not be reasoned about together. The first is a magnitude
-    over every trial; the second is a win rate whose denominator is the trials
-    the change actually fired on, which is a post-treatment variable. Rate over
-    the trials it touched is the right denominator for a rate, and it is not a
-    denominator the magnitude shares.
+    One mean is never reported alone: the spread between blocks of the same
+    configuration is this harness's own noise, and it is the number the mean has
+    to be read against. Extracted so a harness that is not a paired draft --
+    `trade.py` scores two fixed rosters over simulated seasons -- states
+    agreement the same way rather than growing a second dialect of it.
     """
-    gains = [r["improvement"] for r in rows]
     agree = bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains))
     return {
-        "blocks": rows,
         "improvement": round(float(np.mean(gains)), 1) if gains else None,
         "block_improvements": gains,
         # The distance between blocks of the same configuration: the harness's
@@ -1007,7 +1004,23 @@ def _block_summary(rows: list[dict]) -> dict:
         # sign with probability 2^-(k-1). At the default of two blocks that is
         # one coin flip, so `blocks_agree: true` is not a pass and this field
         # sits beside it to say so without needing the docs open.
-        "blocks_agree_p_null": round(0.5 ** (len(rows) - 1), 4) if rows else None,
+        "blocks_agree_p_null": round(0.5 ** (len(gains) - 1), 4) if gains else None,
+    }
+
+
+def _block_summary(rows: list[dict]) -> dict:
+    """Pool a set of block rows, keeping the spread and the agreement visible.
+
+    `improvement` and `trials_improved_of_changed` are not two views of one
+    quantity and must not be reasoned about together. The first is a magnitude
+    over every trial; the second is a win rate whose denominator is the trials
+    the change actually fired on, which is a post-treatment variable. Rate over
+    the trials it touched is the right denominator for a rate, and it is not a
+    denominator the magnitude shares.
+    """
+    return {
+        "blocks": rows,
+        **block_agreement([r["improvement"] for r in rows]),
         "trials_improved_of_changed": sum(r["trials_improved_of_changed"] for r in rows),
         "trials_changed": sum(r["trials_changed"] for r in rows),
         "players_swapped": sum(r["players_swapped"] for r in rows),
