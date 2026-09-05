@@ -613,29 +613,55 @@ All notable changes to this project. Format follows
   has happened rather than projected from the start of the draft, so it is exact
   at the current pick and rises to the whole remainder by the last one, which
   makes it non-decreasing by construction.
-- Offered index across the seven remaining picks, both positions: **0, 1, 5, 6,
-  9, 10, 14**, against 0, 0, 0, 0, 15, 15, 15 before. Defenses run Texans → Rams
-  → Lions → Eagles → Chiefs → Chargers → 49ers; kickers Dicker → Mevis → Butker
-  → Little → Cairo Santos → Trey Smack → McPherson. Still no ADP, no threshold
-  and no fitted constant: the two inputs are `starters * teams` and the recorded
-  picks' own positions.
+- Offered index across the seven remaining picks, measured with the roster held
+  fixed so the two runs are comparable:
+
+        DST   before  0, 1, 5, 9, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
+        K     before  0, 0, 7, 8, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
+
+  Defenses now run Texans → Rams → Lions → Eagles → Chiefs → Chargers → 49ers.
+  Still no ADP, no threshold and no fitted constant: the two inputs are
+  `starters * teams` and the recorded picks' own positions.
+- **Correcting two things I published about this change.** An earlier draft of
+  this entry gave the "before" column as 0, 0, 0, 0, 15, 15, 15. That was not
+  what the plan was offered; it was a description of *when the counting rule
+  fired*, which is a different quantity. The real before column is above, and on
+  this board **it is already monotone** — so the "#1 → #16 jump between
+  consecutive turns" is a description of the mechanism, not something this
+  record exhibits. What #32 actually removes here is the size of the steps
+  (9 → 15 for defenses, 8 → 15 for kickers) and the dependence on ADP, plus the
+  possibility of the jump on a board that does show it.
+- **The mechanism is the opposite of what I first claimed**, and it is more
+  interesting. I wrote that the defense is worth less at every pick after the
+  change. It is worth *more* at pick 164 — pick_value 3.25 → 3.89 — because the
+  offer improves from the ninth-best defense to the seventh. The reason is that
+  the survival filter is systematically biased against the best defenses: "best
+  defense" and "earliest ADP" are the same players, so they are the first the
+  filter discards. The counting rule ignores ADP entirely and therefore offers a
+  better one. `zero_rb` and `hero_rb` take the defense at 164 because 3.89 beats
+  Alvin Kamara's 3.56, where 3.25 did not.
+  My earlier "before" figure of 10.02 at rank 1 came from a probe in which I
+  built the old pool as *every surviving defense*, which was never the old pool —
+  a baseline I constructed rather than measured. dave independently got 3.25 and
+  attributed the difference to his own probe; it was mine.
 - The anchor is the reason it is exact rather than pessimistic, and it only works
   because `record_pick` stores the position it resolves (lena's 053290b). Without
   that the count reads zero for every position and this silently reverts to
   projecting from pick 1, which offered the ninth-best defense at the current
   pick instead of the best. A pick logged without a position therefore makes the
   rule *more* conservative, never less — wrong in the safe direction, and tested.
-- I said I would check rather than assume whether the early picks moved, and
-  they did — my prediction was wrong. Under `zero_rb` and `hero_rb` the plan now
-  takes the defense at 164 and the kicker at 196, where both used to come at 196
-  and 221. The reason is the point of the change rather than a side effect: the
-  defense is worth *less* at every pick now (at 164 its pick_value falls 10.02 →
-  3.89 and its rank among candidates 1 → 5, because the plan is offered the
-  Eagles rather than the Texans), but waiting is worth less still, since a later
-  turn now honestly offers a worse defense instead of pretending the best one
-  will still be there. A plan that knows waiting costs it something takes the
-  slot earlier. `balanced` and `robust_rb` are unchanged, and all four still
-  finish with exactly one kicker and one defense.
+- I said I would check rather than assume whether the early picks moved, and they
+  did — my prediction was wrong. Under `zero_rb` and `hero_rb` the plan takes the
+  defense at 164 and the kicker at 196, where both used to come at 196 and 221.
+  Measured through the plan's own loop rather than a reconstruction: at 164 the
+  offered defense goes from the Chiefs (index 9, pick_value 3.25) to the Eagles
+  (index 6, 3.89), and 3.89 beats Alvin Kamara's 3.56 where 3.25 did not.
+  `balanced` and `robust_rb` are unchanged, and all four finish with exactly one
+  kicker and one defense.
+  The pre-registered check is the only reason any of this was noticed, and the
+  first explanation I gave for it was wrong in both halves — see the correction
+  above. Writing down what I expected before measuring cost nothing; the story I
+  told afterwards cost a reviewer's time and would have shipped.
 
 **Every starting slot the league requires**
 

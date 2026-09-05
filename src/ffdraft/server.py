@@ -1446,15 +1446,25 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
     `league.starters[pos] * league.teams` and the recorded picks' own positions.
 
     This is applied at *every* turn, which is #32 and otto's finding. It used to
-    apply only once the availability filter had emptied the position, and the
-    handover between the two was a cliff: while the filter kept a defense the
-    plan was offered the *best* one, and the turn it emptied, the plan was
-    offered the *sixteenth*. On the live board that is picks 157 and 189 — the
-    offered player jumping from #1 to #16 between consecutive turns, the wrong
-    direction for a quantity that should decay as the draft goes on. Counting at
-    every turn makes it monotone by construction: 0, 1, 5, 6, 9, 10, 14 across
-    the same seven picks. The filter no longer decides required positions at
-    all, which is what otto's threshold table showed it was never doing.
+    apply only once the availability filter had emptied the position, so what the
+    plan was offered depended on ADP until the filter gave up and on counting
+    afterwards. Offered index across a live slot's seven remaining picks, roster
+    held fixed:
+
+        DST   before  0, 1, 5, 9, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
+        K     before  0, 0, 7, 8, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
+
+    Two things that are easy to get wrong about those numbers, both of which I
+    did get wrong before measuring. The before column is already monotone on this
+    board, so the "#1 to #16 between consecutive turns" that motivated the task
+    describes the mechanism rather than this record; what counting at every turn
+    buys here is smaller steps and no ADP dependence, plus the guarantee on a
+    board that would show the jump. And the change makes the mid-draft offer
+    *better*, not worse — index 9 to index 6 at pick 164 — because the survival
+    filter is biased against exactly the defenses worth having: "best defense"
+    and "earliest ADP" are the same players, so they are the first it discards.
+    The filter no longer decides required positions at all, which is what otto's
+    threshold table showed it was never usefully doing.
 
     The count of what the league has taken comes from the recorded picks' own
     positions, so a pick logged without one makes this more conservative, not
