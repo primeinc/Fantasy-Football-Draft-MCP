@@ -155,7 +155,10 @@ All notable changes to this project. Format follows
   identical fix for `role_mult`, after a `start_prob` measurement had already
   been taken against the broken form and had to be thrown away; otto measured
   the same defect a third time in `need_mult`, so it was one missing invariant
-  at four sites, now `model._discount`.
+  at four sites, now marge's `model._discount`. This branch no longer has a
+  fourth site — the fix below removed it — so the copy of that helper carried
+  here has been deleted rather than left unreferenced; `role_mult`, `need_mult`
+  and `bye_mult` are hers and arrive with her branch.
   The second version routed through that helper, and marge then measured what
   the helper cannot fix: `_discount(v > 0, m = 0)` is exactly 0.0, and with 96%
   of available rows negative a `pick_value` of 0 sorts near the top. At pick 125

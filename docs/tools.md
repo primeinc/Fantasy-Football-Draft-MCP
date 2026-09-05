@@ -105,10 +105,10 @@ gating there squares a probability `contingent_points` has already applied.
 Left in, it made holding the starter *lower* his handcuff's value than not
 holding him, the exact reverse of the intent.
 
-Every multiplier in `recommend` goes through `model._discount`, so below 1
-always means further down the list in both halves of the board. Neither roles
-term is one: both are additive in `pick_value`'s own units, for the reason
-above.
+Neither roles term is a multiplier on `pick_value`: both are additive in its own
+units, for the reason above. The multipliers that remain (`role_mult`,
+`need_mult`, `bye_mult`) share a separate problem on the negative half of the
+board and are handled by `model._discount` on the K/DST branch.
 
 `just roles [what] [seasons] [trials] [seed]` is the evidence. `what`: `shares`
 prints opportunity-share coverage on the live board and checks `pick_value` does
