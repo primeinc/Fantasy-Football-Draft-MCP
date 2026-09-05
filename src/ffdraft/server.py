@@ -1454,12 +1454,15 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
         DST   before  0, 1, 5, 9, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
         K     before  0, 0, 7, 8, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
 
-    Two things that are easy to get wrong about those numbers, both of which I
-    did get wrong before measuring. The before column is already monotone on this
-    board, so the "#1 to #16 between consecutive turns" that motivated the task
-    describes the mechanism rather than this record; what counting at every turn
-    buys here is smaller steps and no ADP dependence, plus the guarantee on a
-    board that would show the jump. And the change makes the mid-draft offer
+    The live record's before column happens to be monotone, so the fault does not
+    show there — but it is not hypothetical: on the fixture in
+    `tests/test_board.py` the before row runs 0, 0, 0, 0, 0, 0, 0, 0, 2, 8, 10,
+    16, 18, 12, offering the best player for eight straight turns and then
+    *improving* from 18 to 12 at the final pick, which cannot happen in a draft.
+    The regression test for that fails without this function.
+
+    One thing that is easy to get wrong about these numbers, and that I did get
+    wrong before measuring: the change makes the mid-draft offer
     *better*, not worse — index 9 to index 6 at pick 164 — because the survival
     filter is biased against exactly the defenses worth having: "best defense"
     and "earliest ADP" are the same players, so they are the first it discards.

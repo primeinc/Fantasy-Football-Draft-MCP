@@ -633,15 +633,34 @@ All notable changes to this project. Format follows
   Defenses now run Texans → Rams → Lions → Eagles → Chiefs → Chargers → 49ers.
   Still no ADP, no threshold and no fitted constant: the two inputs are
   `starters * teams` and the recorded picks' own positions.
-- **Correcting two things I published about this change.** An earlier draft of
-  this entry gave the "before" column as 0, 0, 0, 0, 15, 15, 15. That was not
-  what the plan was offered; it was a description of *when the counting rule
-  fired*, which is a different quantity. The real before column is above, and on
-  this board **it is already monotone** — so the "#1 → #16 jump between
-  consecutive turns" is a description of the mechanism, not something this
-  record exhibits. What #32 actually removes here is the size of the steps
-  (9 → 15 for defenses, 8 → 15 for kickers) and the dependence on ADP, plus the
-  possibility of the jump on a board that does show it.
+- **The fault is reproducible, and the regression test for it fails without the
+  change.** Offered index over a slot's fourteen picks on the test fixture, both
+  positions:
+
+        before  0, 0, 0, 0, 0, 0, 0, 0, 2, 8, 10, 16, 18, 12
+        after   0, 1, 1, 3, 3, 4, 5, 6, 7,  8,  8, 10, 10, 11
+
+  The before row is the fault in both the shapes it was raised over: the best
+  player offered for eight straight turns while the ADP filter keeps him alive,
+  and then an offer that **improves at the final pick, 18 back to 12**, which
+  cannot happen in a draft. otto's test walks the slot's picks and reads the
+  offered index back out of the pool; it fails on 854b5da and passes here.
+- **Correcting what I published about this change, and about the correction.**
+  An earlier draft gave the "before" column as 0, 0, 0, 0, 15, 15, 15. That was
+  not what the plan was offered — it described *when the counting rule fired*,
+  a different quantity. The real live-record column is above and is already
+  monotone, and I concluded from that the motivating jump described the
+  mechanism rather than anything in the repo. That went too far: the fixture
+  that ships with the change does exhibit it, including the impossible
+  improvement at the last pick. otto had the mechanism right and the record
+  wrong; I had the record right and drew too much from it. Neither half was
+  settled until it was measured on the fixture rather than argued.
+- The first acceptance test asserted `_absorbed_by` is non-decreasing, which
+  **cannot fail**: it is `int(remaining * elapsed)` over an `elapsed` that is
+  non-decreasing by construction, so it pinned the helper's contract and nothing
+  about the change — a tree where `_plan_pool` ignored the count entirely would
+  have passed it. Replaced with the test above, one level up, on the quantity
+  the plan actually consumes.
 - **The mechanism is the opposite of what I first claimed**, and it is more
   interesting. I wrote that the defense is worth less at every pick after the
   change. It is worth *more* at pick 164 — pick_value 3.25 → 3.89 — because the
