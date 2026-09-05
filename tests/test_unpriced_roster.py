@@ -5,6 +5,7 @@ seven players for an eight-man roster and the lineup model counted two running
 backs where the roster holds three. `draft_status` reported his position as null
 in the same response whose `roster_counts` already counted him.
 """
+import numpy as np
 import pandas as pd
 
 from ffdraft import board as bd
@@ -144,6 +145,65 @@ class TestMyRows:
         st.record("Nobody At All", overall=2, team_slot=1)
         assert sorted(st.my_rows(_board())["name"]) == ["RB_A"]
         assert st.my_roster(_board()) == {"RB": 1}
+
+    def test_a_board_row_with_no_position_falls_back_to_the_recorded_one(
+            self, tmp_path, monkeypatch):
+        """NaN is truthy, so the `or` written to reach the fallback returned it.
+
+        The count then went under a float key. `who_should_i_pick` passes these
+        counts out as `your_roster`, where json renders that key as a position
+        named "NaN", and its roster note sorts them -- so a NaN key beside any
+        other thin position raised TypeError and took the whole tool down.
+        Only a malformed board row reaches this, which is why nothing had.
+        """
+        monkeypatch.setattr(bd, "STATE_DIR", tmp_path)
+        st = DraftState(_league(), name="blankpos")
+        st.record("RB_A", overall=1, team_slot=1)
+        st.record("RB_B", overall=2, team_slot=1, position="RB")
+
+        nan_pos = _board()
+        nan_pos.loc[nan_pos["name"] == "RB_B", "position"] = np.nan
+        counts = st.my_roster(nan_pos)
+        assert counts == {"RB": 2}
+        # The type the signature promises, and what makes the note's sort safe.
+        assert all(isinstance(key, str) for key in counts)
+
+        # Its twin. An empty string is falsy, so this one always reached the
+        # fallback; the two malformed shapes must not answer differently.
+        empty_pos = _board()
+        empty_pos.loc[empty_pos["name"] == "RB_B", "position"] = ""
+        assert st.my_roster(empty_pos) == {"RB": 2}
+
+        # And the split the roster note now exists to report: the board keeps
+        # the row as it stands, so the man is counted at RB and priced at none.
+        priced = st.my_rows(nan_pos)["position"].astype(str).value_counts().to_dict()
+        assert priced.get("RB", 0) == 1
+
+    def test_the_room_wide_count_invents_no_phantom_position(self, tmp_path,
+                                                             monkeypatch):
+        # Same cause, second symptom. `picks_by_position` stringified the NaN
+        # rather than reaching the fallback, so `plan_my_draft` compared its
+        # remaining supply against a position called "nan".
+        monkeypatch.setattr(bd, "STATE_DIR", tmp_path)
+        st = DraftState(_league(), name="phantom")
+        st.record("RB_A", overall=1, team_slot=1)
+        st.record("RB_B", overall=2, team_slot=2, position="RB")
+        nan_pos = _board()
+        nan_pos.loc[nan_pos["name"] == "RB_B", "position"] = np.nan
+        assert st.picks_by_position(nan_pos) == {"RB": 2}
+
+    def test_a_kicker_the_board_forgot_to_classify_still_fills_his_slot(
+            self, tmp_path, monkeypatch):
+        # Third symptom. `held_by_slot` tests membership in SPECIAL_POSITIONS,
+        # and NaN is in nothing, so the pick was dropped and the team read as
+        # still needing a kicker -- the exact deferral #26 decides on.
+        monkeypatch.setattr(bd, "STATE_DIR", tmp_path)
+        b = _board()
+        b.loc[len(b)] = {**b.iloc[0].to_dict(), "name": "Boot",
+                         "_key": bd.norm_name("Boot"), "position": np.nan}
+        st = DraftState(_league(), name="kicker")
+        st.record("Boot", overall=1, team_slot=3, position="K")
+        assert st.held_by_slot(b) == {3: {"K": 1}}
 
     def test_an_all_priced_roster_is_unchanged_apart_from_the_marker(self, tmp_path,
                                                                     monkeypatch):

@@ -788,43 +788,75 @@ class DraftState:
             stand_ins[col] = stand_ins[col].fillna(False).astype(bool)
         return pd.concat([rows, stand_ins], ignore_index=True)
 
-    def picks_by_position(self, board: pd.DataFrame) -> dict[str, int]:
-        """Every pick the room has made, counted by position.
+    @staticmethod
+    def _board_positions(board: pd.DataFrame) -> dict:
+        return board.set_index("_key")["position"].to_dict() \
+            if "_key" in board.columns else {}
 
-        The board's spelling first, the recorded one as the fallback, so a
-        kicker the board does not model still counts -- the same order
-        `my_roster` uses, and for the same reason.
+    @staticmethod
+    def _position_of(board_positions: dict, pick: dict) -> str:
+        """One pick's position: the board's spelling, the recorded one as fallback.
+
+        The board is asked first so a name the draft record spells loosely still
+        lands where the model prices it, and the recorded position is the
+        fallback so a kicker the board does not model still counts.
+
+        The guard is `isinstance(..., str)` rather than the bare `or` all three
+        callers used to write. A board row carrying no position arrives here as
+        NaN, NaN is truthy, and the `or` written to reach the fallback returned
+        the NaN instead -- so the fallback never ran and a float went out of a
+        function that promises a position. Three different symptoms, one cause:
+        `my_roster` put a float key in a `dict[str, int]`, which reached the user
+        through `who_should_i_pick`'s `your_roster` as a position named "NaN" and
+        crashed the tool outright whenever another position was also thin, since
+        its roster note sorts them and `'<'` does not order a float against a
+        string. `picks_by_position` stringified it instead and invented a
+        phantom position "nan" for `plan_my_draft` to compare supply against.
+        `held_by_slot` dropped the pick, so a team holding a kicker the board
+        forgot to classify was read as still needing one.
+
+        Only a malformed board row reaches any of this, which is why nothing had.
+        Shared rather than repeated so the three cannot drift again.
         """
-        idx = board.set_index("_key")["position"].to_dict() if "_key" in board.columns else {}
+        on_board = board_positions.get(norm_name(pick["name"]))
+        if isinstance(on_board, str) and on_board:
+            return on_board
+        recorded = pick.get("position")
+        return recorded if isinstance(recorded, str) and recorded else ""
+
+    def picks_by_position(self, board: pd.DataFrame) -> dict[str, int]:
+        """Every pick the room has made, counted by position."""
+        idx = self._board_positions(board)
         counts: dict[str, int] = {}
         for p in self.picks:
-            pos = idx.get(norm_name(p["name"])) or p.get("position")
+            pos = self._position_of(idx, p)
             if pos:
-                counts[str(pos)] = counts.get(str(pos), 0) + 1
+                counts[pos] = counts.get(pos, 0) + 1
         return counts
 
     def held_by_slot(self, board: pd.DataFrame) -> dict[int, dict[str, int]]:
         """Counted positions each team already holds, by draft slot.
 
         What decides whether the team on the clock can still defer a kicker or a
-        defense: its own unfilled slots against its own remaining picks. Board
-        spelling first, recorded position as the fallback, same as `my_roster`.
+        defense: its own unfilled slots against its own remaining picks.
         """
-        idx = board.set_index("_key")["position"].to_dict() if "_key" in board.columns else {}
+        idx = self._board_positions(board)
         out: dict[int, dict[str, int]] = {}
         for p in self.picks:
-            pos = idx.get(norm_name(p["name"])) or p.get("position")
+            pos = self._position_of(idx, p)
             if pos in SPECIAL_POSITIONS:
                 team = out.setdefault(int(p["slot"]), {})
-                team[str(pos)] = team.get(str(pos), 0) + 1
+                team[pos] = team.get(pos, 0) + 1
         return out
 
     def my_roster(self, board: pd.DataFrame) -> dict[str, int]:
-        mine = [p for p in self.picks if p["slot"] == self.my_slot]
+        """Your picks counted by position."""
+        idx = self._board_positions(board)
         counts: dict[str, int] = {}
-        idx = board.set_index("_key")["position"].to_dict() if "_key" in board.columns else {}
-        for p in mine:
-            pos = idx.get(norm_name(p["name"])) or p.get("position")
+        for p in self.picks:
+            if p["slot"] != self.my_slot:
+                continue
+            pos = self._position_of(idx, p)
             if pos:
                 counts[pos] = counts.get(pos, 0) + 1
         return counts

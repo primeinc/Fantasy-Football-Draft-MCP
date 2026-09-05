@@ -202,6 +202,11 @@ class TestUnpricedRosterSlot:
         out = json.loads(server.who_should_i_pick(limit=4))
         assert out["roster_note"] is not None
         assert "RB: 1 counted, 0 priced" in out["roster_note"]
+        # And it says the thing that is now true. The note used to blame a pick
+        # the board cannot model, which #40 closed; what is left is a board that
+        # carries the man and forgot to say what he plays.
+        assert "records no position" in out["roster_note"]
+        assert "cannot model" not in out["roster_note"]
 
     def test_a_fully_priced_roster_says_nothing(self, monkeypatch, tmp_path, league):
         b = _board([

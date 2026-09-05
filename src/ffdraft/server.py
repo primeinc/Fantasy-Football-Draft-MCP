@@ -520,13 +520,22 @@ def who_should_i_pick(limit: int = 6) -> str:
 
     mine = state.my_rows(b)
     bench = roles.bench_values(recs, league, mine)
-    # #40's second cause, surfaced where it applies. `roster` counts recorded
-    # picks by position; `mine` is the board rows behind them, and a pick the
-    # board cannot price has no row. So the two halves of the model disagree
-    # about the same roster: `need_mult` sees the counted total and treats the
-    # position as filled, while `roles.bench_values` sees only the priced rows
-    # and treats the slot as open. On the live record that is one RB -- three
-    # counted, two priced.
+    # The two halves of the model can still disagree about the same roster.
+    # `roster` counts recorded picks by position; `mine` is the board rows
+    # behind them. `need_mult` sees the counted total and treats the position as
+    # filled, while `roles.bench_values` sees only the priced rows and treats
+    # the slot as open.
+    #
+    # What splits them has moved. It was a pick the board could not price at all
+    # -- one RB on the live record, three counted and two priced -- and #40
+    # closed that: `my_rows` now stands such a pick in at replacement level, so
+    # the two counts agree. What survives is narrower and stranger: a board row
+    # that exists but carries no position. `my_roster` falls back to the
+    # recorded position when the board's is blank, `my_rows` keeps the row as it
+    # stands, so the pick is counted at RB and priced at nothing. That is a
+    # malformed board row rather than an unmodelled player, and it is worth
+    # saying out loud for that reason -- it means the board is wrong about
+    # someone, not merely silent about him.
     #
     # It is not why an RB headlined, and an earlier version of this comment said
     # it was. `who_should_i_pick` passes no `role_weights`, so the bench numbers
@@ -625,8 +634,11 @@ def who_should_i_pick(limit: int = 6) -> str:
         "headline": (model.headline(*head) if head is not None else "Board empty"),
         "roster_note": (
             "; ".join(f"{pos}: {n} counted, {p} priced" for pos, (n, p) in sorted(thin.items()))
-            + " — a pick the board cannot model still fills its slot in the count, so the "
-              "roster these are scored against is thinner than it looks"
+            + " — the board carries a row for one of these players but records no "
+              "position on it, so he counts toward the position you drafted him at "
+              "and is priced at none, and the roster these are scored against is "
+              "thinner than the count. That is the board being wrong about someone, "
+              "not merely missing him: worth reporting to whoever built it"
             if thin else None),
     }), indent=2)
 

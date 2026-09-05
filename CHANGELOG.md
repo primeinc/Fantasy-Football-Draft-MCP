@@ -63,6 +63,33 @@ All notable changes to this project. Format follows
   headline is `pick_value`, which this change labels rather than reranks.
 - Tested at both levels: `urgency_note` and `headline` directly, and through
   `who_should_i_pick` itself, since the invariant is about what the tool emits.
+- **Repointed once #40 landed, and the repointing found a crash.** #40 gives an
+  unpriced pick a stand-in at replacement level, so the case the note was
+  written for can no longer split the two counts. marge reconciled the tests and
+  left the wording; re-running her five-case enumeration against `my_roster` and
+  `my_rows` rather than taking the table on trust reproduced four rows and
+  contradicted the fifth. A board row whose position is **NaN** returned
+  `{nan: 1}`, not `{RB: 1}`: NaN is truthy, so `idx.get(...) or p.get("position")`
+  returned the NaN and the recorded position was never consulted.
+- Three symptoms, one cause, all three now pinned by tests that fail without the
+  fix. `my_roster` put a float key in a `dict[str, int]`, which reached the
+  client through `your_roster` as a position named `"NaN"` and raised
+  `TypeError: '<' not supported between instances of 'str' and 'float'` inside
+  the note's own `sorted(thin.items())` whenever any other position was also
+  thin — the tool down, not degraded. `picks_by_position` stringified it and
+  handed `plan_my_draft` a phantom position `"nan"` to compare supply against.
+  `held_by_slot` tests membership in `SPECIAL_POSITIONS`, and NaN is in nothing,
+  so a team holding a kicker the board forgot to classify read as still needing
+  one — the deferral #26 decides on. Only a malformed board row reaches any of
+  it, which is why nothing had.
+- The three sites shared the same three-line idiom and had drifted into three
+  behaviours; they now share `DraftState._position_of`, which reaches the
+  fallback on anything that is not a non-empty `str`.
+- The note itself now says what is true: the board carries a row for the player
+  and records no position on it, so he counts at the position you drafted him at
+  and is priced at none. That is the board being wrong about someone rather than
+  silent about him, and the note says so — it is a defect report to whoever built
+  the board, not a caveat about an unmodelled player.
 
 **ESPN live draft sync**
 - `sync_draft(platform="espn")` now works while the draft is running. The read API

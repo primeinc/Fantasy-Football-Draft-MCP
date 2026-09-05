@@ -169,13 +169,18 @@ is inside the model's own noise; policy, not fitted), is reported as
 survival under a "Take" headline was read as *he does not come back*, which is
 the reverse of what 0.55 means.
 
-`roster_note`, and `roster_slot_note` on the rows it affects, appear when a pick
-the board cannot price still fills its slot in your roster count — a kicker, a
-defense, a player with no projection. The two halves of the model then disagree
-about the same roster: the roster-need discount sees the position as filled
-while the bench-value model sees only the priced rows and treats the slot as
-open. Both notes name the position and the counts, so a recommendation resting
-on that gap says so.
+`roster_note`, and `roster_slot_note` on the rows it affects, appear when the two
+halves of the model disagree about the same roster: the roster-need discount
+counts your picks by position, the bench-value model reads the board rows behind
+them, and one man is counted at a position and priced at none. Both notes name
+the position and the counts, so a recommendation resting on that gap says so.
+
+A pick the board cannot price at all — a kicker, a defense, a player with no
+projection — no longer causes this; it is stood in at replacement level and the
+two counts agree. What is left is narrower: the board carries a row for the
+player and records no position on it. That is the board being wrong about
+someone rather than silent about him, so the note reads as a defect report
+against the board rather than a caveat about an unmodelled player.
 
 Each row carries `espn_proj`, ESPN's full-season projection under the league's
 scoring, and `espn_injury`, when ESPN ADP is configured. ESPN's projection reads
