@@ -69,6 +69,41 @@ Divide these by hunk; none goes whole into any single PR.
 1 → 2 → 3 → 4 → 5 → 6, with 7, 8 and 9 stacked after 3. Each PR must be green
 under `just check` and `just ci-matrix` with only its own stack applied.
 
+## Integration
+
+One person lands on the branch. Owners work in worktrees and hand over a commit;
+merges, pushes and the updates below happen in the main checkout, and only ever
+from committed content. The main checkout is the live server's source, so an
+edit in progress there is read by the next reload.
+
+Three checks on every merge. Each exists because skipping it shipped something.
+
+- **Verify from the blob, not the working tree.** `git show HEAD:<path>`, not the
+  file on disk. A merge that auto-committed once left a fix staged and unmerged
+  while `just check` passed against the working tree, so a green run and a broken
+  commit were reported as the same thing.
+- **Replay identity, against a baseline from before the module existed.** Where a
+  change touches the model, `just replay` before and after must be identical,
+  diffed as whole files rather than read. The baseline has to predate the work:
+  comparing against a commit that already contains it proves only that the later
+  commits were inert, which is a weaker claim than the one being made.
+- **Every new test confirmed to fail with the change reverted.** A test written
+  from the claim it is meant to check will pass on code that never had the
+  property. This has caught something in three of the last four merges, including
+  a test that could not fail at all.
+
+Keeping this document current is part of the merge, not a pass at the end. It
+went stale once by 46 commits, and the worst of it was a note telling the reader
+to work around a defect that had since been fixed.
+
+- A module with its own files and its own tests becomes its own section here,
+  added when it lands, with its sources, its tests, and its negative results.
+- A change to shared surface — `model.py`, `server.py`, the board or the market
+  join — joins the section that already owns that file. It does not get a new
+  one, or the stack stops being reviewable.
+- Say which of the two a change is when it lands, rather than leaving it to be
+  inferred later from the file list.
+
 ## PR 1 — Tooling: justfile and the CI matrix
 
 Cherry-pick `3c2ae0d`, `1f46494`, `c93a58f`. Verified clean on the base.
