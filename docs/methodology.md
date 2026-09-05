@@ -199,11 +199,17 @@ needed before it was worth measuring at all are in [CHANGELOG.md](../CHANGELOG.m
 
 **What this backtest can resolve.** Running both weights together gave +18.4 on seeds
 0-11 and -21.3 on seeds 8-19 — same configuration, same season, opposite signs, a
-40-point spread. The seed-to-seed spread at 8-12 paired drafts is therefore about the
-size of every effect anyone has measured with this machinery, so a single run of this
-length can reject a term that is badly wrong (the ungated handcuff term at -103.5) but
-cannot confirm one that is mildly right. Read any number from it against a second seed
-block before believing its magnitude; `just roles ... [seed]` exists for that.
+40-point spread. A single run of that length can reject a term that is badly wrong (the
+ungated handcuff term at -103.5) but cannot confirm one that is mildly right, so every
+paired backtest here now runs two disjoint blocks and reports both.
+
+Two things that follow, and neither is optional when quoting a number from it. The
+spread belongs to the term as much as to the harness — the bye penalty over 2022 gave
++8.1 and +6.3 while changing five rosters, against forty for the roles weights — so read
+`block_spread` beside `trials_changed` rather than treating one measured spread as a
+universal floor. And `blocks_agree` being true is not a pass: two blocks of a term that
+does nothing agree in sign half the time, which is what `blocks_agree_p_null` reports
+beside it.
 
 One reporting detail that changes the reading: about half the paired trials draft the
 identical roster, because the weight changes nothing at that seed. `weight_backtest`

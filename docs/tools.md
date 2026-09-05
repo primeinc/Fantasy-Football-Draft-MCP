@@ -415,18 +415,29 @@ backtest here runs `blocks` disjoint blocks of `n_trials` (default
 `adp.DEFAULT_BLOCKS`, seeds `seed + block * n_trials + trial`) and reports each
 block's own improvement in `blocks`, their range in `block_spread`, and whether
 they point the same way in `blocks_agree`. The spread between two blocks of the
-*same* configuration is the harness's own noise, and it is the size of the
-effects this harness is used to measure: running both `roles.py` weights
-together over 2024 gave +18.4 weekly points on seeds 0-11 and -21.3 on seeds
-8-19. So a run of this length can reject a term that is badly wrong and cannot
-confirm one that is mildly right. When `blocks_agree` is false the improvement
-is inside that noise and supports nothing, whatever its sign.
+*same* configuration is the harness's own noise for that term: running both
+`roles.py` weights together over 2024 gave +18.4 weekly points on seeds 0-11 and
+-21.3 on seeds 8-19 while changing 40 rosters, where the bye penalty over 2022
+gave +8.1 and +6.3 while changing 5. A term that rarely fires has little noise to
+make, so read `block_spread` beside `trials_changed` rather than treating any one
+spread as a universal floor. When `blocks_agree` is false the improvement is
+inside that noise and supports nothing, whatever its sign.
+
+**A true `blocks_agree` is not a pass.** Two blocks of a term that does nothing
+agree in sign half the time, so agreement at the default is one coin flip.
+`blocks_agree_p_null` carries what it is worth — 2^-(k-1) for k blocks, so 0.5 at
+two and 0.125 at four — and sits beside the flag so it cannot be read as
+confirmation. Raise `blocks` when the answer has to carry weight. A run of this
+length can reject a term that is badly wrong (the ungated handcuff term stayed at
+-103.5 in every block); it cannot confirm one that is mildly right.
 
 `trials_improved_of_changed` is the win count over the trials the weight
 actually changed, beside `trials_changed`. About half the paired trials draft
 the identical roster, and counting an abstention as a loss drives any
 conservative term toward a 50% win rate — the difference between "4 of 12
-trials improved" and "4 of the 6 it changed".
+trials improved" and "4 of the 6 it changed". Its denominator is the trials the
+change fired on, which is a post-treatment variable, so it is not another view of
+`improvement` and the two cannot be reasoned about together.
 
 ### `draft_queue` / `set_draft_queue`
 Your ESPN pick queue, the list autopick draws from if you miss the clock.

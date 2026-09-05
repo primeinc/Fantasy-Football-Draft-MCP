@@ -651,8 +651,10 @@ def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str,
             f"{summary['block_spread']}, blocks agree {summary['blocks_agree']}")
 
     valid: list[dict] = [s for s in per_season if "error" not in s]
-    gains: list[float] = [float(s["improvement"]) for s in valid]
-    spreads: list[float] = [float(s["block_spread"]) for s in valid]
+    gains: list[float] = [float(s["improvement"]) for s in valid
+                          if s["improvement"] is not None]
+    spreads: list[float] = [float(s["block_spread"]) for s in valid
+                            if s["block_spread"] is not None]
     return {
         "role_weights": dict(role_weights), "n_trials": n_trials, "n_blocks": blocks,
         "seasons": per_season,
@@ -665,8 +667,13 @@ def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str,
                            "Read it against block_spread, the distance between two "
                            "disjoint seed blocks of the same configuration: when "
                            "blocks_agree is false the improvement is inside the harness's "
-                           "own noise and supports nothing. players_swapped is how many "
-                           "picks actually changed, which is what makes a zero readable."),
+                           "own noise and supports nothing. When it is true, read "
+                           "blocks_agree_p_null first — at two blocks agreement is one "
+                           "coin flip and is not a pass. trials_improved_of_changed is a "
+                           "win rate over the trials the weights fired on, a different "
+                           "denominator from improvement's; the two are not views of one "
+                           "quantity. players_swapped is how many picks actually changed, "
+                           "which is what makes a zero readable."),
     }
 
 

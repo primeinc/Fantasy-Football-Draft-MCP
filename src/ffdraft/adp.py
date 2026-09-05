@@ -910,13 +910,21 @@ def weekly_lineup_points(names: list[str], season: int, league, weeks: int = 14)
 # reports each one, never their mean alone.
 #
 # The spread between two blocks of the *same* configuration is this harness's
-# own noise, and it is the size of the effects it is used to measure: running
-# both `roles.py` weights together over 2024 gave +18.4 weekly points on seeds
-# 0-11 and -21.3 on seeds 8-19. A run of this length can therefore reject a term
-# that is badly wrong (the ungated handcuff term stayed at -103.5 in every
-# block) and cannot confirm one that is mildly right unless the blocks agree in
-# sign. Reporting one mean hides exactly that distinction, which is how a
-# 40-point disagreement got averaged into a finding.
+# own noise. It is not a universal figure — it belongs to the term as much as to
+# the harness, and `trials_changed` is what tells the two apart: running both
+# `roles.py` weights together over 2024 gave +18.4 weekly points on seeds 0-11
+# and -21.3 on seeds 8-19 while changing 40 rosters, where the bye penalty over
+# 2022 gave +8.1 and +6.3 while changing 5. A term that rarely fires has little
+# noise to make.
+#
+# A run of this length can reject a term that is badly wrong: the ungated
+# handcuff term stayed at -103.5 in every block. It cannot confirm one that is
+# mildly right, and `blocks_agree` does not change that — two blocks of a term
+# that does nothing agree in sign half the time, so agreement at this default is
+# one coin flip and is not a pass. Agreement across k blocks costs 2^-(k-1)
+# under the null, so raise `blocks` when the answer has to carry weight.
+# Reporting one mean hides all of it, which is how a 40-point disagreement got
+# averaged into a finding.
 DEFAULT_BLOCKS = 2
 
 
@@ -974,21 +982,56 @@ def _paired_blocks(draft_pair, score, n_trials: int, blocks: int, seed: int,
 
 
 def _block_summary(rows: list[dict]) -> dict:
-    """Pool a set of block rows, keeping the spread and the agreement visible."""
+    """Pool a set of block rows, keeping the spread and the agreement visible.
+
+    `improvement` and `trials_improved_of_changed` are not two views of one
+    quantity and must not be reasoned about together. The first is a magnitude
+    over every trial; the second is a win rate whose denominator is the trials
+    the change actually fired on, which is a post-treatment variable. Rate over
+    the trials it touched is the right denominator for a rate, and it is not a
+    denominator the magnitude shares.
+    """
     gains = [r["improvement"] for r in rows]
+    agree = bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains))
     return {
         "blocks": rows,
         "improvement": round(float(np.mean(gains)), 1) if gains else None,
         "block_improvements": gains,
         # The distance between blocks of the same configuration: the harness's
-        # own noise, and the number to read the improvement against.
+        # own noise for this term, and the number to read the improvement
+        # against. Not a universal floor — see `trials_changed`.
         "block_spread": round(float(max(gains) - min(gains)), 1) if gains else None,
         # No agreement, no finding. A block at exactly 0 agrees with nothing.
-        "blocks_agree": bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains)),
+        "blocks_agree": agree,
+        # What agreement is worth: k blocks of a term that does nothing agree in
+        # sign with probability 2^-(k-1). At the default of two blocks that is
+        # one coin flip, so `blocks_agree: true` is not a pass and this field
+        # sits beside it to say so without needing the docs open.
+        "blocks_agree_p_null": round(0.5 ** (len(rows) - 1), 4) if rows else None,
         "trials_improved_of_changed": sum(r["trials_improved_of_changed"] for r in rows),
         "trials_changed": sum(r["trials_changed"] for r in rows),
         "players_swapped": sum(r["players_swapped"] for r in rows),
     }
+
+
+def block_verdict(out: dict) -> str:
+    """One line saying what a blocked backtest's result will and will not carry.
+
+    Shared by `just bye` and `just roles` so the same numbers cannot be summed
+    up two different ways depending on which recipe printed them.
+    """
+    seasons = [s for s in out.get("seasons", []) if "error" not in s]
+    p_null = next((s.get("blocks_agree_p_null") for s in seasons
+                   if s.get("blocks_agree_p_null") is not None), None)
+    if not seasons:
+        return "nothing scored: no verdict"
+    if not out.get("blocks_agree"):
+        return ("the blocks disagree in sign in at least one season: this improvement is "
+                "inside the harness's own noise and supports nothing")
+    odds = f" (one season's blocks agree by chance with probability {p_null})" if p_null \
+        else ""
+    return (f"every season's blocks agree in sign{odds}, so the sign is consistent — "
+            "which is an observation, not a pass, and says nothing about the magnitude")
 
 
 def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
@@ -1049,8 +1092,10 @@ def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
             f"{summary['block_spread']}, blocks agree {summary['blocks_agree']}")
 
     valid = [s for s in per_season if "error" not in s]
-    gains: list[float] = [float(s["improvement"]) for s in valid]
-    spreads: list[float] = [float(s["block_spread"]) for s in valid]
+    gains: list[float] = [float(s["improvement"]) for s in valid
+                          if s["improvement"] is not None]
+    spreads: list[float] = [float(s["block_spread"]) for s in valid
+                            if s["block_spread"] is not None]
     return {
         "bye_weight": bye_weight, "n_trials": n_trials, "n_blocks": blocks,
         "seasons": per_season,
@@ -1060,11 +1105,15 @@ def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
         "blocks_agree": bool(valid) and all(s["blocks_agree"] for s in valid),
         "worst_block_spread": round(max(spreads), 1) if spreads else None,
         "interpretation": ("improvement is mean weekly-lineup points gained per season by "
-                           "the penalty over identical drafts without it; positive means "
-                           "the penalty earns its keep. Read it against block_spread, the "
-                           "distance between two disjoint seed blocks of the same "
-                           "configuration: when blocks_agree is false the improvement is "
-                           "inside the harness's own noise and supports nothing."),
+                           "the penalty over identical drafts without it. Read it against "
+                           "block_spread, the distance between two disjoint seed blocks of "
+                           "the same configuration: when blocks_agree is false the "
+                           "improvement is inside the harness's own noise and supports "
+                           "nothing. When it is true, read blocks_agree_p_null first — at "
+                           "two blocks agreement is one coin flip and is not a pass. "
+                           "trials_improved_of_changed is a win rate over the trials the "
+                           "penalty fired on, a different denominator from improvement's; "
+                           "the two are not views of one quantity."),
     }
 
 
