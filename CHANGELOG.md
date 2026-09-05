@@ -428,11 +428,15 @@ All notable changes to this project. Format follows
   room is not that draft's room, and a control missing three of its own picks is
   not quite the real drafter.
 - Every figure in that paragraph is a simulation result, not an invariant, and
-  it moves with the recommender: it re-runs `model.recommend` once per pick per
-  arm, so any change to `pick_value` — the discount rule, the survival
-  distribution, `expected_best_at_next_pick`, what the board prices — moves it.
-  It read 1494 / +436 / +151 before `expected_best_at_next_pick` stopped valuing
-  an exhausted position at its own worst player. Re-run `just counterfactual`
+  it moves with the recommender: the walk re-runs `model.recommend` once per
+  pick per arm, so any change to `pick_value` or to what the board prices moves
+  it. It read 1494 / +436 / +151 against the 632-row board before kickers and
+  defenses were priced onto it, the discount became a bounded reflection, the
+  survival tail became logistic and ESPN's placeholder ADP stopped being read as
+  pick 170. Note which numbers did *not* move: `control` 1058 and `real` 1343
+  are `lineup_value` over fixed rosters, so only the model arm is exposed. The
+  off-board mirrors falling 4 to 2, and other-team picks rising 111 to 113, are
+  the two K/DST picks the board can now price. Re-run `just counterfactual`
   rather than trusting the number here; what is stable is the shape of the
   comparison, not its output.
 
