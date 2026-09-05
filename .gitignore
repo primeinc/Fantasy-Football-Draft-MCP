@@ -31,8 +31,8 @@ espn_cookies.json
 # MCP registration carries ESPN cookies
 .mcp.json
 
-# dump_draft output: league members' names and SWIDs
-espn_dump_*/
+# dump_draft output, and any archive of it: league members' names and SWIDs
+espn_dump_*
 
 # per-machine Claude Code permissions
 .claude/settings.local.json
