@@ -1462,6 +1462,13 @@ All notable changes to this project. Format follows
   for every team until a draft completes, so no fixture here can show the live
   parse works: a green fixture shows the code does what we jointly believed the
   payload looks like, which is not the same claim.
+- The window is reported as weeks 1 to 14 because that is what is scored. A trade
+  weighed in week 9 is asking about weeks 9 to 14 and would be credited with nine
+  weeks already played; the fix needs the roster reader's `week`. **Found by
+  interface, not by test**: `read_rosters(league_id, week, ...)` took an argument
+  the simulator did not have, and no test of this module alone would have shown
+  it. The simulation is self-consistent; it is wrong only relative to a week
+  nobody had told it about.
 
 **Draft dump**
 - `dump_draft` tool and `just dump <league_id> [out_dir]` (`espn_dump.py`):
