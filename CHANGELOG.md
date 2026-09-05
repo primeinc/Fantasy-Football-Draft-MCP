@@ -257,9 +257,23 @@ All notable changes to this project. Format follows
   `_row_for`, `_rows_for_picks`) are shared between the two. A recorded pick
   carries a name, so a duplicate is settled by the pick's own position and by
   what earlier picks already took.
-- Verified as a pure refactor on the live 632-row board: `just replay` returns
+- Verified as a pure refactor on the live 632-row board: `just replay` returned
   identical numbers before and after (122 picks scored, 117 on board, Brier
-  0.128, log loss 0.412, blend 3.107 / top1 0.188).
+  0.128, log loss 0.412, blend 3.107 / top1 0.188). The two keyings are
+  identical whenever every key is unique, and on the current 696-row board one
+  key is on two rows — Gabe Davis, twice, as the same WR/BUF row with the same
+  projection — so they remain indistinguishable there too. Re-run the check
+  after integration: the baseline moves with any change to the survival
+  distribution or the pick_value ordering, and a moved baseline is not a changed
+  refactor.
+- A recorded pick that carries no position and whose name is on two board rows
+  is resolved to the first untaken one, which is a guess. The replay reports the
+  picks it guessed on (`ambiguous_name_picks`), and the counterfactual counts
+  them in `divergence.ambiguous_name_rows`, rather than the walk quietly
+  pretending it knew. Normally empty.
+- `lineup_value` requires a pick that carries `proj_points` to carry `position`
+  too — both or neither. Falling back to the name for the position would
+  reintroduce exactly the ambiguity the projection is passed to close.
 - `board.lineup_value` counted a NaN projection as NaN, not 0: NaN is truthy, so
   `proj.get(key) or 0.0` handed the NaN straight back and one unprojected
   starter turned a whole team's `starters_proj` into NaN. It is 0 now, which

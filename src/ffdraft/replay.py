@@ -79,34 +79,50 @@ def _key_rows(b: pd.DataFrame) -> dict[str, list[int]]:
 
 
 def _row_for(rows_of_key: dict[str, list[int]], pos_of: dict[int, object], key: str,
-             taken: set[int], position: str | None) -> int | None:
-    """The board row a recorded pick refers to. A pick carries a name, not an id,
-    so a name on two rows is settled by the pick's own position where it has one,
-    and otherwise by the first row nobody has taken."""
+             taken: set[int], position: str | None) -> tuple[int | None, bool]:
+    """The board row a recorded pick refers to, and whether the choice was
+    arbitrary.
+
+    A pick carries a name, not an id, so a name on two rows is settled by the
+    pick's own position where it has one. Where it does not -- some sync paths
+    record no position -- the first untaken row wins, which is a coin flip, and
+    worse: if an earlier pick resolved arbitrarily to the row a later pick wanted
+    the later one silently takes a wrong-position row. The second return value
+    says a guess was made, so the caller can report how often it happened
+    instead of the replay quietly pretending it knew.
+    """
     free = [r for r in rows_of_key.get(key, ()) if r not in taken]
     if not free:
-        return None
+        return None, False
     if position:
         for r in free:
             if str(pos_of.get(r)) == str(position):
-                return r
-    return free[0]
+                return r, False
+    return free[0], len(free) > 1
 
 
-def _rows_for_picks(b: pd.DataFrame, picks: list[dict]) -> dict[int, int | None]:
+def _rows_for_picks(b: pd.DataFrame, picks: list[dict]) -> tuple[dict[int, int | None], list[int]]:
     """Resolve every recorded pick to a board row, once, in draft order. Doing it
     up front means a pick can be looked up before the walk reaches it, which the
-    survival forecasts need."""
+    survival forecasts need. Returns the rows and the picks whose row was a
+    guess between two same-name candidates."""
     rows_of_key = _key_rows(b)
+    # numpy int64 keys here, Python int keys in `rows_of_key`. The lookups cross
+    # between them and work because the two hash and compare equal -- load
+    # bearing, so do not "tidy" one side without the other.
     pos_of = dict(zip(b["_row"], b["position"]))
     seen: set[int] = set()
     out: dict[int, int | None] = {}
+    guessed: list[int] = []
     for p in picks:
-        row = _row_for(rows_of_key, pos_of, norm_name(p["name"]), seen, p.get("position"))
+        row, arbitrary = _row_for(rows_of_key, pos_of, norm_name(p["name"]), seen,
+                                  p.get("position"))
         out[p["overall"]] = row
+        if arbitrary:
+            guessed.append(p["overall"])
         if row is not None:
             seen.add(row)
-    return out
+    return out, guessed
 
 
 def _as_of_coverage(rows: list[dict], snapshots: str | Path | None) -> dict:
@@ -188,7 +204,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
     # a pick carries a name, so a duplicate key is settled by position and by
     # what the picks before it already took. None for a pick the board cannot
     # model at all.
-    row_at = _rows_for_picks(b, picks)
+    row_at, guessed_rows = _rows_for_picks(b, picks)
     taken_at: dict[int, int] = {r: p["overall"] for p in picks
                                 if (r := row_at[p["overall"]]) is not None}
     rosters: dict[int, dict[str, int]] = {}
@@ -299,6 +315,10 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         "picks_scored": len(rows), "adp_shift": adp_shift,
         "room_drift": room_drift(board, state),
         "overall": _overall(per_pick, forecasts),
+        # Picks whose board row was a guess between two rows sharing a name,
+        # because the recorded pick carried no position to settle it. Normally
+        # empty; reported rather than assumed, the same way off_board is.
+        "ambiguous_name_picks": guessed_rows,
         "teams": teams.to_dict(orient="records"),
         # The dict rows, not the frame: a frame turns None into NaN.
         "picks": rows,
@@ -407,10 +427,15 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
     real, arm_model, arm_control = _Arm(), _Arm(), _Arm()
     subs: list[dict] = []
 
-    def row_for(key: str, taken: set[int], position: str | None) -> int | None:
+    def row_for(arm: _Arm | None, key: str, taken: set[int],
+                position: str | None) -> int | None:
         # Per timeline: each arm has taken different players, so the same
-        # recorded pick can resolve to a different row in each of them.
-        return _row_for(rows_of_key, pos_of, key, taken, position)
+        # recorded pick can resolve to a different row in each of them, and an
+        # arbitrary choice between two rows sharing a name is counted per arm.
+        row, arbitrary = _row_for(rows_of_key, pos_of, key, taken, position)
+        if arbitrary and arm is not None:
+            arm.bump("ambiguous_name_rows")
+        return row
 
     def recs_for(arm: _Arm, team_slot: int, overall: int) -> pd.DataFrame:
         pool = b[~b["_row"].isin(arm.taken)]
@@ -437,7 +462,7 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
         overall, team_slot = p["overall"], p["slot"]
         key = norm_name(p["name"])
         on_board = key in rows_of_key
-        real_row = row_for(key, arm.taken, p.get("position"))
+        real_row = row_for(arm, key, arm.taken, p.get("position"))
         recs = recs_for(arm, team_slot, overall)
         if recs.empty:
             # A different event from an unmodelled pick, and it keeps its own
@@ -482,7 +507,7 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
         took = step(arm_model, p, model_drafts_target=True)
         control = step(arm_control, p, model_drafts_target=False)
         if team_slot == slot:
-            real_row = row_for(key, real.taken, p.get("position"))
+            real_row = row_for(None, key, real.taken, p.get("position"))
             subs.append({
                 "pick": overall, "round": (overall - 1) // league.teams + 1,
                 "real": p["name"],
@@ -499,7 +524,7 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
         # The real timeline: score the predictor on what actually happened, then
         # let it learn from it. Nothing here reaches either simulated arm except
         # through the fitted predictor.
-        real_row = row_for(key, real.taken, p.get("position"))
+        real_row = row_for(real, key, real.taken, p.get("position"))
         real_recs = recs_for(real, team_slot, overall)
         if len(real_recs):
             wf.observe(real_recs, real_row if real_row in real_recs.index else None,
@@ -558,6 +583,9 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
             "mirrored_off_board": arm_model.counts.get("mirrored_off_board", 0),
             "pool_exhausted": arm_model.counts.get("pool_exhausted", 0),
             "control_picks_unavailable": arm_control.counts.get("control_picks_unavailable", 0),
+            # Times a recorded pick with no position had to be resolved to one of
+            # two board rows sharing its name. Normally 0.
+            "ambiguous_name_rows": real.counts.get("ambiguous_name_rows", 0),
         },
     }
 

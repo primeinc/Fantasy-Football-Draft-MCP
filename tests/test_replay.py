@@ -194,6 +194,44 @@ def test_replay_holds_a_same_name_pair_as_two_rows(tmp_path, monkeypatch):
     assert everyone["picks_scored"] == 3
 
 
+def test_replay_reports_the_picks_whose_row_it_had_to_guess(tmp_path, monkeypatch):
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
+                            starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                      "K": 0, "DST": 0})
+    st = board.DraftState(league)
+    # No position recorded, and the name is on two rows: the row is a coin flip
+    # and the replay says so rather than pretending it knew.
+    st.record("Alex Twin", 1, 1)
+    st.record("RB One", 2, 2)
+    out = replay.replay_draft(_twin_board(), st, league, candidates=3)
+    assert out["ambiguous_name_picks"] == [1]
+
+    # With the position recorded there is nothing to guess.
+    st2 = board.DraftState(league)
+    st2.record("Alex Twin", 1, 1, position="TE")
+    st2.record("RB One", 2, 2)
+    assert replay.replay_draft(_twin_board(), st2, league)["ambiguous_name_picks"] == []
+    # And a name on one row is never a guess, position or not.
+    st3 = board.DraftState(league)
+    st3.record("RB One", 1, 1)
+    assert replay.replay_draft(_board(), st3, league)["ambiguous_name_picks"] == []
+
+
+def test_lineup_value_refuses_a_projection_without_a_position(tmp_path, monkeypatch):
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
+                            starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                      "K": 0, "DST": 0})
+    # Both or neither. Resolving the position by name here would reintroduce the
+    # ambiguity the projection was passed to close.
+    with pytest.raises(ValueError, match="carries proj_points but no position"):
+        board.lineup_value(_board(), [{"name": "RB One", "proj_points": 300.0}], league)
+    # Neither is the recorded-pick case and still works.
+    assert board.lineup_value(_board(), [{"name": "RB One", "position": "RB"}],
+                              league)["starters_proj"] == 300
+
+
 def test_lineup_value_treats_a_nan_projection_as_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "STATE_DIR", tmp_path)
     league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
