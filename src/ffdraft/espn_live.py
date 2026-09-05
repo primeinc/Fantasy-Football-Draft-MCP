@@ -684,7 +684,12 @@ def queue_from_lines(lines: Iterable[str]) -> list[int] | None:
     for line in lines:
         fields = line.split(" ")
         if fields[0] == "DRAFT_LIST":
-            queue = [int(f) for f in fields[1:] if f.lstrip("-").isdigit()]
+            # Through `_signed`, so an id this cannot read is dropped rather
+            # than raising out of a dump of a live draft. Written inline here
+            # first, with the same lstrip-then-int split that let "--5" past
+            # the test and into the conversion.
+            queue = [player for player in (_signed(f) for f in fields[1:])
+                     if player is not None]
     return queue
 
 

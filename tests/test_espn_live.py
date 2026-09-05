@@ -406,3 +406,14 @@ class TestQueueFromLines:
 
     def test_a_cleared_queue_is_an_empty_list(self):
         assert espn_live.queue_from_lines(["DRAFT_LIST 1 2", "DRAFT_LIST"]) == []
+
+    def test_a_team_defence_keeps_its_negative_id_in_the_queue(self):
+        assert espn_live.queue_from_lines(["DRAFT_LIST 123 -16034 456"]) == [123, -16034, 456]
+
+    def test_an_unreadable_id_is_dropped_rather_than_raising(self):
+        # Same contract as pick_event: this runs over a live draft's log inside
+        # dump_draft, and one bad field must not cost the dump. The doubled
+        # minus is the shape that passes a lstrip-and-isdigit test and then
+        # fails the int() behind it.
+        assert espn_live.queue_from_lines(["DRAFT_LIST 123 --5 456"]) == [123, 456]
+        assert espn_live.queue_from_lines(["DRAFT_LIST x - 1.0 7"]) == [7]

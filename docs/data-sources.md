@@ -223,6 +223,15 @@ read API. No surface carries a timestamp per pick or a replay of room presence.
 | `/communication/?view=kona_league_communication` | complete feed (count header == topics returned); ACTIVITY_SETTINGS and ACTIVITY_STATUS topics with ms dates | pick events, at least while the draft runs |
 | room chat | replayed on every join with ms timestamps | nothing |
 
+`mDraftDetail` returns every slot in the draft, filled or not, so its row count
+is the draft's size and not its progress. Measured mid-draft on the dump that
+named this: **224 rows, 0 with a `playerId`**, against 130 picks actually made,
+with `drafted` false and `inProgress` true. Reading 224 as a pick count, or
+differencing it against the live state, both say something false — the second
+reports every made pick as missing for the whole draft. Count the rows whose
+`playerId` is not -1, and treat "none of them" as the source being blind rather
+than as a disagreement: `espn_dump._reconcile` reports that as `status: blind`.
+
 Open: the client also knows `ACTIVITY_TRANSACTIONS` and `ACTIVITY_SCHEDULE` topic types;
 none exist in this league yet. Whether completed drafts post picks as transactions is
 untested until a draft completes.
