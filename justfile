@@ -17,9 +17,16 @@ setup:
 # unresolvable and buries any real finding under a page of them. That is what
 # happens in a git worktree, where `.venv` is untracked and absent. Pointed at a
 # path, ty either uses it or says in one line that it is not there.
+#
+# The path is QUOTED. `justfile_directory()` yields a Windows path with
+# backslashes, this justfile runs recipes through bash, and bash eats a
+# backslash in an unquoted word: `C:\Users\will\dev\espn-ffd-mcp/.venv` reaches
+# ty as `C:Userswilldevespn-ffd-mcp/.venv`, which fails as "cannot find the
+# path specified" and reads like a missing venv rather than a mangled argument.
+# `just -n` shows the pre-shell text and so cannot show this; only running it can.
 check:
     {{ python }} -m ruff check src tests
-    uvx ty check --python {{ justfile_directory() / ".venv" }} src tests
+    uvx ty check --python "{{ justfile_directory() / '.venv' }}" src tests
     {{ python }} -m pytest tests -q
 
 # Upstream CI locally: ruff and the test suite on every Python it tests, each
