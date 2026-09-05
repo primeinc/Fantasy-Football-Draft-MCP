@@ -388,21 +388,26 @@ All notable changes to this project. Format follows
 - Log loss on 119 scored picks: blend 3.182, blend_pos 3.120, paired delta
   **-0.063**. Directionally consistent — 7 of 8 round blocks and both halves of
   the draft favour blend_pos — but round block 3 goes the other way, so
-  `blocks_agree` is **false**, and the round spread is **0.301**, five times the
-  effect. Paired t over round blocks -1.88 on 7 df. A round-level block
-  bootstrap run as two disjoint seed blocks of 2000 replicates agrees with
-  itself to three decimals (spread 0.000) and straddles the boundary: 95% CI
-  [-0.118, -0.005] on the first block and [-0.119, +0.004] on the second. Which
-  side of zero the interval lands on depends on the bootstrap seed.
+  `blocks_agree` is **false**, and the round spread is **0.301**, 4.9x the
+  effect. In the currency `adp` now publishes: unanimous agreement across eight
+  blocks would have cost 0.0078 under the null, and the observed 7-of-8 split is
+  a two-sided sign test at **p 0.070**. Paired t over round blocks -1.88 on 7
+  df. A round-level block bootstrap run as two disjoint seed blocks of 2000
+  replicates agrees with itself to three decimals (spread 0.000) and straddles
+  the boundary: 95% CI [-0.118, -0.005] on the first block and [-0.119, +0.004]
+  on the second. Which side of zero the interval lands on depends on the seed.
+  The two halves agreeing is worth `blocks_agree_p_null` 0.5 — one coin flip —
+  and is not evidence on its own.
 - The rank metrics are noise in both directions, which also retires the
   round-one worry that blend_pos "loses on top-3": top-1 delta +0.000 (round
-  spread 0.250), top-3 -0.025 (spread 0.289), top-5 +0.025 (spread 0.067), and
-  `blocks_agree` is false for all three. Every one of those spreads is an order
-  of magnitude larger than its effect.
-- No agreement, no finding — `adp.DEFAULT_BLOCKS`' own rule. A one-draft record
-  cannot separate a 2% log-loss difference from its own block noise, and
-  adopting a change on that basis is how the round-one reading of the same
-  numbers went wrong.
+  spread 0.250, sign p 1.000), top-3 -0.025 (0.289, p 0.289), top-5 +0.025
+  (0.067, p 0.250). `blocks_agree` false for all three, and every spread is an
+  order of magnitude larger than its effect.
+- No agreement, no finding — `adp.DEFAULT_BLOCKS`' own rule, and `just blendpos`
+  ends on a verdict line in the same shape as `adp.block_verdict` that refuses
+  the word pass. A one-draft record cannot separate a 2% log-loss difference
+  from its own block noise, and adopting a change on that basis is how the
+  round-one reading of the same numbers went wrong.
 
 **The predictor score sheet names its own sample**
 - A pick the board cannot price is never scored by the walk-forward predictors,

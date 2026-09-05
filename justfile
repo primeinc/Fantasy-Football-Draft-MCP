@@ -217,10 +217,28 @@ asof $league_id='':
 [script]
 blendpos $reps='2000':
     import json
+    import math
     import os
     import sys
 
     import numpy as np
+
+    def sign_p(blocks) -> float:
+        """Two-sided sign test on a set of block signs.
+
+        `blocks_agree` is a boolean and `adp` now publishes what it is worth
+        under the null (2^-(k-1)). This is the same currency for a split that is
+        not unanimous: 7 of 8 blocks pointing one way is not agreement, and it is
+        also not nothing, so report the probability of a split at least this
+        lopsided from a term that does nothing rather than a flag either way.
+        """
+        signs = [b for b in blocks if b != 0]
+        n = len(signs)
+        if not n:
+            return 1.0
+        k = max(sum(1 for b in signs if b > 0), sum(1 for b in signs if b < 0))
+        tail = sum(math.comb(n, i) for i in range(k, n + 1))
+        return min(1.0, 2 * tail / 2 ** n)
 
     sys.path.insert(0, os.path.join(os.getcwd(), "src"))
     env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
@@ -260,7 +278,9 @@ blendpos $reps='2000':
     print(f"  round blocks: mean {per_round_arr.mean():+.3f}  "
           f"spread {per_round_arr.max() - per_round_arr.min():.3f}  "
           f"favouring blend_pos in {(per_round_arr < 0).sum()} of {len(per_round_arr)}  "
-          f"blocks_agree {agree}")
+          f"blocks_agree {agree}  "
+          f"agree_p_null {0.5 ** (len(per_round_arr) - 1):.4f}  "
+          f"sign test p {sign_p(per_round_arr.tolist()):.3f}")
     if len(per_round_arr) > 1:
         se = per_round_arr.std(ddof=1) / np.sqrt(len(per_round_arr))
         print(f"  paired t over round blocks: {per_round_arr.mean() / se:+.2f} on "
@@ -278,7 +298,7 @@ blendpos $reps='2000':
         print(f"  top{k}  blend {(base_rank <= k).mean():.3f} -> blend_pos "
               f"{(cand_rank <= k).mean():.3f}  delta {d.mean():+.3f}  "
               f"round spread {blocks.max() - blocks.min():.3f}  "
-              f"blocks_agree {agree_k}")
+              f"blocks_agree {agree_k}  sign test p {sign_p(blocks.tolist()):.3f}")
 
     print("blocks: the draft's two halves, as disjoint samples")
     order = np.argsort([r["pick"] for r in rows])
@@ -309,6 +329,18 @@ blendpos $reps='2000':
               f"95% [{lo:+.3f}, {hi:+.3f}]  P(favours blend_pos) {(draws < 0).mean():.2f}")
     print(f"  seed blocks: spread {abs(points[0] - points[1]):.3f}  "
           f"blocks_agree {bool(points[0] * points[1] > 0)}")
+
+    # One line saying what this carries, in the same shape as adp.block_verdict
+    # and refusing the same word.
+    p = sign_p(per_round_arr.tolist())
+    effect, spread = abs(per_round_arr.mean()), per_round_arr.max() - per_round_arr.min()
+    print("verdict: " + (
+        f"the round blocks disagree in sign (sign test p {p:.3f}) and the spread between "
+        f"them is {spread / effect:.1f}x the effect, so this improvement is inside the "
+        "harness's own noise and supports nothing"
+        if not agree or p > 0.05 else
+        f"the round blocks agree in sign (p {p:.3f}) — an observation, not a pass, and it "
+        "says nothing about the magnitude"))
 
 # Score choice.py's per-team predictor against the plain blend on the recorded
 # draft. One walk-forward pass scores both on the same picks in the same order,
