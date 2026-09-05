@@ -378,6 +378,18 @@ All notable changes to this project. Format follows
   point as much as the delta is: the predictor's room is not that draft's room,
   and a control missing three of its own picks is not quite the real drafter.
 
+**The predictor score sheet names its own sample**
+- A pick the board cannot price is never scored by the walk-forward predictors,
+  so their log losses are over the board's on-board picks, not over the draft.
+  That set moves when the board moves: pricing kickers and defenses took this
+  record from 117 scored picks to 119, and the two that entered are among the
+  hardest in it, so part of an apparent regression is the replay no longer
+  ducking them. `WalkForward.summary` now reports `picks_unscored` and names
+  `unscored_picks`, and `just replay` prints them with the warning that two runs
+  scoring different picks are not a comparison. Found by marge while measuring
+  the choice model against a board with K/DST on it; no scoring behaviour
+  changed, only what the answer admits about its sample.
+
 **Walk-forward choice model**
 - `choice.py`: four conditional-logit predictors of what the room takes
   (ESPN list order, ADP order, the model's order, and a blend with roster

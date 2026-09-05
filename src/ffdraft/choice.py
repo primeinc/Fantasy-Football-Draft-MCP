@@ -256,8 +256,19 @@ class WalkForward:
         return out
 
     def summary(self) -> dict:
+        """The score sheet, and which picks it is over.
+
+        A pick the board cannot price is never scored, so the sample is the
+        board's on-board picks, not the draft. That set changes when the board
+        changes -- adding kickers and defenses to it moved this record from 117
+        scored picks to 119 -- and two log losses over different sets are not a
+        comparison. The unscored picks are named so anyone setting one run
+        against another can see whether the sample moved first.
+        """
         scored = [r for r in self.rows if r["scored"]]
-        out: dict = {"picks_scored": len(scored), "predictors": {}}
+        unscored = [r["pick"] for r in self.rows if not r["scored"]]
+        out: dict = {"picks_scored": len(scored), "picks_unscored": len(unscored),
+                     "unscored_picks": unscored, "predictors": {}}
         for name in self.models:
             ranks = np.array([r[name]["rank"] for r in scored], dtype=float)
             losses = np.array([r[name]["log_loss"] for r in scored], dtype=float)

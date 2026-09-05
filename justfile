@@ -117,7 +117,13 @@ replay $picks='0':
             print(f"  p {c['p_range']}  n {c['n']:>4}  predicted {c['predicted']:.2f}  observed {c['observed']:.2f}")
     print(f"picks scored {out['picks_scored']}  on board {o['on_board_picks']}  off board {o['off_board_picks']}")
     print(f"model match rate {o['model_match_rate']}  top-3 rate {o['top3_rate']}  median rank {o['median_rank']}")
-    print(f"walk-forward predictors ({out['predictors']['picks_scored']} picks scored out of sample)")
+    pr = out["predictors"]
+    print(f"walk-forward predictors ({pr['picks_scored']} picks scored out of sample"
+          + (f"; {pr['picks_unscored']} not priced by the board: {pr['unscored_picks']}"
+             if pr["picks_unscored"] else "") + ")")
+    if pr["picks_unscored"]:
+        print("  these log losses are over the scored picks only -- comparing two runs that "
+              "scored different picks is not a comparison")
     for name, s in out["predictors"]["predictors"].items():
         print(f"  {name:<10} log loss {s['log_loss']!s:>6}  top1 {s['top1']!s:>6}  top3 {s['top3']!s:>6}  "
               f"top5 {s['top5']!s:>6}  median rank {s['median_rank']}")
