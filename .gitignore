@@ -36,3 +36,6 @@ espn_dump_*
 
 # per-machine Claude Code permissions
 .claude/settings.local.json
+
+# agent worktrees: full repo copies, never content
+.claude/worktrees/
