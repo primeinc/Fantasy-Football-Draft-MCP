@@ -1972,6 +1972,42 @@ def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> st
 
 
 @mcp.tool()
+def draft_retrospective(league_id: str = "", slot: int = 0, around: int = 2) -> str:
+    """Your draft, pick by pick, against what the model would have taken.
+
+    Each of your picks is replayed twice: priced from the market snapshot the
+    watch recorded at that pick, and priced from today's board. `basis` says
+    which per row, because snapshots only exist from the pick at which a watch
+    first connected — earlier picks cannot be priced as of the time and fall
+    back to today's board. Read `as_of_coverage` before the deltas.
+
+    `your_pick_edge` is your pick's projection minus the model's, so positive
+    means your pick projects more. A projection, not a result.
+    `your_pick_edge_actual` is the same comparison on real box scores and is
+    null on every row until the season has played a week; `delta_basis` names
+    which the table is standing on. `room_around` gives the picks either side
+    of each of yours, so a reach or a run is visible.
+
+    `league_id` locates the snapshots; without it every row is priced from
+    today's board. `slot` defaults to yours."""
+    from . import replay, watch
+
+    state = _state()
+    b = _build_board()
+    league = _settings()[0]
+    out = replay.draft_retrospective(
+        b, state, league, slot=(slot or None), around=around,
+        snapshots=(watch.snapshot_dir(league_id) if league_id else None))
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None:
+        w, _task = entry
+        team_of_slot = {s: t for t, s in w.slot_of.items()}
+        if out["slot"] in team_of_slot:
+            out["team"] = w.team_label(team_of_slot[out["slot"]])
+    return _emit(_jsonable(out), indent=2)
+
+
+@mcp.tool()
 def draft_counterfactual(slot: int = 0, league_id: str = "", policy: str = "argmax",
                          seed: int = 0) -> str:
     """SIMULATION. Replay the draft with the model drafting for `slot` (yours by

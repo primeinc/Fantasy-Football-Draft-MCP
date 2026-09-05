@@ -348,6 +348,33 @@ answer also carries the walk-forward `predictors` score sheet, `predictor_rows`
 (each predictor's rank of and probability for every real pick) and the
 `forecast` for the pick on the clock; see `predict_pick`.
 
+### `draft_retrospective`
+Your draft, pick by pick, against what the model would have taken. Each of your
+picks is replayed twice through the same walk `draft_replay` uses: once priced
+from the market snapshot the watch recorded at that pick, once from today's
+board. Per row: what you took and its projection, what the model would have
+taken and its projection, the model's rank of your pick, the delta, and
+`room_around` — the picks either side of yours, so a run or a reach is visible.
+
+**Read `as_of_coverage` first.** Snapshots exist only from the pick at which a
+watch first connected, so earlier picks cannot be priced as of the time and fall
+back to today's board; `basis` says which, on every row. On the live draft that
+is 2 rows of 9. A retrospective that mixed the two silently would be telling you
+what today's market thinks of a decision you made against a different one.
+
+`as_of_agreement` guards the opposite misreading: while the board has not been
+repriced under the stored snapshots, the as-of and today columns are identical,
+and that means the market has not moved — not that the as-of path did nothing.
+
+`your_pick_edge` is your pick's projection minus the model's, so a positive
+number means **your** pick projects more — signed so that up is good, and named
+for whose edge it is rather than "delta", whose direction a reader has to look
+up. It is a **projection, not a result**.
+`your_pick_edge_actual` is the same comparison on real box scores and is null on every row
+until the season has played a week; `delta_basis` names which of the two the
+table is standing on and switches by itself once `weekly_stats` carries the
+current season. `just retrospective [league_id] [slot]` prints the table.
+
 ### `draft_counterfactual`
 **A simulation, not a measurement**, and labelled as one in the answer
 (`simulation: true` plus a `note`). The same walk as `draft_replay`, except that

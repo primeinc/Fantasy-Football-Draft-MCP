@@ -274,6 +274,54 @@ asof $league_id='':
         p = out["predictors"]["predictors"]
         print("   " + "  ".join(f"{n} {s['log_loss']}" for n, s in p.items()))
 
+# Your draft pick by pick against what the model would have taken, priced both
+# from the snapshot recorded at each pick and from today's board. $league_id
+# locates the snapshots; without it every row is priced from today's board.
+[script]
+retrospective $league_id='' $slot='0':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import replay, server, watch
+
+    league_id = os.environ["league_id"] or env.get("ESPN_LEAGUE_ID", "")
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    out = replay.draft_retrospective(
+        b, st, league, slot=(int(os.environ["slot"]) or None),
+        snapshots=(watch.snapshot_dir(league_id) if league_id else None))
+
+    cov, agr = out["as_of_coverage"], out["as_of_agreement"]
+    print(f"slot {out['slot']}{' (yours)' if out['mine'] else ''}: "
+          f"{out['picks_reviewed']} of {out['picks_in_the_draft']} picks made")
+    print(f"priced from a snapshot {cov['rows_priced_from_a_snapshot']}, "
+          f"from today's board {cov['rows_priced_from_todays_board']}")
+    print(f"  {cov['note']}")
+    if agr["of"]:
+        print(f"as-of and today agree on {agr['same_recommendation']} of {agr['of']}")
+        print(f"  {agr['note']}")
+    print(f"delta basis: {out['delta_basis']}")
+    print()
+    head = (f"{'pick':>5} {'rd':>3}  {'you took':<24} {'proj':>7}  {'model said':<24} "
+            f"{'proj':>7} {'rank':>5} {'your edge':>10} {'actual':>8}  {'basis':<15}")
+    print(head)
+    print("-" * len(head))
+    for r in out["picks"]:
+        print(f"{r['pick']:>5} {r['round']:>3}  {str(r['took'])[:24]:<24} "
+              f"{r['took_projection']!s:>7}  {str(r['model_pick_today'])[:24]:<24} "
+              f"{r['model_pick_projection']!s:>7} {r['your_pick_rank_today']!s:>5} "
+              f"{r['your_pick_edge']!s:>10} {r['your_pick_edge_actual']!s:>8}  "
+              f"{r['basis']:<15}")
+    print("\nthe room around each of your picks")
+    for r in out["picks"]:
+        cells = " | ".join(("*" if q["yours"] else " ") + f"{q['pick']} {q['player'][:20]}"
+                           for q in r["room_around"])
+        print(f"  {r['pick']:>5}: {cells}")
+
 # Evaluate blend_pos (the blend plus league-level position intercepts) against
 # the shipped blend on the recorded draft. One walk-forward pass scores both on
 # the same picks in the same order, so every pick is a paired observation.

@@ -25,7 +25,7 @@ import pandas as pd
 
 from . import choice, model
 from .board import DraftState, lineup_value
-from .config import LeagueSettings
+from .config import CURRENT_SEASON, LeagueSettings
 from .names import normalize as norm_name
 
 CALIBRATION_BINS = ((0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01))
@@ -587,6 +587,144 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
             # two board rows sharing its name. Normally 0.
             "ambiguous_name_rows": real.counts.get("ambiguous_name_rows", 0),
         },
+    }
+
+
+def season_points(names: list[str], season: int, league: LeagueSettings) -> dict[str, float] | None:
+    """Real fantasy points each named player has scored this season, or None
+    when the season has no box scores yet.
+
+    The seam for the retrospective's delta. Before week 1 there is nothing to
+    measure and the honest answer is None rather than a column of zeros, which
+    would read as "these players scored nothing" rather than "the season has not
+    started". Scored with `features.fantasy_points` under the league's own
+    scoring, the same call `adp.weekly_lineup_points` makes, so a retrospective
+    and a backtest cannot disagree about what a week was worth.
+    """
+    from . import features, sources
+
+    try:
+        w = sources.weekly_stats([season])
+    except Exception:
+        return None
+    w = w[w["season_type"] == "REG"] if "season_type" in w.columns else w
+    if w.empty:
+        return None
+    w = w.copy()
+    w["fp"] = features.fantasy_points(w, league.scoring,
+                                      getattr(league, "te_premium_bonus", 0.0))
+    w["_key"] = w["player_display_name"].map(norm_name)
+    wanted = {norm_name(n) for n in names}
+    mine = w[w["_key"].isin(wanted)]
+    if mine.empty:
+        return None
+    return {str(k): round(float(v), 1) for k, v in mine.groupby("_key")["fp"].sum().items()}
+
+
+def draft_retrospective(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
+                        slot: int | None = None, snapshots: str | Path | None = None,
+                        around: int = 2) -> dict:
+    """One team's draft, pick by pick, against what the model would have taken.
+
+    Each of that team's picks is replayed twice through `replay_draft` -- once
+    priced from the market snapshot the watch recorded at that pick (`as_of`),
+    once from today's board -- so "what did it recommend at the time" and "what
+    does it recommend knowing what we know now" are separate columns rather than
+    one number whose basis the reader has to guess.
+
+    Coverage is the thing to read first. Snapshots only exist from the moment a
+    watch first connected, so early picks have none and are priced with today's
+    board; `basis` says which, per row, and `as_of_coverage` totals it. A
+    retrospective that mixed the two silently would be exactly the failure #39
+    was about.
+
+    `your_pick_edge` is your pick's projection minus the model's, so a positive
+    number means your pick projects more -- signed so that up is good, and named
+    for whose edge it is rather than "delta", whose direction a reader has to
+    look up. It is a projection, not an outcome. `your_pick_edge_actual` is the
+    same comparison on real box scores and is None for every row until the
+    season has played a week; `delta_basis` says which the table stands on.
+    """
+    slot = state.my_slot if slot is None else slot
+    shift = room_drift(board, state)["shift"]
+    today = replay_draft(board, state, league, adp_shift=shift, walk_forward=False)
+    aged = (replay_draft(board, state, league, adp_shift=shift, walk_forward=False,
+                         as_of=True, snapshots=snapshots)
+            if snapshots is not None else None)
+    by_pick_today = {r["pick"]: r for r in today["picks"] if r["slot"] == slot}
+    by_pick_aged = ({r["pick"]: r for r in aged["picks"] if r["slot"] == slot}
+                    if aged is not None else {})
+    picks_by_overall = {p["overall"]: p for p in state.picks}
+
+    # Every player either side of the comparison, so the box scores are fetched
+    # once rather than per row.
+    named: list[str] = []
+    for row in by_pick_today.values():
+        named += [str(row["actual"])] + ([str(row["model_pick"])] if row["model_pick"] else [])
+    actuals = season_points(named, CURRENT_SEASON, league)
+
+    def points(name: str | None) -> float | None:
+        if name is None or actuals is None:
+            return None
+        return actuals.get(norm_name(name))
+
+    rows: list[dict] = []
+    for pick in sorted(by_pick_today):
+        t = by_pick_today[pick]
+        a = by_pick_aged.get(pick)
+        covered = bool(a and a.get("as_of"))
+        took, model_now = str(t["actual"]), t["model_pick"]
+        model_then = a["model_pick"] if covered else None
+        took_actual, model_actual = points(took), points(model_now)
+        rows.append({
+            "pick": pick, "round": t["round"],
+            "took": took, "took_position": t["position"],
+            "took_projection": t["actual_proj"],
+            "model_pick_as_of": model_then,
+            "model_pick_today": model_now,
+            "model_pick_projection": t["model_pick_proj"],
+            "basis": "as-of snapshot" if covered else "today's board",
+            "your_pick_rank_today": t["actual_rank"],
+            "your_pick_rank_as_of": (a["actual_rank"] if covered else None),
+            "off_board": t["off_board"],
+            # Named for whose edge it is, and signed so that up is good: your
+            # pick's projection minus the model's, positive when yours projects
+            # more. A column called "delta" whose good direction is negative is
+            # the reading failure #39 was about, one field further along.
+            "your_pick_edge": (None if t["proj_gap"] is None
+                               else round(-float(t["proj_gap"]), 1)),
+            "your_pick_edge_actual": (None if took_actual is None or model_actual is None
+                                      else round(took_actual - model_actual, 1)),
+            "room_around": [
+                {"pick": o, "player": str(picks_by_overall[o]["name"]),
+                 "yours": o == pick}
+                for o in range(pick - around, pick + around + 1)
+                if o in picks_by_overall],
+        })
+
+    covered_rows = [r for r in rows if r["basis"] == "as-of snapshot"]
+    agree = [r for r in covered_rows if r["model_pick_as_of"] == r["model_pick_today"]]
+    return {
+        "slot": slot, "mine": slot == state.my_slot,
+        "picks_reviewed": len(rows),
+        "picks_in_the_draft": len(league.picks_for_slot(slot)),
+        "as_of_coverage": {
+            "rows_priced_from_a_snapshot": len(covered_rows),
+            "rows_priced_from_todays_board": len(rows) - len(covered_rows),
+            "note": "snapshots exist only from the pick at which a watch first "
+                    "connected; earlier picks cannot be priced as of the time and "
+                    "are priced with today's board, which `basis` says per row",
+        },
+        "as_of_agreement": {
+            "same_recommendation": len(agree), "of": len(covered_rows),
+            "note": "as-of and today agree while the board has not been repriced "
+                    "under the stored snapshots; identical columns here mean the "
+                    "market has not moved, not that the as-of path did nothing",
+        },
+        "delta_basis": ("actual points scored this season" if actuals
+                        else f"projected full-season points — {CURRENT_SEASON} has no box "
+                             "scores yet, so `your_pick_edge_actual` is null on every row"),
+        "picks": rows,
     }
 
 

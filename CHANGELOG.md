@@ -8,6 +8,46 @@ All notable changes to this project. Format follows
 
 ### Added
 
+**Draft retrospective**
+- `draft_retrospective` (`replay.draft_retrospective`, `just retrospective
+  [league_id] [slot]`): one team's picks against what the model would have
+  taken, each replayed twice through the walk `draft_replay` already uses —
+  once priced from the market snapshot the watch recorded at that pick, once
+  from today's board. Per row: what was taken and its projection, the model's
+  pick and its projection, the model's rank of the real pick, the delta, and the
+  picks either side of it in the room.
+- Built as a caller of `replay_draft` rather than a second walk, which was
+  established by measurement before any of it was written: every field the task
+  asked for already existed per pick, so a parallel implementation would only
+  have drifted from the tested one.
+- Two things the task assumed that the data does not support, both measured
+  first and both surfaced in the output rather than engineered around.
+  Snapshots exist only from the pick at which a watch first connected — on the
+  live draft that is **2 of 9 made picks**, not 14 — so `basis` names the
+  pricing per row and `as_of_coverage` totals it. And there are **no 2026 box
+  scores at all**, the season not having started, so the comparison is
+  `your_pick_edge` — projected rest-of-season value, named as a projection —
+  with `your_pick_edge_actual` carrying actuals when the season has data. That
+  one is null on every row until then rather than zero, which would read as
+  "these players scored nothing"; `delta_basis` switches by itself once
+  `weekly_stats` carries the season.
+- `your_pick_edge` is your pick's projection minus the model's, so a positive
+  number means your pick projects more. Signed so that up is good and named for
+  whose edge it is: a column called "delta" whose good direction is negative is
+  the reading failure #39 was about, one field further along. Live, pick 132
+  reads **+11.2** and pick 61 reads **-32.7**.
+- `as_of_agreement` heads off the opposite misreading. While the board has not
+  been repriced under the stored snapshots the as-of and today columns are
+  identical, and that means the market has not moved rather than that the as-of
+  path did nothing — correct-and-uninformative and broken look the same from
+  outside, so the output says which it is.
+- `replay.season_points` is the seam for actuals: real fantasy points per player
+  under the league's own scoring, through `features.fantasy_points`, the same
+  call `adp.weekly_lineup_points` makes so a retrospective and a backtest cannot
+  disagree about what a week was worth. It returns None rather than zeros when
+  the season has no rows, and None rather than raising when the source is
+  unavailable.
+
 **The recommendation says which way its own numbers point**
 - Incident (#39): at pick 132 `who_should_i_pick` reported
   `survives_to_next_pick` 0.55 for Woody Marks under the headline "Take Woody
