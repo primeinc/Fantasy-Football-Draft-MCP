@@ -8,6 +8,26 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**The resume restored the watch but not the queue, on every restart (#65)**
+- First live use of the resume: the watch came back, and the message said `the
+  queue was NOT re-sent (no queue echo on this connection yet)`. `draft_queue`
+  answered `source: none` with no echoes. The user's queue was empty until it was
+  re-sent by hand.
+- ESPN drops the pick queue when the client session ends, and sends no
+  `DRAFT_LIST` on a fresh join while it holds none. So the echo the merge waits
+  for never arrives on **exactly the path resume exists for**, and the guard that
+  protects a live queue was refusing on the one connection that has none.
+- After the bounded wait, a resume now sends the record's queue as a **replace**
+  and says which happened. With no echo there is nothing of the user's to
+  overwrite, and what goes out is the queue they had before the restart. The one
+  case where that is wrong — a queue edited in the app during the downtime that
+  ESPN never echoed — is named in the same sentence as the send.
+- Once an echo has arrived, the merge stands. A test asserts the replace is never
+  reached in that case, because the fallback must not swallow the guard.
+- Both resume paths go through one helper now. The fast join and the slow-INIT
+  finisher had a copy each of the same block, and a slow join is the common case
+  after a restart.
+
 **A reload migrated its watches with the body it was replacing (#64)**
 - `reload_package` re-imported every package module, migrated the live watches,
   and only then reloaded `server.py`. Because this module re-executes in place,

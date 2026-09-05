@@ -784,6 +784,17 @@ The queue is re-sent through the **merge** path, so anything the user has queued
 in the ESPN app since the old process died is kept. That path waits for ESPN's
 own echo first, which is what makes re-sending a minutes-old queue safe.
 
+**With no echo it re-sends the record as a replace instead of sending nothing.**
+ESPN drops the pick queue when the client session ends and sends no `DRAFT_LIST`
+while it holds none, so the echo the merge waits for never comes on the one path
+resume exists for. Measured on the first live use: the watch came back, the
+message said the queue was NOT re-sent, and the user's queue stayed empty until it
+was sent by hand. There is nothing of the user's to overwrite when ESPN is holding
+nothing, and what goes out is the queue they had before the restart, not one this
+server chose. The message says so, and names the case where it is wrong: a queue
+edited in the app during the downtime that ESPN then failed to echo. Once an echo
+has arrived the merge stands and a replace is never used.
+
 It re-sends **ids**, not names. `set_draft_queue` is a name-resolving front over
 `merge_queue_ids`, and only the front resolves names, because `resolve_espn_id`
 gates on the crosswalk: a player on the board but missing from it — a kicker, a

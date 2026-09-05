@@ -114,8 +114,17 @@ class TestWhenNotToResume:
 
 
 class TestResumingOnStart:
-    def _stub(self, monkeypatch, *, drafted=False, sent=None, never_ready=False):
-        """A watch that joins instantly, and a queue merge that records its call."""
+    def _stub(self, monkeypatch, *, drafted=False, sent=None, never_ready=False,
+              echo=True):
+        """A watch that joins instantly, and a queue merge that records its call.
+
+        `echo` is whether ESPN sends a `DRAFT_LIST` on this connection. It is
+        modelled on the watch rather than in the return value because that is
+        where the real thing puts it: `merge_queue_ids` waits for the echo, which
+        sets `w.queue`, and only then decides what to send. A stub that left
+        `w.queue` at None while reporting a successful merge described a state the
+        socket never produces.
+        """
         calls: dict = {}
 
         class FakeState:
@@ -148,10 +157,17 @@ class TestResumingOnStart:
         async def fake_merge(w, ids, replace=False, league_id=""):
             calls["ids"] = list(ids)
             calls["replace"] = replace
+            calls.setdefault("sends", []).append(
+                {"ids": list(ids), "replace": replace})
+            if echo or replace:
+                w.queue = list(ids)
+            elif not replace:
+                return {"error": "no queue echo on this connection yet; pass "
+                                 "replace=True to send yours"}
             return sent if sent is not None else {
-                "mode": "merge",
-                "accepted": [{"espn_id": 11}, {"espn_id": 22}],
-                "kept_from_the_users_queue": [{"espn_id": 22}]}
+                "mode": "replace" if replace else "merge",
+                "accepted": [{"espn_id": pid} for pid in ids],
+                "kept_from_the_users_queue": [] if replace else [{"espn_id": 22}]}
 
         monkeypatch.setattr(server, "merge_queue_ids", fake_merge)
         return calls
@@ -225,6 +241,59 @@ class TestResumingOnStart:
 
         assert "the queue was NOT re-sent" in said[-1]
         assert "did not echo" in said[-1]
+
+    def test_no_echo_re_sends_the_recorded_queue_rather_than_nothing(
+            self, watch_dir, monkeypatch):
+        """The state a restart actually lands in.
+
+        ESPN drops the queue when the client session ends and sends no
+        `DRAFT_LIST` while it holds none, so the echo a merge waits for never
+        comes on the one path resume exists for. First live use, 2026-09-05
+        14:35: the watch came back, the message said the queue was NOT re-sent,
+        and the user's queue stayed empty until it was sent by hand.
+        """
+        calls = self._stub(monkeypatch, echo=False)
+        watchstore.save(_record(queue=[11, 22]))
+        said: list = []
+
+        def capture(content, meta):
+            said.append(content)
+            return _done()
+
+        monkeypatch.setattr(server, "_channel", capture)
+
+        asyncio.run(server.resume_watches())
+
+        # The merge is tried first every time: a replace is what is left when
+        # ESPN has said, by silence, that there is nothing to merge into.
+        assert calls["sends"] == [{"ids": [11, 22], "replace": False},
+                                  {"ids": [11, 22], "replace": True}]
+        assert "queue re-sent from the record, 2 entries" in said[-1]
+        # Not "0 of them yours", which would read as a loss. Nothing of the
+        # user's was kept because ESPN was holding nothing to keep.
+        assert "nothing of yours could be kept" in said[-1]
+        # The cost of sending anyway, in the same sentence as the send.
+        assert "would have been overwritten" in said[-1]
+
+    def test_an_echo_is_merged_and_never_replaced(self, watch_dir, monkeypatch):
+        """The guard the fallback must not swallow: once ESPN has said what it
+        holds, the user's app-side entries are known and a replace would drop
+        them."""
+        calls = self._stub(monkeypatch, echo=True)
+        watchstore.save(_record(queue=[11, 22]))
+        said: list = []
+
+        def capture(content, meta):
+            said.append(content)
+            return _done()
+
+        monkeypatch.setattr(server, "_channel", capture)
+
+        asyncio.run(server.resume_watches())
+
+        assert calls["sends"] == [{"ids": [11, 22], "replace": False}]
+        assert "queue re-sent, 2 entries, 1 of them yours" in said[-1]
+        assert "overwritten" not in said[-1]
 
     def test_a_complete_draft_is_not_rejoined(self, watch_dir, monkeypatch):
         self._stub(monkeypatch, drafted=True)
@@ -423,6 +492,30 @@ class TestARefusalIsSaidOutLoud:
 
         assert calls["ids"] == [11, 22]
         assert "queue re-sent, 2 entries, 1 of them yours" in said[-1][0]
+
+    def test_a_late_init_with_no_echo_also_re_sends_from_the_record(
+            self, watch_dir, monkeypatch):
+        """The two resume paths must not disagree. A slow join is the common one
+        after a restart, and it is the one where ESPN is least likely to have
+        echoed anything."""
+        calls = TestResumingOnStart()._stub(monkeypatch, never_ready=True, echo=False)
+        monkeypatch.setattr(server, "RESUME_READY_SECONDS", 0.01)
+        watchstore.save(_record(queue=[11, 22]))
+        said = self._said(monkeypatch)
+
+        async def go():
+            await server.resume_watches()
+            w, _task = server._WATCHES["L"]
+            w.ready.set()
+            finish = next(t for t in asyncio.all_tasks()
+                          if t.get_name().startswith("ffdraft-finish-resume"))
+            await finish
+
+        asyncio.run(go())
+
+        assert calls["sends"] == [{"ids": [11, 22], "replace": False},
+                                  {"ids": [11, 22], "replace": True}]
+        assert "queue re-sent from the record, 2 entries" in said[-1][0]
 
     def test_the_first_ready_future_is_not_left_pending(self, watch_dir, monkeypatch):
         """`_finish_resume` builds its own. Left pending, the first one outlives

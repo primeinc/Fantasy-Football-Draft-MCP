@@ -3103,21 +3103,50 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
     out.update({"resumed": True, "picks_made": summary["picks_made"],
                 "my_next_pick": summary["my_next_pick"]})
     if record.queue:
-        try:
-            # Ids straight through. Rendering them into names and re-resolving
-            # would drop the whole queue over one player the crosswalk lacks, and
-            # the entries a merge preserves are exactly the ones that never went
-            # through the crosswalk.
-            sent = await merge_queue_ids(w, list(record.queue),
-                                         league_id=record.league_id)
-            out["queue"] = {"entries": len(sent.get("accepted") or []),
-                            "from_the_user": len(sent.get("kept_from_the_users_queue") or []),
-                            "error": sent.get("error")}
-        except Exception as exc:
-            _log.exception("could not re-send the queue for league %s", record.league_id)
-            out["queue"] = {"error": f"{type(exc).__name__}: {exc}"}
+        out["queue"] = await _resend_queue(w, record)
     await _channel(_resume_message(out), {"league": record.league_id, "event": "resumed"})
     return out
+
+
+async def _resend_queue(w, record: watchstore.WatchRecord) -> dict:
+    """Put the recorded queue back: merge when ESPN has said what it holds,
+    replace when it has said by silence that it holds nothing.
+
+    ESPN drops the pick queue when the client session ends, and sends no
+    `DRAFT_LIST` on a fresh join while it holds none, so the echo a merge waits
+    for never arrives on exactly the path resume exists for. Measured on the
+    first live use of the resume, 2026-09-05 14:35: the watch came back, the
+    message said the queue was NOT re-sent, and `draft_queue` answered `source:
+    none` with no echoes. The user's queue stayed empty until it was sent by hand.
+
+    Replacing is safe here in the one way that matters. With no echo there is
+    nothing of the user's to overwrite, and what goes out is the queue they had
+    before the restart rather than anything this server chose. It does accept one
+    narrow loss -- a queue edited in the app during the downtime that ESPN then
+    failed to echo -- and that is said in the message rather than left implicit.
+
+    Ids go straight through. Rendering them into names and re-resolving would
+    drop the whole queue over one player the crosswalk lacks, and the entries a
+    merge preserves are exactly the ones that never went through the crosswalk.
+
+    The state, not the error text, decides which happened: `w.queue` is still
+    None only when no echo landed, which is the same condition the merge refused
+    on. Reading its own refusal back out of a sentence would break the moment the
+    sentence was reworded.
+    """
+    ids = list(record.queue)
+    try:
+        sent = await merge_queue_ids(w, ids, league_id=record.league_id)
+        if w.queue is None:
+            sent = await merge_queue_ids(w, ids, replace=True,
+                                         league_id=record.league_id)
+    except Exception as exc:
+        _log.exception("could not re-send the queue for league %s", record.league_id)
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    return {"mode": sent.get("mode"),
+            "entries": len(sent.get("accepted") or []),
+            "from_the_user": len(sent.get("kept_from_the_users_queue") or []),
+            "error": sent.get("error")}
 
 
 def _drop_watch(league_id: str) -> None:
@@ -3157,10 +3186,7 @@ async def _finish_resume(w, task, record: watchstore.WatchRecord) -> None:
         out.update({"picks_made": summary["picks_made"],
                     "my_next_pick": summary["my_next_pick"]})
         if record.queue:
-            sent = await merge_queue_ids(w, list(record.queue), league_id=record.league_id)
-            out["queue"] = {"entries": len(sent.get("accepted") or []),
-                            "from_the_user": len(sent.get("kept_from_the_users_queue") or []),
-                            "error": sent.get("error")}
+            out["queue"] = await _resend_queue(w, record)
     except Exception as exc:
         _log.exception("could not finish the resume for league %s", record.league_id)
         await _channel(f"watch for league {record.league_id} joined, but finishing the "
@@ -3198,6 +3224,16 @@ def _resume_message(out: dict) -> str:
         return head + "; no queue to re-send"
     if queue.get("error"):
         return head + f"; the queue was NOT re-sent ({queue['error']})"
+    if queue.get("mode") == "replace":
+        # No echo means ESPN held no queue, which is the ordinary state after a
+        # restart. Nothing of the user's could be kept because there was nothing
+        # to keep -- and the one case where that is wrong, a queue edited in the
+        # app during the downtime that ESPN never echoed, is the cost of saying
+        # it, so it is said.
+        return (head + f"; queue re-sent from the record, {queue['entries']} entries; "
+                "ESPN echoed no queue on this connection, so it was holding none and "
+                "nothing of yours could be kept -- an edit made in the app while the "
+                "server was down would have been overwritten")
     return (head + f"; queue re-sent, {queue['entries']} entries, "
             f"{queue['from_the_user']} of them yours")
 
