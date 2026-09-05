@@ -1579,6 +1579,26 @@ All notable changes to this project. Format follows
   channel is what outlives them -- so it is held until one exists. The socket is
   live from the moment it resumes regardless.
 
+**A reload keeps the running watch, for real**
+- `reload_code` moved a live watch onto the reloaded class and filled in the
+  state the new `__init__` sets. Before this, an instance built when the draft
+  started kept pointing at the OLD class object, so it ran the OLD methods, and
+  it lacked every field added since. Observed live: `draft_queue` raised on a
+  missing `queue_echoes`, and the reader loop appends to it on every `DRAFT_LIST`
+  and increments `connection` on reconnect, so ESPN's next echo would have raised
+  inside the socket loop mid-draft.
+- Class-level defaults were the alternative and are worse: one `queue_echoes = []`
+  on the class is shared by every watch in the process, so two leagues would write
+  into each other's history. A crash traded for silent cross-league corruption is
+  the wrong direction.
+- `watch.REBUILDABLE_STATE` and `watch.CONSTRUCTED_STATE` split the fields into
+  what a reload can recreate from nothing and what came from the constructor. A
+  missing constructor field is reported rather than invented -- an empty string
+  where a credential belongs is not a recovery.
+- A static test walks `DraftWatch.__init__`'s AST and fails if a field is in
+  neither table, so the next one added cannot repeat this quietly. Nothing the
+  draft built is overwritten, which is the whole reason the object is kept.
+
 **Pick queue: merge, do not replace**
 - `set_draft_queue` merges by default. ESPN's `DRAFT_LIST` carries the whole
   queue rather than a change, and the queue has two authors, so a call that sent

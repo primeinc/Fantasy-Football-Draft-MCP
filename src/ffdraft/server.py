@@ -2644,6 +2644,37 @@ def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
             "reloaded": sorted(fresh_names & live_names)}
 
 
+def _migrate_watches(errors: dict[str, str]) -> dict[str, Any]:
+    """Bring every live watch onto the reloaded class.
+
+    `reload_code` promises the running watch survives, and until now that was
+    true only of the object's identity. The instance still pointed at the class
+    object the old module defined, so it kept running the old methods, and it
+    lacked every attribute added to `__init__` since the draft started. Measured
+    live: `draft_queue` raised on a missing `queue_echoes`, and the reader loop
+    would have raised on ESPN's next echo.
+
+    Never raises. A reload that cannot migrate must still return, because the
+    alternative is a half-reloaded server.
+    """
+    from . import watch as watch_mod
+
+    out: dict[str, Any] = {"migrated": {}, "failed": {}}
+    for league_id, entry in list(_WATCHES.items()):
+        try:
+            w, _task = entry
+        except (TypeError, ValueError):
+            continue
+        try:
+            out["migrated"][league_id] = watch_mod.migrate_instance(
+                w, watch_mod.DraftWatch)
+        except Exception as exc:
+            _log.exception("could not migrate the watch for league %s", league_id)
+            out["failed"][league_id] = f"{type(exc).__name__}: {exc}"
+            errors[f"watch:{league_id}"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 def reload_package() -> dict[str, Any]:
     """Re-import every ffdraft module from disk, this one last, and point the
     module's `mcp` back at the server object the transport is serving, with
@@ -2664,6 +2695,7 @@ def reload_package() -> dict[str, Any]:
             importlib.reload(module)
         except Exception as exc:
             errors[name] = f"{type(exc).__name__}: {exc}"
+    watches = _migrate_watches(errors)
     me = sys.modules[__name__]
     # Launched as `python -m ffdraft.server` -- which is how .mcp.json starts it
     # -- this module runs as `__main__` and `ffdraft.server` is never entered
@@ -2698,7 +2730,7 @@ def reload_package() -> dict[str, Any]:
     # a fresh server object here, and the transport serves `live`.
     changes = _sync_tools(live, me.__dict__["mcp"])
     me.__dict__["mcp"] = live
-    return {"errors": errors, "tools": changes}
+    return {"errors": errors, "tools": changes, "watches": watches}
 
 
 @mcp.tool()
@@ -2706,9 +2738,14 @@ async def reload_code(ctx: Context = None) -> str:
     """Reload this server's code from disk without a reconnect: every ffdraft
     module is re-imported, the tool list is rebuilt from the new functions,
     and `notifications/tools/list_changed` is sent so Claude Code refreshes
-    it. The running draft watch, its socket and your ESPN queue survive; the
-    watch calls the reloaded model on its next recommendation. A module that
-    fails to import keeps its previous code and is reported."""
+    it. A module that fails to import keeps its previous code and is reported.
+
+    The running draft watch, its socket and your ESPN queue survive, and the
+    watch is moved onto the reloaded class: its own methods become the new code
+    and any state the new `__init__` sets is added to it. Everything the draft
+    built -- picks, queue, lines, snapshots -- is left exactly as it was.
+    `watches` in the result says what was added per league, and names anything
+    that could not be rebuilt rather than guessing at it."""
     import traceback
 
     try:

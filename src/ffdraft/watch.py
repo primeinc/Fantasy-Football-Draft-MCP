@@ -138,6 +138,86 @@ MAX_FAILED_SESSIONS = 5
 RECOMMEND_WITHIN = 3
 
 
+# ---------------------------------------------------------------- reload migration
+#
+# A watch object outlives `reload_code`, and that is the point of it. But the
+# instance was built by the code that was loaded when the draft started, so after
+# a reload it is an OLD instance being run by NEW methods: any attribute added to
+# `__init__` since it was constructed simply is not there.
+#
+# Measured live on 2026-09-05: after reloading main, `draft_queue` raised because
+# the running watch had no `queue_echoes`. The tool error was the mild half. The
+# reader loop appends to `queue_echoes` on every DRAFT_LIST and increments
+# `connection` on reconnect, so the next echo from ESPN would have raised inside
+# the socket loop, mid-draft.
+#
+# Class-level defaults were the other candidate and are worse, not merely
+# equivalent. `queue_echoes = []` on the class is one list shared by every watch
+# in the process: `append` would mutate it for all of them, so two leagues would
+# silently write into each other's history. Trading a loud crash for quiet
+# cross-league corruption is the wrong direction. A migration that gives each
+# instance its own value keeps the isolation the constructor established.
+#
+# The two tables below must together name every attribute `__init__` assigns.
+# `test_watch_reload` asserts exactly that against the AST, so a field added
+# without a decision here fails the suite rather than the next live reload.
+
+# State a reload can rebuild from nothing: counters, logs and accumulators whose
+# meaning is "what has happened on this connection so far". An old instance
+# missing one has simply never recorded any, so an empty one is the truth.
+REBUILDABLE_STATE: dict[str, Callable[[], object]] = {
+    "online": dict, "online_at_init": dict, "chat": list, "presence": list,
+    "slot_of": dict, "picks_seen": int, "connected": bool, "last_line": str,
+    "lines": list, "init_b64": lambda: None, "snapshots": list,
+    "snapshot_failures": int, "ready": asyncio.Event, "bumped": bool,
+    "ws": lambda: None, "own_pick": lambda: None, "queue": lambda: None,
+    "queue_echoes": list, "connection": int, "init_queue": lambda: None,
+    "init_queue_checks": list, "queue_seen": asyncio.Event,
+    "queue_echo": lambda: None,
+}
+
+# State that came from the constructor's arguments or from work done at startup.
+# A live instance always has these -- they have existed for as long as the class
+# has -- and if one is ever missing it cannot be invented here, so the migration
+# reports it rather than guessing.
+CONSTRUCTED_STATE = frozenset({
+    "league_id", "bye_weight", "refresh", "directory", "season", "team_id",
+    "swid", "espn_s2", "league", "board", "notify", "state",
+})
+
+
+def migrate_instance(instance: object, cls: type | None = None) -> dict:
+    """Bring a watch built by older code up to the current class.
+
+    Two things, in this order. The class is rebound first, because after
+    `importlib.reload` the instance still points at the OLD class object and so
+    runs the OLD methods -- `reload_code` would report success while the watch's
+    own reader loop was unchanged. Then the attributes the new code expects are
+    added, since the new methods are what need them.
+
+    Returns what it did. Nothing is overwritten: an attribute already present is
+    left exactly as the running draft left it, which is the whole reason the
+    object is being kept rather than rebuilt.
+    """
+    target = cls or DraftWatch
+    result: dict = {"class_rebound": False, "added": [], "cannot_rebuild": []}
+    if type(instance) is not target:
+        try:
+            instance.__class__ = target
+            result["class_rebound"] = True
+        except TypeError as exc:  # layout mismatch; nothing safe to do
+            result["cannot_rebuild"].append(f"__class__: {exc}")
+            return result
+    for name, factory in REBUILDABLE_STATE.items():
+        if not hasattr(instance, name):
+            setattr(instance, name, factory())
+            result["added"].append(name)
+    for name in sorted(CONSTRUCTED_STATE):
+        if not hasattr(instance, name):
+            result["cannot_rebuild"].append(name)
+    return result
+
+
 class DraftWatch:
     def __init__(self, league_id: str, season: int, team_id: int, swid: str, espn_s2: str,
                  league: LeagueSettings, board_df, notify: Notify,
