@@ -7,6 +7,11 @@ the model thinks were left on the table, and the reach against ADP. The same
 pass scores the survival model: every "X% chance he lasts to your next pick"
 the model gave a team is checked at that team's next pick.
 
+`counterfactual_draft` is the same walk with the model intervening: at one
+team's turns it takes the model's pick instead, that pick changes what is left
+for everyone after it, and the rest of the room drafts per the walk-forward
+blend predictor. Its output is a simulation, labelled as one.
+
 Limits, stated because they bound what the numbers mean: projections and ADP
 are today's, not as of the pick (news since then moves both); kickers, defenses
 and players the board cannot model are `off_board` and score nothing.
@@ -17,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from . import choice, model
-from .board import DraftState
+from .board import DraftState, lineup_value
 from .config import LeagueSettings
 from .names import normalize as norm_name
 
@@ -60,12 +65,14 @@ def room_drift(board: pd.DataFrame, state: DraftState, last: int = 0) -> dict:
 
 def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
                  candidates: int = 10, adp_shift: float | dict[str, float] = 0.0,
-                 walk_forward: bool = True) -> dict:
+                 walk_forward: bool = True, team_effects: bool | None = None) -> dict:
     """Score every recorded pick against the model and return per-pick rows,
     per-team totals, and the survival model's calibration. `adp_shift` is
     passed to recommend() so the calibration can be read with and without the
     room's drift applied. With `walk_forward` the choice predictors are scored
-    prequentially as well and a forecast for the pick on the clock is returned."""
+    prequentially as well and a forecast for the pick on the clock is returned.
+    `team_effects` adds `choice`'s per-team predictor to that score sheet,
+    defaulting to `choice.TEAM_EFFECTS` (off)."""
     b = board.copy()
     if "_key" not in b.columns:
         b["_key"] = b["name"].map(norm_name)
@@ -76,7 +83,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
     rows: list[dict] = []
     forecasts: list[tuple[float, bool, int, str]] = []
     taken: set[str] = set()
-    wf = choice.WalkForward() if walk_forward else None
+    wf = choice.WalkForward(team_effects=team_effects) if walk_forward else None
     recent_positions: list[str] = []
 
     def recommend_for(slot: int, overall: int, pool: pd.DataFrame) -> tuple[pd.DataFrame, int | None]:
@@ -93,7 +100,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         pool = b[~b["_key"].isin(taken)]
         recs, next_pick = recommend_for(slot, overall, pool)
         if wf is not None and len(recs):
-            wf.observe(recs, key if key in recs.index else None, recent_positions, overall)
+            wf.observe(recs, key if key in recs.index else None, recent_positions, overall, slot)
         where = np.flatnonzero(recs.index.to_numpy() == key)
         rnd = (overall - 1) // league.teams + 1
         row = {
@@ -168,8 +175,262 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
             pool = b[~b["_key"].isin(taken)]
             recs, next_pick = recommend_for(slot, on_clock, pool)
             out["forecast"] = {"pick": on_clock, "slot": slot, "next_pick": next_pick,
-                               **wf.forecast(recs, recent_positions)}
+                               **wf.forecast(recs, recent_positions, slot=slot)}
     return out
+
+
+# What a team other than the model does at its turn in a counterfactual.
+COUNTERFACTUAL_POLICIES = ("argmax", "sample")
+
+
+class _Arm:
+    """One simulated timeline: who has been taken, each team's roster, the
+    positional run, and the picks made. Players are held by board row, not by
+    name key, because two board rows can share a normalised key (the same player
+    listed twice, or two real players with one name at different positions) and
+    a name-keyed pool would remove both at once."""
+
+    def __init__(self) -> None:
+        self.taken: set[int] = set()
+        self.rosters: dict[int, dict[str, int]] = {}
+        self.recent: list[str] = []
+        self.picks: list[dict] = []
+        self.counts: dict[str, int] = {}
+
+    def bump(self, name: str) -> None:
+        self.counts[name] = self.counts.get(name, 0) + 1
+
+    def take(self, overall: int, slot: int, row: int | None, name: str,
+             position: str | None, proj: float | None) -> None:
+        if row is not None:
+            self.taken.add(row)
+        if position:
+            held = self.rosters.setdefault(slot, {})
+            held[str(position)] = held.get(str(position), 0) + 1
+            self.recent.append(str(position))
+        self.picks.append({"overall": overall, "slot": slot, "name": name,
+                           "position": position, "proj_points": proj, "row": row})
+
+
+def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
+                         slot: int, adp_shift: float | dict[str, float] | None = None,
+                         policy: str = "argmax", seed: int = 0) -> dict:
+    """Simulate the draft again with the model drafting for `slot`.
+
+    `replay_draft` is observational: it scores the real picks and changes
+    nothing. This one intervenes. At each of `slot`'s turns the model picks for
+    that team's simulated roster and the room's drift, and that pick changes what
+    is left for everyone after it. Every other team takes the blend predictor's
+    choice among the players still available -- `choice.WalkForward`, fitted
+    prequentially on the *real* picks up to that point, so nothing from later in
+    the draft leaks backward. `policy="argmax"` takes the predictor's likeliest
+    player and is deterministic; `policy="sample"` draws from its distribution
+    with `seed`.
+
+    Three timelines run in step. The *real* one is only used to fit the
+    predictor. The *model* arm is the intervention. The *control* arm is the same
+    simulated room with the target team mirroring its real picks instead, which
+    is what makes the answer readable: `starters_proj.delta_vs_control` holds the
+    room fixed and is the intervention alone, while `delta_vs_real` also carries
+    the difference between the predictor's room and the real one. With the
+    predictor agreeing with the real room on only a fraction of picks, that
+    second number is mostly the room, so read the first.
+
+    A pick the board cannot model (a kicker, a defense, a player with no
+    projection) is mirrored for the *other* teams: the board holds nobody the
+    predictor could have named in his place, so predicting one would eat a
+    modelled player who really was still there. It is NOT mirrored at the target
+    slot, where the model picks from the board every turn -- the real pick scores
+    0 there whatever happens, so nothing is taken from the comparison, and those
+    are exactly the turns a substitution is most likely to be worth points.
+
+    This is a simulation, not a measurement. It assumes every other team behaves
+    like the predictor, and it prices the whole draft with today's projections
+    and ADP. `adp_shift` defaults to the room drift over the whole record, which
+    is the same number `draft_replay` reports and is therefore not as-of either.
+    """
+    if policy not in COUNTERFACTUAL_POLICIES:
+        raise ValueError(f"policy must be one of {COUNTERFACTUAL_POLICIES}, got {policy!r}")
+    b = board.copy()
+    if "_key" not in b.columns:
+        b["_key"] = b["name"].map(norm_name)
+    b = b.reset_index(drop=True)
+    b["_row"] = np.arange(len(b), dtype=int)
+    b = b.set_index("_row", drop=False)
+    if adp_shift is None:
+        adp_shift = room_drift(board, state)["shift"]
+    proj_of = dict(zip(b["_row"], b["proj_points"]))
+    pos_of = dict(zip(b["_row"], b["position"]))
+    rows_of_key: dict[str, list[int]] = {}
+    for r, k in zip(b["_row"], b["_key"]):
+        rows_of_key.setdefault(str(k), []).append(int(r))
+    rng = np.random.default_rng(seed)
+    wf = choice.WalkForward()
+    picks = sorted(state.picks, key=lambda p: p["overall"])
+    real, arm_model, arm_control = _Arm(), _Arm(), _Arm()
+    subs: list[dict] = []
+
+    def row_for(key: str, taken: set[int], position: str | None) -> int | None:
+        """The board row a recorded pick refers to, given what this timeline has
+        already taken. A recorded pick carries a name, not an id, so a duplicate
+        key is resolved by position where the pick has one."""
+        free = [r for r in rows_of_key.get(key, ()) if r not in taken]
+        if not free:
+            return None
+        if position:
+            for r in free:
+                if str(pos_of.get(r)) == str(position):
+                    return r
+        return free[0]
+
+    def recs_for(arm: _Arm, team_slot: int, overall: int) -> pd.DataFrame:
+        pool = b[~b["_row"].isin(arm.taken)]
+        if pool.empty:
+            return pool
+        later = [n for n in league.picks_for_slot(team_slot) if n > overall]
+        return model.recommend(pool, league, current_pick=overall,
+                               next_pick=(later[0] if later else None),
+                               roster=arm.rosters.get(team_slot, {}), top_n=len(pool),
+                               adp_shift=adp_shift)
+
+    def predicted(recs: pd.DataFrame, arm: _Arm, team_slot: int) -> int:
+        p_blend = wf.probabilities(recs, arm.recent, slot=team_slot)
+        return (int(np.argmax(p_blend)) if policy == "argmax"
+                else int(rng.choice(len(p_blend), p=p_blend)))
+
+    def from_recs(recs: pd.DataFrame, i: int) -> tuple[int, str, str, float]:
+        r = recs.iloc[i]
+        return (int(recs.index[i]), str(r["name"]), str(r["position"]),
+                round(float(r["proj_points"]), 1))
+
+    def step(arm: _Arm, p: dict, model_drafts_target: bool) -> dict:
+        """Decide and record this pick for one simulated timeline."""
+        overall, team_slot = p["overall"], p["slot"]
+        key = norm_name(p["name"])
+        on_board = key in rows_of_key
+        real_row = row_for(key, arm.taken, p.get("position"))
+        recs = recs_for(arm, team_slot, overall)
+        if recs.empty:
+            # A different event from an unmodelled pick, and it keeps its own
+            # name and counter: the board ran out, so there is nobody to choose.
+            arm.bump("pool_exhausted")
+            arm.take(overall, team_slot, None, p["name"], p.get("position"), None)
+            return {"name": p["name"], "position": p.get("position"), "proj": None,
+                    "row": None, "basis": "the simulated pool is empty"}
+        if team_slot == slot and model_drafts_target:
+            row, name, pos, proj = from_recs(recs, 0)
+            basis = "model recommendation for the simulated roster"
+        elif team_slot == slot and real_row is not None:
+            row, name = real_row, p["name"]
+            pos, proj = str(pos_of[real_row]), round(float(proj_of[real_row]), 1)
+            basis = "control: the real pick, still available"
+        elif team_slot == slot and not on_board:
+            row, name, pos, proj = None, p["name"], p.get("position"), None
+            arm.bump("mirrored_off_board")
+            basis = "control: the real pick, off the board"
+        elif team_slot == slot:
+            row, name, pos, proj = from_recs(recs, predicted(recs, arm, team_slot))
+            arm.bump("control_picks_unavailable")
+            basis = f"control: the real pick was already gone; walk-forward blend, {policy}"
+        elif not on_board:
+            row, name, pos, proj = None, p["name"], p.get("position"), None
+            arm.bump("mirrored_off_board")
+            basis = "mirrored: the board cannot model this pick"
+        else:
+            row, name, pos, proj = from_recs(recs, predicted(recs, arm, team_slot))
+            arm.bump("other_team_picks")
+            if row != real_row:
+                arm.bump("other_team_picks_changed")
+            basis = f"walk-forward blend, {policy}"
+        arm.take(overall, team_slot, row, name, pos, proj)
+        return {"name": name, "position": pos, "proj": proj, "row": row, "basis": basis}
+
+    for p in picks:
+        overall, team_slot = p["overall"], p["slot"]
+        key = norm_name(p["name"])
+        # Both arms are decided with the predictor as it stands: fitted on the
+        # real picks before this one and nothing after.
+        took = step(arm_model, p, model_drafts_target=True)
+        control = step(arm_control, p, model_drafts_target=False)
+        if team_slot == slot:
+            real_row = row_for(key, real.taken, p.get("position"))
+            subs.append({
+                "pick": overall, "round": (overall - 1) // league.teams + 1,
+                "real": p["name"],
+                "real_position": (str(pos_of[real_row]) if real_row is not None
+                                  else p.get("position")),
+                "real_proj": (round(float(proj_of[real_row]), 1)
+                              if real_row is not None else None),
+                "model": took["name"], "model_position": took["position"],
+                "model_proj": took["proj"], "basis": took["basis"],
+                "control": control["name"], "control_proj": control["proj"],
+                "control_is_real": control["name"] == p["name"],
+                "same": took["name"] == p["name"],
+            })
+        # The real timeline: score the predictor on what actually happened, then
+        # let it learn from it. Nothing here reaches either simulated arm except
+        # through the fitted predictor.
+        real_row = row_for(key, real.taken, p.get("position"))
+        real_recs = recs_for(real, team_slot, overall)
+        if len(real_recs):
+            wf.observe(real_recs, real_row if real_row in real_recs.index else None,
+                       real.recent, overall, team_slot)
+        real.take(overall, team_slot, real_row, p["name"],
+                  (str(pos_of[real_row]) if real_row is not None else p.get("position")),
+                  (round(float(proj_of[real_row]), 1) if real_row is not None else None))
+
+    def roster_rows(rows: list[dict]) -> list[dict]:
+        return [{"pick": q["overall"], "round": (q["overall"] - 1) // league.teams + 1,
+                 "player": q["name"], "position": q.get("position"),
+                 "proj_points": (round(float(proj_of[q["row"]]), 1)
+                                 if q.get("row") is not None else None)}
+                for q in rows]
+
+    def mine(arm: _Arm) -> list[dict]:
+        return [q for q in arm.picks if q["slot"] == slot]
+
+    # Scored by exactly the logic that scores a recorded draft. Every pick here
+    # carries the projection and position of the board row it actually took, so
+    # a duplicate normalised name cannot resolve to the other row.
+    values = {name: lineup_value(b, mine(arm), league)
+              for name, arm in (("model", arm_model), ("control", arm_control),
+                                ("real", real))}
+    starters = {name: v["starters_proj"] for name, v in values.items()}
+    return {
+        "simulation": True,
+        "note": ("Simulated draft, not a measurement. The model drafts for slot "
+                 f"{slot}; every other team takes the walk-forward blend predictor's "
+                 f"{policy} choice, fitted prequentially on the real picks. The control "
+                 "arm is the same simulated room with slot "
+                 f"{slot} mirroring its real picks, so delta_vs_control is the "
+                 "intervention with the room held fixed; delta_vs_real also carries the "
+                 "difference between the predictor's room and the real one, which the "
+                 "`divergence` block sizes. Where the predictor's room had already taken "
+                 "a real pick the control falls back to the predictor too, so read "
+                 "divergence.control_picks_unavailable before the delta: the more of "
+                 "them, the less the control is the real drafter. Picks the board cannot "
+                 "model are mirrored for the other teams. Projections and ADP are "
+                 "today's."),
+        "slot": slot, "mine": slot == state.my_slot, "policy": policy, "seed": seed,
+        "picks_replayed": len(picks), "adp_shift": adp_shift,
+        "model_roster": roster_rows(mine(arm_model)),
+        "control_roster": roster_rows(mine(arm_control)),
+        "real_roster": roster_rows(mine(real)),
+        "starters_proj": {**starters,
+                          "delta_vs_control": starters["model"] - starters["control"],
+                          "delta_vs_real": starters["model"] - starters["real"]},
+        "bench_proj": {name: v["bench_proj"] for name, v in values.items()},
+        "open_starter_slots": {name: v["open_starter_slots"] for name, v in values.items()},
+        "substitutions": subs,
+        "substitutions_made": sum(1 for s in subs if not s["same"]),
+        "divergence": {
+            "other_team_picks": arm_model.counts.get("other_team_picks", 0),
+            "other_team_picks_changed": arm_model.counts.get("other_team_picks_changed", 0),
+            "mirrored_off_board": arm_model.counts.get("mirrored_off_board", 0),
+            "pool_exhausted": arm_model.counts.get("pool_exhausted", 0),
+            "control_picks_unavailable": arm_control.counts.get("control_picks_unavailable", 0),
+        },
+    }
 
 
 # A team whose median pick passed at most this many better-ranked players on

@@ -88,6 +88,47 @@ All notable changes to this project. Format follows
   and settings survive (module globals are guarded with `globals().get` so a
   re-execution keeps them). Ends the reconnect-drops-the-watch cycle for code
   changes.
+**Counterfactual replay**
+- `draft_counterfactual` (`replay.counterfactual_draft`, `just counterfactual
+  [slot] [policy] [seed]`): the replay walk with the model intervening. At each
+  of one slot's turns the model picks for that team's simulated roster and the
+  room's drift; the pick changes what is left downstream; every other team takes
+  the walk-forward blend predictor's choice (`choice.WalkForward`, fitted
+  prequentially on the real picks up to that point — `argmax` by default,
+  `sample` with a seed available). Reports the roster the model would have
+  built, projected starter points against the real roster, and the substitution
+  at every turn. Labelled `simulation: true`.
+- Three timelines run in step. The real one only fits the predictor. The model
+  arm is the intervention. The **control** arm is the same simulated room with
+  the target team mirroring its real picks (falling back to the predictor where
+  the room has already taken one, counted as `control_picks_unavailable`), so
+  `starters_proj.delta_vs_control` holds the room fixed and is the intervention
+  alone, while `delta_vs_real` also carries the difference between the
+  predictor's room and the real one. Without the control the only available
+  number mixed the two and read as if it were the first.
+- A real pick the board cannot model (kicker, defense, unprojected player) is
+  mirrored rather than predicted for the *other* teams, so the simulated room
+  does not eat a modelled player who really was still on the board. It is not
+  mirrored at the target slot: the real pick scores 0 there whatever happens,
+  and those are the turns a substitution is most likely to be worth points.
+  Pool exhaustion is a separate branch with its own counter, not folded into
+  the off-board one.
+- Players are held by board row, not by normalised name: two rows can share a
+  key (the same player listed twice, or two players with one name at different
+  positions), and a name-keyed pool removes both at once. A recorded pick is
+  resolved to a row by position where it has one.
+- `board.lineup_value` is `team_strength`'s per-team scoring extracted, so a
+  simulated roster is scored by exactly the logic that scores a recorded one;
+  it now takes a pick at its word when the pick carries its own `proj_points`,
+  which recorded picks never do. `choice.WalkForward.probabilities` exposes one
+  predictor's distribution over an arbitrary pool without training on it.
+- On the live record (122 picks, slot 4, argmax): projected starter points,
+  model 1494, control 1058, real 1343 — the intervention is +436 against the
+  control and +151 against the real roster. 7 of 7 turns substituted. 106 of
+  111 other-team picks differ from the real draft, 4 off-board picks mirrored,
+  and the control could not have 3 of its 7 real picks. Those numbers are the
+  point as much as the delta is: the predictor's room is not that draft's room,
+  and a control missing three of its own picks is not quite the real drafter.
 
 **Walk-forward choice model**
 - `choice.py`: four conditional-logit predictors of what the room takes
@@ -96,6 +137,35 @@ All notable changes to this project. Format follows
   sample on every pick (log loss, top-1/3/5, median rank), with a forecast
   for the pick on the clock. Reported by `draft_replay`, `predict_pick`,
   `just replay` and `just predict`.
+
+**Team-specific effects in the choice model: measured, not adopted**
+- `choice.TeamConditionalLogit`: league weights plus a per-team deviation on the
+  three rank features and on new position indicators (`is_QB`/`is_RB`/`is_WR`/
+  `is_TE`), fitted by ascending one penalised average log-likelihood — `L2` on
+  the league weights, `TEAM_L2` (0.5, 25x stronger) on each team's deviation, so
+  a deviation has to survive a much harder penalty on seven or eight picks.
+  Roster need, positional run and injury stay league-wide: `need_mult` is already
+  computed from that team's own roster, so a deviation on it would fit the same
+  thing twice.
+- Off by default (`choice.TEAM_EFFECTS = False`). `replay_draft(team_effects=
+  True)` and `just teameffects [l2]` turn it on and add two predictors to the
+  same walk-forward pass: `blend_team` and its control `blend_pos`, which has
+  identical features and no deviations. Without that control a comparison
+  against the plain blend credits the deviations with the position intercepts'
+  work — which is exactly what happened on the first run here (`blend_team`
+  looked 0.043 better than `blend`, and all of it was the intercepts).
+- Live record, 122 picks, 117 scored out of sample, blend log loss 3.107,
+  blend_pos 3.058. `blend_team` minus `blend_pos` by shrinkage: TEAM_L2 0.02
+  +0.215, 0.05 +0.101, 0.2 +0.021, 0.5 +0.006, 2.0 +0.001. Worse at every level
+  and monotonically approaching the no-effects model as the penalty rises: the
+  best team-effects model on this record is the one with no team effects. The
+  code path therefore stays off and the default blend is unchanged.
+- Recorded because it is the more interesting half of the result: the *league*
+  position intercepts alone (`blend_pos`) do beat the blend on log loss (3.058
+  vs 3.107) and top-1 (0.197 vs 0.188) and top-5 (0.598 vs 0.564), but lose on
+  top-3 (0.453 vs 0.487). Not a clean win, one draft, and out of scope for a
+  change about per-team effects, so the shipped blend is left alone and the
+  numbers are here for whoever picks it up.
 
 **Predicting other teams**
 - `predict_pick` (`replay.predict_pick`, `replay.team_tendency`): the model's

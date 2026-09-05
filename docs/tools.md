@@ -171,6 +171,45 @@ answer also carries the walk-forward `predictors` score sheet, `predictor_rows`
 (each predictor's rank of and probability for every real pick) and the
 `forecast` for the pick on the clock; see `predict_pick`.
 
+### `draft_counterfactual`
+**A simulation, not a measurement**, and labelled as one in the answer
+(`simulation: true` plus a `note`). The same walk as `draft_replay`, except that
+the model intervenes: at each of `slot`'s turns (yours by default) it picks for
+that team's simulated roster and the room's drift, and that pick changes what is
+left for every pick after it. Every other team takes the walk-forward blend
+predictor's choice among the players still available — `choice.WalkForward`,
+fitted prequentially on the *real* picks up to that point, so nothing from later
+in the draft leaks in. `policy` is `argmax` (the predictor's likeliest player,
+deterministic) or `sample` (drawn from its distribution, with `seed`).
+
+Three timelines run in step: the real draft (which only fits the predictor), the
+**model** arm, and a **control** arm — the same simulated room with the target
+team mirroring its real picks instead. That control is what makes the answer
+readable. `starters_proj` carries `model`, `control`, `real`,
+`delta_vs_control` and `delta_vs_real`; the first delta holds the room fixed and
+is the intervention alone, the second also carries the difference between the
+predictor's room and the real one, which is usually the larger term. Where the
+predictor's room has already taken one of the real picks, the control falls back
+to the predictor as well and the pick is counted under
+`divergence.control_picks_unavailable` — read that before the delta, because the
+more of them there are, the less the control is the real drafter.
+
+Also returned: `model_roster`, `control_roster` and `real_roster`; `bench_proj`
+and `open_starter_slots` for each; `substitutions`, one row per turn of that team
+with the real, model and control picks side by side; and `divergence`
+(other-team picks and how many differ, off-board picks mirrored, picks past an
+exhausted pool). Rosters are scored by `board.lineup_value` — the same
+best-lineup logic `draft_strength` uses.
+
+Two things bound what it means. A real pick the board cannot model (a kicker, a
+defense, a player with no projection) is *mirrored* rather than predicted for
+the **other** teams: predicting one instead would eat a modelled player who
+really was still there. At the target slot it is not mirrored — the real pick
+scores 0 whatever happens, and those are the turns a substitution is most likely
+to be worth points. And the whole simulation is priced with today's projections,
+ADP and room drift, so it is no more as-of than `draft_replay` is.
+`just counterfactual [slot] [policy] [seed]` prints the same without a server.
+
 ### `predict_pick`
 For the team on the clock, or a given `slot`: `should` is the model's
 recommendation for that team's roster and next pick; `espn_list` is the next
@@ -188,7 +227,18 @@ injury status), each fitted on picks 1..t-1 only and scored on pick t before
 learning it. `predictors` reports out-of-sample log loss, top-1/3/5 rates and
 median rank per predictor; `forecast` gives each predictor's top five with
 probabilities, the blend's probability by position, and the fitted weights.
-No team-specific effects: eight picks per team cannot support them.
+
+Team-specific effects exist in the code and are **off** (`choice.TEAM_EFFECTS`).
+`choice.TeamConditionalLogit` gives each team a deviation on the three rank
+features and on position indicators, shrunk to the league weights by an L2
+(`TEAM_L2`) an order of magnitude stronger than the league's. Turning it on
+(`replay_draft(team_effects=True)`, `just teameffects [l2]`) adds two predictors
+to the score sheet: `blend_team` and its control `blend_pos`, which has the same
+features without the deviations, so the pair separates what the position
+intercepts buy from what being per-team buys. On the live record the deviations
+are worse out of sample at every shrinkage tried — see the numbers in
+[CHANGELOG.md](../CHANGELOG.md). Seven or eight picks per team is not enough
+evidence to move a weight further than the penalty pulls it back.
 
 ### `draft_strength`
 Every team's draft so far ranked by projected starter points: the best lineup

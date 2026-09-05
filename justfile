@@ -158,6 +158,96 @@ replay $picks='0':
               f"role {r['role_mult']!s:>4} model {r['model_pick']!s:<22} regret {r['pick_regret']!s:>6} "
               f"z {r['market_z']!s:>5}")
 
+# Score choice.py's per-team predictor against the plain blend on the recorded
+# draft. One walk-forward pass scores both on the same picks in the same order,
+# so the log losses are directly comparable. $l2 overrides choice.TEAM_L2 to see
+# how the answer moves with the shrinkage.
+[script]
+teameffects $l2='':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import choice, replay, server
+
+    if os.environ["l2"]:
+        choice.TEAM_L2 = float(os.environ["l2"])
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    out = replay.replay_draft(b, st, league, adp_shift=replay.room_drift(b, st)["shift"],
+                              team_effects=True)
+    s = out["predictors"]["predictors"]
+    print(f"team effects: TEAM_L2 {choice.TEAM_L2} vs league L2 {choice.L2}; "
+          f"{out['predictors']['picks_scored']} picks scored out of sample")
+    for name, r in s.items():
+        print(f"  {name:<11} log loss {r['log_loss']!s:>6}  top1 {r['top1']!s:>6}  top3 {r['top3']!s:>6}  "
+              f"top5 {r['top5']!s:>6}  median rank {r['median_rank']}")
+    def delta(a, b):
+        if not (s.get(a) and s.get(b)) or s[a]["log_loss"] is None or s[b]["log_loss"] is None:
+            return
+        d = s[a]["log_loss"] - s[b]["log_loss"]
+        print(f"{a} - {b} log loss: {d:+.3f} ({'BETTER' if d < 0 else 'WORSE'} out of sample)")
+
+    # blend_pos is the control: the same features without the team deviations.
+    # blend_pos - blend is what the position intercepts buy; blend_team -
+    # blend_pos is what being per-team buys on top of them.
+    delta("blend_pos", "blend")
+    delta("blend_team", "blend_pos")
+    delta("blend_team", "blend")
+    fc = out.get("forecast") or {}
+    for slot, dev in sorted((fc.get("team_deviations") or {}).items(), key=lambda kv: int(kv[0])):
+        biggest = max(dev.items(), key=lambda kv: abs(kv[1]))
+        print(f"  slot {slot:>2} deviation  " + ", ".join(f"{k} {v:+.3f}" for k, v in dev.items())
+              + f"   | largest {biggest[0]} {biggest[1]:+.3f}")
+
+# SIMULATION. Replay the draft with the model drafting for $slot (yours by
+# default) while every other team drafts per the walk-forward blend predictor.
+# $policy is argmax (deterministic) or sample. Same numbers as the
+# draft_counterfactual tool, without a server.
+[script]
+counterfactual $slot='0' $policy='argmax' $seed='0':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import replay, server
+
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    slot = int(os.environ["slot"]) or st.my_slot
+    out = replay.counterfactual_draft(b, st, league, slot, policy=os.environ["policy"],
+                                      seed=int(os.environ["seed"]))
+    print(out["note"])
+    print(f"slot {out['slot']}{' (yours)' if out['mine'] else ''}  picks replayed {out['picks_replayed']}  "
+          f"substitutions {out['substitutions_made']} of {len(out['substitutions'])}")
+    d = out["divergence"]
+    print(f"other teams: {d['other_team_picks_changed']} of {d['other_team_picks']} picks differ from the real draft; "
+          f"{d['mirrored_off_board']} off-board picks mirrored, {d['pool_exhausted']} picks past an empty pool; "
+          f"the control could not have {d['control_picks_unavailable']} of its real picks")
+    s, bn, o = out["starters_proj"], out["bench_proj"], out["open_starter_slots"]
+    print(f"projected starter points: model {s['model']}  control {s['control']}  real {s['real']}")
+    print(f"  vs control (same room, real picks mirrored): {s['delta_vs_control']:+}   <- the intervention")
+    print(f"  vs real    (also carries the room difference): {s['delta_vs_real']:+}")
+    print(f"bench: model {bn['model']} control {bn['control']} real {bn['real']}   "
+          f"open starter slots: model {o['model']} control {o['control']} real {o['real']}")
+    print("substitutions (real -> model, and what the control took)")
+    for r in out["substitutions"]:
+        mark = "  =" if r["same"] else "  ->"
+        control = "" if r["control_is_real"] else f"   control {r['control']} {r['control_proj']!s}"
+        print(f"  pick {r['pick']:>3} r{r['round']:<2} {r['real']:<26} {r['real_position']!s:<3} {r['real_proj']!s:>6}"
+              f"{mark} {r['model']:<26} {r['model_position']!s:<3} {r['model_proj']!s:>6}{control}")
+    for label, rows in (("model roster", out["model_roster"]), ("control roster", out["control_roster"]),
+                        ("real roster", out["real_roster"])):
+        print(label)
+        for r in rows:
+            print(f"  pick {r['pick']:>3} r{r['round']:<2} {r['player']:<26} {r['position']!s:<3} {r['proj_points']!s:>6}")
+
 # The draft_audit tool without a server: invariants between board, picks and
 # recommendation, plus the market-join report (rows priced synthetically, rows
 # priced through an alias).

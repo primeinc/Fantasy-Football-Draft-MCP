@@ -1145,42 +1145,62 @@ def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
     }
 
 
-def team_strength(board: pd.DataFrame, state: DraftState,
-                  labels: dict[int, str] | None = None) -> pd.DataFrame:
-    """Every team's draft so far, scored as projected starter points: the best
-    lineup its picks can fill under the league's starting slots, plus bench
-    projection and the starting slots still empty. Sorted strongest first.
+def lineup_value(board: pd.DataFrame, picks: list[dict],
+                 league: LeagueSettings) -> dict:
+    """One team's picks scored as projected starter points: the best lineup they
+    fill under the league's starting slots, plus bench projection and the
+    starting slots still empty.
 
     Picks the board cannot model (kickers, defenses, unmodelled players) count
-    toward the position they were recorded under with 0 projected points, so
-    the slot shows filled while the number stays honest."""
+    toward the position they were recorded under with 0 projected points, so the
+    slot shows filled while the number stays honest. `picks` is any list of
+    `{"name", "position"}` dicts, so a simulated roster scores the same way a
+    recorded one does.
+
+    A pick that carries its own `proj_points` is taken at its word, position and
+    all. Recorded picks never do, so `team_strength` is unaffected; a caller that
+    knows exactly which board row it took (`replay.counterfactual_draft`) passes
+    it, which is the only way to score two board rows sharing one normalised
+    name without both resolving to whichever came last."""
     proj = dict(zip(board["_key"], board["proj_points"])) if "_key" in board.columns else {}
     pos_of = dict(zip(board["_key"], board["position"])) if "_key" in board.columns else {}
-    starters = {p: n for p, n in state.league.starters.items()
-                if n and p in ("QB", "RB", "WR", "TE")}
-    flex = state.league.starters.get("FLEX", 0)
-    by_slot: dict[int, dict[str, list[float]]] = {}
-    for p in state.picks:
+    starters = {p: n for p, n in league.starters.items() if n and p in ("QB", "RB", "WR", "TE")}
+    flex = league.starters.get("FLEX", 0)
+    have: dict[str, list[float]] = {}
+    for p in picks:
         key = norm_name(p["name"])
-        pos = pos_of.get(key) or p.get("position")
+        given = p.get("proj_points")
+        if given is None:
+            pos, value = pos_of.get(key) or p.get("position"), float(proj.get(key) or 0.0)
+        else:
+            pos, value = p.get("position") or pos_of.get(key), float(given)
         if not pos:
             continue
-        by_slot.setdefault(p["slot"], {}).setdefault(pos, []).append(float(proj.get(key) or 0.0))
+        have.setdefault(str(pos), []).append(value)
+    have = {pos: sorted(v, reverse=True) for pos, v in have.items()}
+    start = sum(sum(have.get(pos, [])[:n]) for pos, n in starters.items())
+    leftovers = sorted((v for pos, n in starters.items() for v in have.get(pos, [])[n:]
+                        if pos in league.flex_eligible), reverse=True)
+    start += sum(leftovers[:flex])
+    bench = sum(leftovers[flex:])
+    empty = sum(max(0, n - len(have.get(pos, []))) for pos, n in starters.items())
+    empty += max(0, flex - len(leftovers))
+    return {"starters_proj": round(start), "bench_proj": round(bench),
+            "open_starter_slots": empty, "picks": sum(len(v) for v in have.values())}
+
+
+def team_strength(board: pd.DataFrame, state: DraftState,
+                  labels: dict[int, str] | None = None) -> pd.DataFrame:
+    """Every team's draft so far, scored as projected starter points by
+    `lineup_value`, sorted strongest first."""
+    by_slot: dict[int, list[dict]] = {}
+    for p in state.picks:
+        by_slot.setdefault(p["slot"], []).append(p)
     rows = []
     for slot in range(1, state.league.teams + 1):
-        have = {pos: sorted(v, reverse=True) for pos, v in by_slot.get(slot, {}).items()}
-        start = sum(sum(have.get(pos, [])[:n]) for pos, n in starters.items())
-        leftovers = sorted((v for pos, n in starters.items() for v in have.get(pos, [])[n:]
-                            if pos in state.league.flex_eligible), reverse=True)
-        start += sum(leftovers[:flex])
-        bench = sum(leftovers[flex:])
-        empty = sum(max(0, n - len(have.get(pos, []))) for pos, n in starters.items())
-        empty += max(0, flex - len(leftovers))
+        value = lineup_value(board, by_slot.get(slot, []), state.league)
         rows.append({"slot": slot, "team": (labels or {}).get(slot, f"slot {slot}"),
-                     "starters_proj": round(start), "bench_proj": round(bench),
-                     "open_starter_slots": empty,
-                     "picks": sum(len(v) for v in have.values()),
-                     "mine": slot == state.my_slot})
+                     **value, "mine": slot == state.my_slot})
     out = pd.DataFrame(rows).sort_values("starters_proj", ascending=False).reset_index(drop=True)
     out.insert(0, "rank", range(1, len(out) + 1))
     return out

@@ -1559,6 +1559,47 @@ def draft_replay(league_id: str = "", picks: int = 0) -> str:
 
 
 @mcp.tool()
+def draft_counterfactual(slot: int = 0, league_id: str = "", policy: str = "argmax",
+                         seed: int = 0) -> str:
+    """SIMULATION. Replay the draft with the model drafting for `slot` (yours by
+    default): at each of that team's turns the model picks for its simulated
+    roster, that pick changes what is left for everyone after it, and every
+    other team takes the walk-forward blend predictor's choice among the players
+    still available — fitted prequentially on the real picks, so nothing from
+    later in the draft leaks in. `policy` is `argmax` (the likeliest player,
+    deterministic) or `sample` (drawn from the distribution, with `seed`).
+
+    Returns three rosters for that slot — `model_roster`, `control_roster` (the
+    same simulated room with the team mirroring its real picks) and
+    `real_roster` — plus `starters_proj` for each. **Read
+    `starters_proj.delta_vs_control`**: it holds the room fixed and is the
+    intervention alone. `delta_vs_real` also carries the difference between the
+    predictor's room and the real one, which `divergence` sizes and which is
+    usually the larger term. `substitutions` gives every one of that team's
+    turns with the real, model and control picks side by side.
+
+    Real picks the board cannot model (kickers, defenses) are mirrored rather
+    than predicted for the other teams; at the target slot the model picks from
+    the board every turn. This is not a measurement: it assumes the rest of the
+    room behaves like the predictor and prices everything with today's
+    projections and ADP."""
+    from . import replay
+
+    state = _state()
+    b = _build_board()
+    league = _settings()[0]
+    slot = slot or state.my_slot
+    out = replay.counterfactual_draft(b, state, league, slot, policy=policy, seed=seed)
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None:
+        w, _task = entry
+        team_of_slot = {s: t for t, s in w.slot_of.items()}
+        if slot in team_of_slot:
+            out["team"] = w.team_label(team_of_slot[slot])
+    return json.dumps(out, indent=2, default=str)
+
+
+@mcp.tool()
 def predict_pick(league_id: str = "", slot: int = 0) -> str:
     """For the team on the clock (or `slot`): what the model would take for
     their roster (`should`), the next names on ESPN's own list (`espn_list`),
