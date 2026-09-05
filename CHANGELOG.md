@@ -626,6 +626,15 @@ All notable changes to this project. Format follows
   between K and D/ST when it needs both; everyone else carries the rate the room
   has actually taken the position. `counting_survival` turns those hazards into
   P(K <= i) by board index, because if k of a position go, the k best go.
+- **One pool of picks, not two.** K and D/ST are forced out of the same
+  remaining picks, so a team is compelled by its combined unfilled count rather
+  than by either position alone. It is the difference between seeing the squeeze
+  and missing it: at 189 the 15 unfilled defenses fit comfortably in the 28
+  picks after 196, so counted per position nothing is forced and the tool says
+  "95% chance he lasts" over a seven-pick window. Fifteen defenses **and**
+  fifteen kickers do not fit in 28, and three of those six picks belong to teams
+  down to two picks and two open slots. Reverting to a per-position count fails
+  seven of the tests here, at 0.95 survival where the joint count gives 0.12.
 - **Per team and per pick, both load-bearing.** In this room the compelled
   regime begins at pick 194 — 30 unfilled slots across 16 teams is 1.88 each,
   two picks later than "two per team" because Aubrey at 86 and Denver at 119 are

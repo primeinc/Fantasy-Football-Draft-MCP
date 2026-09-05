@@ -95,6 +95,55 @@ class TestPickHazards:
         hz = model.pick_hazards(_league(), held, 196, 221, "DST", 1 / 125)
         assert all(h == 1 / 125 for h in hz), hz
 
+    def test_the_competing_position_is_what_moves_the_boundary(self):
+        # K and D/ST are forced out of one pool of picks, so a team needing both
+        # runs out of room a round earlier than a team needing only a defense.
+        # At 189 three of the six intervening picks belong to teams down to two
+        # picks; with no kicker slot to fill, two picks are enough and none is.
+        no_kicker = LeagueSettings(
+            name="t", teams=16, draft_slot=4, rounds=14,
+            starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 0, "K": 0, "DST": 1})
+        both = model.pick_hazards(_league(), {}, 189, 196, "DST", 1 / 125)
+        alone = model.pick_hazards(no_kicker, {}, 189, 196, "DST", 1 / 125)
+        assert sum(1 for h in both if h > 1 / 125) == 3, both
+        assert sum(1 for h in alone if h > 1 / 125) == 0, alone
+
+    def test_a_team_that_holds_the_position_already_cannot_take_another(self):
+        # Slot 10 took the Broncos at 119. At its last pick it is compelled --
+        # it still owes a kicker -- but its hazard for a second defense is 0.
+        league = _league()
+        hz = model.pick_hazards(league, {10: {"DST": 1}}, 196, 221, "DST", 1 / 125)
+        by_pick = dict(zip(range(197, 221), hz))
+        assert model.slot_for_pick(league, 215) == 10
+        assert by_pick[215] == 0.0, by_pick[215]
+
+
+class TestTheBoundaryTurn:
+    """189 to 196: the last turn before the squeeze binds, and the one a
+    forced count read at the horizon's first pick reports as empty."""
+
+    def test_counting_sees_the_squeeze_that_the_room_rate_alone_does_not(self):
+        board, league = _board(), _league()
+        quiet = model.recommend(board, league, current_pick=164, next_pick=189,
+                                roster=ROSTER, top_n=6, room_picks=ROOM,
+                                picks_so_far=PICKS).set_index("name")
+        boundary = model.recommend(board, league, current_pick=189, next_pick=196,
+                                   roster=ROSTER, top_n=6, room_picks=ROOM,
+                                   picks_so_far=PICKS).set_index("name")
+        # Nothing is forced in the 25 picks before 189, and three of the six
+        # before 196 are, so the shorter horizon is the more dangerous one.
+        assert float(quiet.loc["D1", "p_available_next"]) > 0.8
+        assert float(boundary.loc["D1", "p_available_next"]) < 0.5
+        assert (float(boundary.loc["D1", "pick_value"])
+                > float(quiet.loc["D1", "pick_value"]))
+
+    def test_the_why_string_says_how_many_picks_are_forced(self):
+        board, league = _board(), _league()
+        out = model.recommend(board, league, current_pick=189, next_pick=196,
+                              roster=ROSTER, top_n=6, room_picks=ROOM,
+                              picks_so_far=PICKS).set_index("name")
+        assert "3 of 6 picks forced" in model.explain(out.loc["D1"])
+
 
 class TestCountingSurvival:
     """P(K <= i) by index: if k go, the k best go."""
