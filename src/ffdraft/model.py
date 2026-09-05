@@ -57,7 +57,7 @@ def touchdown_luck_multiplier(rz_touches: pd.Series, rz_td: pd.Series,
     return mult.where(qualifies, 1.0)
 
 
-def apply_current_team(tbl: pd.DataFrame, depth_chart: pd.DataFrame) -> pd.DataFrame:
+def apply_current_team(tbl: pd.DataFrame, depth_chart: pd.DataFrame | None) -> pd.DataFrame:
     """Override each player's team with the current depth chart, when available.
 
     `tbl["team"]` (built from weekly box scores) reflects whichever team a player
@@ -103,7 +103,7 @@ def _season_weighted(profiles: pd.DataFrame, col: str) -> pd.Series:
     return (agg["num"] / agg["den"].replace(0, np.nan)).rename(col)
 
 
-def build_player_table(league: LeagueSettings, weights: ModelWeights,
+def build_player_table(league: LeagueSettings, _weights: ModelWeights,
                        season: int = CURRENT_SEASON) -> pd.DataFrame:
     """Assemble every modelled feature into one row per player.
 
@@ -599,7 +599,7 @@ def expected_best_at_next_pick(avail: pd.DataFrame) -> dict[str, float]:
             if p_all_gone < 0.005:
                 break
         # If the position empties out entirely, waiting is worth the worst on the board.
-        out[pos] = expected + p_all_gone * float(chunk["draft_score"].min() if len(chunk) else 0)
+        out[str(pos)] = expected + p_all_gone * float(chunk["draft_score"].min() if len(chunk) else 0)
     return out
 
 

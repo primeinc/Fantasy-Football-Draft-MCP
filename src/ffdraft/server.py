@@ -53,8 +53,8 @@ try:  # mcp SDK >= 2.0
                         experimental_capabilities=dict(self.CHANNEL_CAPS)),
                 )
 except ImportError:  # mcp SDK 1.x
-    from mcp.server.fastmcp import Context
-    from mcp.server.fastmcp import FastMCP as _Server
+    from mcp.server.fastmcp import Context  # ty: ignore[unresolved-import]
+    from mcp.server.fastmcp import FastMCP as _Server  # ty: ignore[unresolved-import]
 
 from . import adp as adp_mod
 from . import board as bd
@@ -297,7 +297,6 @@ def refresh_data(force_download: bool = False) -> str:
     features.clear_derived_cache()
     _BOARDS.clear()
     b = _build_board(force=True)
-    league, _ = _settings()
     return json.dumps({
         "players_modelled": len(b),
         "by_position": b["position"].value_counts().to_dict(),
@@ -409,6 +408,7 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
     state = _state()
     b = _build_board()
     platform = platform.lower()
+    picks: list[dict[str, Any]]
 
     if platform == "sleeper":
         if not draft_id:
@@ -429,11 +429,17 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
     state.reset()
     unmatched = []
     for p in picks:
-        row = bd.match_player(p["name"], b)
+        name = str(p["name"])
+        row = bd.match_player(name, b)
         if row is None:
-            unmatched.append(p["name"])
-        state.record(row["name"] if row is not None else p["name"],
-                     p.get("overall"), p.get("slot"))
+            unmatched.append(name)
+        overall = p.get("overall")
+        slot = p.get("slot")
+        state.record(str(row["name"]) if row is not None else name,
+                     int(overall) if overall is not None else None,
+                     int(slot) if slot is not None else None,
+                     position=(str(row["position"]) if row is not None
+                               else (str(p["position"]) if p.get("position") else None)))
     audit = bd.audit_state(b, state)
     return json.dumps({
         "platform": platform, "picks_synced": len(picks),
@@ -583,7 +589,6 @@ def value_picks(limit: int = 20, direction: str = "undervalued") -> str:
     players you can wait on and still get. Negative means the market is paying more
     than the model thinks they're worth.
     """
-    league, _ = _settings()
     b = _mark_drafted(_build_board(), _state())
     avail = b[~b["drafted"]].copy()
     # Only players the market actually ranks. A synthetic fallback ADP means nobody
@@ -1120,7 +1125,7 @@ def plan_my_draft(strategy: str = "balanced") -> str:
     to you at each turn, and applies the same recommendation logic at every stop.
     strategy: balanced, zero_rb, hero_rb, or robust_rb.
     """
-    league, weights = _settings()
+    league, _ = _settings()
     state = _state()
     b = _mark_drafted(_build_board(), state).copy()
     b = b[~b["drafted"]]
@@ -1135,7 +1140,7 @@ def plan_my_draft(strategy: str = "balanced") -> str:
     my_picks = [p for p in state.my_picks() if p >= state.on_the_clock]
     roster: dict[str, int] = dict(state.my_roster(b))
     taken: set[str] = set()
-    plan = []
+    plan: list[dict[str, Any]] = []
 
     for i, pick in enumerate(my_picks):
         nxt = my_picks[i + 1] if i + 1 < len(my_picks) else None
@@ -1166,7 +1171,7 @@ def plan_my_draft(strategy: str = "balanced") -> str:
             "alternates": [r["name"] for _, r in recs.iloc[1:].iterrows()],
         })
 
-    total = sum(p["proj_points"] for p in plan)
+    total = sum(float(p["proj_points"]) for p in plan)
     return json.dumps({
         "strategy": strategy, "your_slot": state.my_slot,
         "projected_starters_points": round(total, 1),

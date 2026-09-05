@@ -112,6 +112,18 @@ untested until a draft completes.
 Pick timing and presence over time exist only in a client that was connected; the watch
 records both from connect onward.
 
+### Players the board cannot model
+
+The board holds QB, RB, WR and TE with a modelled season. Recorded picks outside that
+set are counted on your roster by the position ESPN's crosswalk gives them, and
+`draft_audit` lists them as warnings. Seen in a live draft on 2026-09-04:
+
+| pick | why absent |
+|---|---|
+| Brandon Aubrey, Denver D/ST | K and DST are not modelled |
+| MarShawn Lloyd, Jonathon Brooks | no game since 2024, nothing to project |
+| Travis Hunter | nflverse position CB (7 weeks in 2025); ESPN lists him WR. Two-way players are not handled |
+
 The SSE variant `https://fantasydraft.espn.com/game-1/league-{league_id}/sse/JOIN?...`
 answers `ERROR 1 No team with ID {team_id} found` for the same parameters.
 

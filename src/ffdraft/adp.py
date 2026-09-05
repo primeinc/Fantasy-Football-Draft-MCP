@@ -980,9 +980,9 @@ def _pick_context(name: str, season: int) -> dict | None:
     w = w[w["season_type"] == "REG"]
     rows = pd.DataFrame()
     for candidate in (name, name.replace(".", "")):
-        key = norm_name(candidate)
-        rows = w[w["player_display_name"].map(norm_name) == key]
-        if not rows.empty:
+        hit = w[w["player_display_name"].map(norm_name) == norm_name(candidate)]
+        if not hit.empty:
+            rows = hit
             break
     if rows.empty:
         return None
@@ -1157,13 +1157,13 @@ def champion_strategies(league_id: str, seasons: list[int]) -> dict:
             "full_draft": picks,
         })
 
-    valid = [s for s in out_seasons if "error" not in s]
+    valid: list[dict] = [s for s in out_seasons if "error" not in s]
     rb_rb_open = sum(1 for s in valid
                      if s["opened"]["round_1"] and s["opened"]["round_2"]
                      and s["opened"]["round_1"]["position"] == "RB"
                      and s["opened"]["round_2"]["position"] == "RB")
-    qb_rounds = [s["first_qb_round"] for s in valid if s["first_qb_round"]]
-    te_rounds = [s["first_te_round"] for s in valid if s["first_te_round"]]
+    qb_rounds: list[int] = [int(s["first_qb_round"]) for s in valid if s["first_qb_round"]]
+    te_rounds: list[int] = [int(s["first_te_round"]) for s in valid if s["first_te_round"]]
 
     return {
         "league_id": league_id,
@@ -1176,9 +1176,9 @@ def champion_strategies(league_id: str, seasons: list[int]) -> dict:
                                       if qb_rounds else None),
             "first_qb_round_range": ([min(qb_rounds), max(qb_rounds)] if qb_rounds else None),
             "first_te_round_range": ([min(te_rounds), max(te_rounds)] if te_rounds else None),
-            "avg_rb_drafted": (round(sum(s["rb_drafted"] for s in valid) / len(valid), 1)
+            "avg_rb_drafted": (round(sum(int(s["rb_drafted"]) for s in valid) / len(valid), 1)
                               if valid else None),
-            "avg_wr_drafted": (round(sum(s["wr_drafted"] for s in valid) / len(valid), 1)
+            "avg_wr_drafted": (round(sum(int(s["wr_drafted"]) for s in valid) / len(valid), 1)
                               if valid else None),
         },
         "seasons": out_seasons,

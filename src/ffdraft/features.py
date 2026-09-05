@@ -23,8 +23,12 @@ from .config import (
 
 def fantasy_points(df: pd.DataFrame, sc: Scoring, te_bonus: float = 0.0) -> pd.Series:
     """Apply league scoring to weekly box-score rows."""
-    g = lambda c: df[c].fillna(0) if c in df.columns else 0.0  # noqa: E731
-    pts = (
+    zero = pd.Series(0.0, index=df.index)
+
+    def g(c: str) -> pd.Series:
+        return df[c].fillna(0.0) if c in df.columns else zero
+
+    pts: pd.Series = (
         g("passing_yards") * sc.pass_yd
         + g("passing_tds") * sc.pass_td
         + g("interceptions") * sc.interception
@@ -39,8 +43,10 @@ def fantasy_points(df: pd.DataFrame, sc: Scoring, te_bonus: float = 0.0) -> pd.S
            + g("receiving_2pt_conversions")) * sc.two_pt
     )
     if te_bonus and "position" in df.columns:
-        pts = pts + np.where(df["position"].eq("TE"), g("receptions") * te_bonus, 0.0)
-    return pts
+        bonus = pd.Series(np.where(df["position"].eq("TE"), g("receptions") * te_bonus, 0.0),
+                          index=df.index)
+        pts = pts + bonus
+    return pd.Series(pts, index=df.index)
 
 
 # Derived team frames are pure functions of the cached play-by-play, but each one

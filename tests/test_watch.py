@@ -12,8 +12,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "espn_draft_init.b64"
 
 def _watch(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(watch, "_espn_name_map", lambda: {
-        "4429795": "Jahmyr Gibbs", "4362628": "Ja'Marr Chase"})
+    monkeypatch.setattr(board, "espn_maps", lambda: (
+        {"4429795": "Jahmyr Gibbs", "4362628": "Ja'Marr Chase"},
+        {"4429795": "RB", "4362628": "WR"}))
     league = LeagueSettings(name="t", teams=16, draft_slot=4, rounds=14)
     events = []
 
@@ -35,7 +36,8 @@ def test_init_seeds_state_with_real_slots(tmp_path, monkeypatch):
     mine = [p for p in w.state.picks if p["slot"] == 4]
     assert [p["overall"] for p in mine] == [4, 29, 36, 61, 68, 93, 100]
     assert mine[0]["name"] == "Ja'Marr Chase"
-    assert w.state.picks[0] == {"overall": 1, "slot": 1, "name": "Jahmyr Gibbs", "player_id": None}
+    assert w.state.picks[0] == {"overall": 1, "slot": 1, "name": "Jahmyr Gibbs", "player_id": None,
+                                "position": "RB"}
     assert events[-1][1]["event"] == "snapshot"
     assert "114 picks made" in events[-1][0]
 
@@ -46,7 +48,8 @@ def test_selected_appends_and_announces(tmp_path, monkeypatch):
     asyncio.run(w.handle_line("SELECTED 10 -16001 16"))
 
     last = w.state.picks[-1]
-    assert last == {"overall": 115, "slot": 16, "name": "Atlanta Falcons D/ST", "player_id": None}
+    assert last == {"overall": 115, "slot": 16, "name": "Atlanta Falcons D/ST", "player_id": None,
+                    "position": "DST"}
     content, meta = events[-1]
     assert meta["event"] == "pick" and meta["pick"] == "115"
     assert "team 10 took Atlanta Falcons D/ST" in content

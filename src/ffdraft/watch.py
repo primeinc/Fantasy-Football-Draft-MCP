@@ -56,7 +56,7 @@ class DraftWatch:
         self.notify = notify
         self.state = bd.DraftState(league)
         self.slot_of: dict[int, int] = {}
-        self.espn_map = _espn_name_map()
+        self.espn_map, self.pos_map = bd.espn_maps()
         self.picks_seen = 0
         self.connected = False
         self.last_line = ""
@@ -157,7 +157,8 @@ class DraftWatch:
             self.state.reset()
             for p in picks:
                 self.state.record(self._name(p["player_id"]), p["overall"],
-                                  self.slot_of.get(p["team_id"]))
+                                  self.slot_of.get(p["team_id"]),
+                                  position=bd._espn_player_position(p["player_id"], self.pos_map))
             self.picks_seen = len(picks)
             self.ready.set()
             s = self.state.summary()
@@ -177,7 +178,8 @@ class DraftWatch:
             team_id, pid = int(fields[1]), int(fields[2])
             overall = self.state.on_the_clock
             name = self._name(pid)
-            self.state.record(name, overall, self.slot_of.get(team_id))
+            self.state.record(name, overall, self.slot_of.get(team_id),
+                              position=bd._espn_player_position(pid, self.pos_map))
             self.picks_seen += 1
             if team_id == self.team_id and self.own_pick and not self.own_pick.done():
                 self.own_pick.set_result({"overall": overall, "player_id": pid, "name": name})
@@ -295,6 +297,3 @@ class DraftWatch:
         return row["name"] if row is not None else raw
 
 
-def _espn_name_map() -> dict:
-    x = bd._id_crosswalk()
-    return x.dropna(subset=["espn_id"]).set_index("espn_id")["full_name"].to_dict()

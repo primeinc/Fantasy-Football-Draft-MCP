@@ -95,8 +95,8 @@ class TestLoadAdpHtmlFallback:
                 pass
 
         monkeypatch.setattr(adp_mod, "preseason_ecr",
-                            lambda season, superflex=False: pd.DataFrame())
-        monkeypatch.setattr(board.requests, "get", lambda *a, **k: Resp())
+                            lambda _season, _superflex=False: pd.DataFrame())
+        monkeypatch.setattr(board.requests, "get", lambda *_a, **_k: Resp())
 
         out = board.load_adp("ppr")
         assert out["source"].iloc[0] == "fantasypros_html"
@@ -123,7 +123,7 @@ class TestSyncEspnLive:
             def json(self):
                 return league_json
 
-        monkeypatch.setattr(board.requests, "get", lambda *a, **k: Resp())
+        monkeypatch.setattr(board.requests, "get", lambda *_a, **_k: Resp())
         monkeypatch.setattr(board, "_id_crosswalk", lambda: pd.DataFrame(
             [{"gsis_id": "g1", "espn_id": "4429795", "full_name": "Jahmyr Gibbs", "position": "RB"},
              {"gsis_id": "g2", "espn_id": "4362628", "full_name": "Ja'Marr Chase", "position": "WR"}]))
@@ -131,7 +131,7 @@ class TestSyncEspnLive:
         init = object()
         calls = {}
 
-        def fetch_init(league_id, season, team_id, swid, espn_s2):
+        def fetch_init(_league_id, _season, team_id, _swid, _espn_s2):
             calls["team_id"] = team_id
             return init, ["TOKEN x", "SELECTED 3 -16001 16"]
 
@@ -151,9 +151,10 @@ class TestSyncEspnLive:
         picks = board.sync_espn("1", 2026, swid="{ABC}", espn_s2="s2")
         assert calls["team_id"] == 3
         assert picks == [
-            {"overall": 1, "slot": 1, "name": "Jahmyr Gibbs", "player_id": None},
-            {"overall": 2, "slot": 4, "name": "Ja'Marr Chase", "player_id": None},
-            {"overall": 3, "slot": 4, "name": "Atlanta Falcons D/ST", "player_id": None},
+            {"overall": 1, "slot": 1, "name": "Jahmyr Gibbs", "position": "RB", "player_id": None},
+            {"overall": 2, "slot": 4, "name": "Ja'Marr Chase", "position": "WR", "player_id": None},
+            {"overall": 3, "slot": 4, "name": "Atlanta Falcons D/ST", "position": "DST",
+             "player_id": None},
         ]
 
     def test_completed_draft_keeps_read_api_path(self, monkeypatch):
@@ -167,11 +168,12 @@ class TestSyncEspnLive:
             def json(self):
                 return league_json
 
-        monkeypatch.setattr(board.requests, "get", lambda *a, **k: Resp())
+        monkeypatch.setattr(board.requests, "get", lambda *_a, **_k: Resp())
         monkeypatch.setattr(board, "_id_crosswalk", lambda: pd.DataFrame(
             [{"gsis_id": "g1", "espn_id": "4429795", "full_name": "Jahmyr Gibbs", "position": "RB"}]))
         picks = board.sync_espn("1", 2026, swid="{ABC}", espn_s2="s2")
-        assert picks == [{"overall": 1, "slot": None, "name": "Jahmyr Gibbs", "player_id": None}]
+        assert picks == [{"overall": 1, "slot": None, "name": "Jahmyr Gibbs", "position": "RB",
+                          "player_id": None}]
 
 
 class TestAuditState:
@@ -189,6 +191,17 @@ class TestAuditState:
                                    "Kenny Gainwell"],
                           "position": ["RB", "RB", "WR", "WR", "RB"]})
         return board.rekey(b)
+
+    def test_unmodelled_own_pick_still_counts_by_recorded_position(self, tmp_path, monkeypatch):
+        # MarShawn Lloyd: on the user's roster, no modelled season, so no board row.
+        # ESPN's crosswalk still knows he is a running back.
+        from ffdraft.config import LeagueSettings
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        st = board.DraftState(LeagueSettings(name="t", teams=16, draft_slot=4, rounds=14))
+        st.record("Ja'Marr Chase", 4, 4, position="WR")
+        st.record("MarShawn Lloyd", 29, 4, position="RB")
+        assert st.my_roster(self._board()) == {"WR": 1, "RB": 1}
 
     def test_clean_state_passes(self, tmp_path, monkeypatch):
         st = self._state(tmp_path, monkeypatch, [("Jahmyr Gibbs", 1), ("Bijan Robinson", 2),

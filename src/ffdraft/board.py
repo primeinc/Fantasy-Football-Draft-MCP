@@ -355,10 +355,14 @@ class DraftState:
 
     # -- mutation
     def record(self, player_name: str, overall: int | None = None,
-               team_slot: int | None = None, player_id: str | None = None) -> dict:
+               team_slot: int | None = None, player_id: str | None = None,
+               position: str | None = None) -> dict:
+        """position is kept for players the board does not model (a kicker, a back
+        with no recent season) so your roster count still sees them."""
         overall = overall or (len(self.picks) + 1)
         slot = team_slot if team_slot is not None else self.slot_for_pick(overall)
-        pick = {"overall": overall, "slot": slot, "name": player_name, "player_id": player_id}
+        pick = {"overall": overall, "slot": slot, "name": player_name, "player_id": player_id,
+                "position": position}
         self.picks = [p for p in self.picks if p["overall"] != overall] + [pick]
         self.picks.sort(key=lambda p: p["overall"])
         self.save()
@@ -416,7 +420,7 @@ class DraftState:
         counts: dict[str, int] = {}
         idx = board.set_index("_key")["position"].to_dict() if "_key" in board.columns else {}
         for p in mine:
-            pos = idx.get(norm_name(p["name"]))
+            pos = idx.get(norm_name(p["name"])) or p.get("position")
             if pos:
                 counts[pos] = counts.get(pos, 0) + 1
         return counts
@@ -517,15 +521,14 @@ def sync_espn(league_id: str, season: int = CURRENT_SEASON,
     detail = data.get("draftDetail") or {}
     picks = detail.get("picks") or []
 
-    xwalk = _id_crosswalk()
-    espn_map = xwalk.dropna(subset=["espn_id"]).set_index("espn_id")["full_name"].to_dict()
+    espn_map, pos_map = espn_maps()
 
     # The read API is blind while a draft is running: inProgress is true, every pick
     # carries playerId -1 and every roster is empty until the draft completes. The
     # picks live only in the draft room's socket snapshot, which needs the cookies.
     filled = [p for p in picks if p.get("playerId") not in (None, -1)]
     if detail.get("inProgress") and not filled and swid and espn_s2:
-        return _sync_espn_live(league_id, season, data, swid, espn_s2, espn_map)
+        return _sync_espn_live(league_id, season, data, swid, espn_s2, espn_map, pos_map)
 
     out = []
     for p in picks:
@@ -540,6 +543,7 @@ def sync_espn(league_id: str, season: int = CURRENT_SEASON,
             "overall": p.get("overallPickNumber"),
             "slot": None,
             "name": _espn_player_name(pid, espn_map),
+            "position": _espn_player_position(pid, pos_map),
             "player_id": None,
         })
     return sorted([o for o in out if o["overall"]], key=lambda o: o["overall"])
@@ -553,8 +557,25 @@ def _espn_player_name(pid: int, espn_map: dict) -> str:
     return espn_map.get(str(pid), f"ESPN#{pid}")
 
 
+def espn_maps(xwalk: pd.DataFrame | None = None) -> tuple[dict, dict]:
+    """espn_id -> full_name and espn_id -> position from the crosswalk."""
+    x = xwalk if xwalk is not None else _id_crosswalk()
+    x = x.dropna(subset=["espn_id"]).set_index("espn_id")
+    names = x["full_name"].to_dict()
+    positions = x["position"].to_dict() if "position" in x.columns else {}
+    return names, positions
+
+
+def _espn_player_position(pid: int, pos_map: dict) -> str | None:
+    if pid < 0:
+        return "DST"
+    p = pos_map.get(str(pid))
+    return str(p) if p is not None and pd.notna(p) else None
+
+
 def _sync_espn_live(league_id: str, season: int, league_json: dict,
-                    swid: str, espn_s2: str, espn_map: dict) -> list[dict]:
+                    swid: str, espn_s2: str, espn_map: dict,
+                    pos_map: dict | None = None) -> list[dict]:
     """Picks from the live draft room socket (see docs/data-sources.md).
 
     Joins as the team the SWID owns, reads the INIT snapshot plus any SELECTED
@@ -572,17 +593,20 @@ def _sync_espn_live(league_id: str, season: int, league_json: dict,
 
     init, extra = espn_live.fetch_init(league_id, season, int(my_team["id"]), swid, espn_s2)
     slot_of = espn_live.slot_by_team(init)
+    pos_map = pos_map or {}
     out = []
     for p in espn_live.picks_from_init(init):
         out.append({"overall": p["overall"], "slot": slot_of.get(p["team_id"]),
-                    "name": _espn_player_name(p["player_id"], espn_map), "player_id": None})
+                    "name": _espn_player_name(p["player_id"], espn_map),
+                    "position": _espn_player_position(p["player_id"], pos_map), "player_id": None})
     nxt = (out[-1]["overall"] if out else 0) + 1
     for line in extra:
         fields = line.split()
         if len(fields) >= 3 and fields[0] == "SELECTED":
             team_id, pid = int(fields[1]), int(fields[2])
             out.append({"overall": nxt, "slot": slot_of.get(team_id),
-                        "name": _espn_player_name(pid, espn_map), "player_id": None})
+                        "name": _espn_player_name(pid, espn_map),
+                        "position": _espn_player_position(pid, pos_map), "player_id": None})
             nxt += 1
     return out
 

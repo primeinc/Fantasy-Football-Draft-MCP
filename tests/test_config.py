@@ -1,4 +1,6 @@
 """League settings, scoring, and draft-slot arithmetic."""
+from typing import Any
+
 import pandas as pd
 import pytest
 
@@ -94,7 +96,7 @@ class TestCacheKey:
         {"starters": {"QB": 2, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1}},
     ])
     def test_anything_affecting_projections_forces_a_new_board(self, override):
-        settings = {"teams": 12, "scoring": Scoring.preset("ppr")}
+        settings: dict[str, Any] = {"teams": 12, "scoring": Scoring.preset("ppr")}
         base = LeagueSettings(**settings)
         other = LeagueSettings(**{**settings, **override})
         assert base.cache_key() != other.cache_key()

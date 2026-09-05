@@ -9,9 +9,10 @@ setup:
     uv venv .venv --python 3.12
     uv pip install --python {{ python }} -e ".[dev]"
 
-# Lint and run the offline test suite
+# Lint, type-check, and run the offline test suite
 check:
     {{ python }} -m ruff check src tests
+    uvx ty check src tests
     {{ python }} -m pytest tests -q
 
 # One-time nflverse download and board build (cache in ~/.ffdraft)
