@@ -125,6 +125,12 @@ board, and because ESPN sends a new `SELECTING` when the clock reopens after an
 rolled-back picks: a snapshot of a board state the draft backed out of would
 otherwise let a later replay price a pick from a world that did not happen.
 
+The `SELECTING` line names a team and the file is numbered from the watch's own
+pick count — two sources for one fact. When they disagree the write is skipped
+and logged, leaving the `SELECTED`-anchored file in place: a snapshot filed
+under the wrong pick number is the silent corruption the whole feature exists to
+avoid.
+
 Each write re-reads the board through the watch's `refresh` callback first.
 `DraftWatch.board` is otherwise the board the watch was *constructed* with, and
 the only other thing that refreshes it runs on the handful of picks near your own

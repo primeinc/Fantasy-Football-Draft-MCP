@@ -355,12 +355,35 @@ class TestAsOfSnapshots:
         w, _events = _watch(tmp_path, monkeypatch, board_df=_market_board(), refresh=refresh)
         asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
         # SELECTING is ESPN naming the team that has just gone on the clock, so
-        # it rewrites the file for the pick it names with a fresher board.
-        asyncio.run(w.handle_line("SELECTING 10 90"))
+        # it rewrites the file for the pick it names with a fresher board. Pick
+        # 115 is slot 14's in the fixture.
+        on_clock = {slot: team for team, slot in w.slot_of.items()}[14]
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
         assert w.snapshots == [115]                 # rewritten, not appended twice
         again = watch.read_snapshot("1734659820", 115)
         assert again is not None
         assert again.set_index("_key").loc["deep guy", "adp"] == 152.0
+
+    def test_a_selecting_for_the_wrong_slot_leaves_the_snapshot_alone(
+            self, tmp_path, monkeypatch):
+        w, _events = _watch(tmp_path, monkeypatch, board_df=_market_board())
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        before = watch.read_snapshot("1734659820", 115)
+        assert before is not None
+        # Pick 115 is slot 14's in the fixture. A SELECTING naming any other
+        # team's slot means the two sources disagree about which pick is on the
+        # clock, and a file numbered from the wrong one is silent corruption.
+        team_of_slot = {slot: team for team, slot in w.slot_of.items()}
+        w.board = _market_board().assign(adp=[9.0, 9.0, 9.0, 9.0])
+        asyncio.run(w.handle_line(f"SELECTING {team_of_slot[1]} 90"))
+        after = watch.read_snapshot("1734659820", 115)
+        assert after is not None
+        assert after["adp"].tolist() == before["adp"].tolist()
+
+        # The matching slot does rewrite it.
+        asyncio.run(w.handle_line(f"SELECTING {team_of_slot[14]} 90"))
+        rewritten = watch.read_snapshot("1734659820", 115)
+        assert rewritten is not None and rewritten["adp"].tolist() == [9.0, 9.0]
 
     def test_undone_drops_the_snapshots_for_the_rolled_back_picks(self, tmp_path, monkeypatch):
         w, events = _watch(tmp_path, monkeypatch, board_df=_market_board())
@@ -380,18 +403,19 @@ class TestAsOfSnapshots:
     def test_a_write_failure_is_announced_once_then_stays_quiet(self, tmp_path, monkeypatch):
         w, events = _watch(tmp_path, monkeypatch, board_df=_market_board())
         asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        on_clock = {slot: team for team, slot in w.slot_of.items()}[14]
         # A board the writer cannot use. Two hours of silence is the failure mode.
         w.board = _market_board().drop(columns=["_key"])
-        asyncio.run(w.handle_line("SELECTING 10 90"))
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
         failures = [e for e in events if e[1]["event"] == "snapshot_failed"]
         assert len(failures) == 1 and w.snapshot_failures == 1
-        asyncio.run(w.handle_line("SELECTING 10 90"))
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
         assert len([e for e in events if e[1]["event"] == "snapshot_failed"]) == 1
         assert w.snapshot_failures == 2
 
         # It recovers quietly and the counter resets.
         w.board = _market_board()
-        asyncio.run(w.handle_line("SELECTING 10 90"))
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
         assert w.snapshot_failures == 0 and w.snapshots == [115]
 
     def test_the_room_and_the_counters_say_whether_anything_was_recorded(

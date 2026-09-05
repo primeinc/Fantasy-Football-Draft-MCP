@@ -306,12 +306,26 @@ class DraftWatch:
             if team_id == self.team_id and self.own_pick and not self.own_pick.done():
                 self.own_pick.set_result({"overall": overall, "player_id": pid, "name": name})
             await self._announce_pick(overall, team_id, name)
-        elif kind == "SELECTING" and len(fields) >= 2:
+        elif kind == "SELECTING" and len(fields) >= 2 and fields[1].isdigit():
             # ESPN naming the team that has just gone on the clock: the event the
             # as-of snapshot actually wants, rather than a state inferred after
             # SELECTED. It also arrives when the clock reopens after an UNDONE,
             # so the rewrite self-corrects. Rewriting the same pick is harmless.
-            await self._snapshot()
+            #
+            # The line names a team and the file is numbered from our own pick
+            # count -- two sources for one fact. They agree in every ordinary
+            # sequence, but a snapshot filed under the wrong pick number is
+            # exactly the kind of silent corruption this whole feature exists to
+            # avoid, so a disagreement leaves the SELECTED-anchored file alone
+            # and says so rather than overwriting it with the wrong board.
+            named = self.slot_of.get(int(fields[1]))
+            ours = self.state.slot_for_pick(self.state.on_the_clock)
+            if named is not None and named != ours:
+                log.warning("SELECTING names slot %s but pick %s belongs to slot %s; "
+                            "leaving the as-of snapshot alone (%s)",
+                            named, self.state.on_the_clock, ours, line)
+            else:
+                await self._snapshot()
         elif kind == "UNDONE" and len(fields) >= 2:
             keep = int(fields[1])
             self.state.picks = [p for p in self.state.picks if p["overall"] <= keep]
