@@ -1865,6 +1865,15 @@ def _watch_or_error(league_id: str):
 # after INIT on the 2026-09-05 join. Ten gives that a wide margin without
 # leaving a caller hanging, and the refusal is what happens if it never comes.
 QUEUE_ECHO_WAIT_SECONDS = 10.0
+# How long a resumed watch waits for ESPN's INIT before reporting that it could
+# not come back. Generous next to the sub-second joins seen in practice, and
+# bounded so a room that never answers produces a refusal rather than a task that
+# never finishes and a resume that never says either way.
+RESUME_READY_SECONDS = 30.0
+# Past this, a held channel message is stamped with its age. A message held long
+# enough for the draft to have moved is not a delayed message, it is one whose
+# subject has changed.
+HELD_MESSAGE_STAMP_SECONDS = 60.0
 
 # A session to push channel events through, and anything said before there was
 # one. There is NO session at server start: sessions are built per request and
@@ -1875,7 +1884,7 @@ QUEUE_ECHO_WAIT_SECONDS = 10.0
 # socket is live from the moment it resumes either way, and only the telling is
 # deferred.
 _SESSION: Any = globals().get("_SESSION")
-_PENDING_CHANNEL: list[tuple[str, dict]] = globals().get("_PENDING_CHANNEL", [])
+_PENDING_CHANNEL: list[tuple[str, dict, float]] = globals().get("_PENDING_CHANNEL", [])
 _log = logging.getLogger(__name__)
 
 
@@ -1906,8 +1915,23 @@ def _attach_session(session: Any) -> Any:
 
 
 async def _flush_channel() -> None:
+    """Send what was held, saying how long it waited.
+
+    A held message is not a delayed message: its subject has moved. "47 picks
+    made, your next pick is 130" was true when a watch resumed and may be twenty
+    picks stale by the time a client first speaks. Stamping the age is what stops
+    a reader taking it as current; it applies to every held message, because a
+    pick event held for the same window is stale in the same way.
+    """
+    import time as _time
+
     pending, _PENDING_CHANNEL[:] = list(_PENDING_CHANNEL), []
-    for content, meta in pending:
+    now = _time.time()
+    for content, meta, held_at in pending:
+        waited = max(0.0, now - held_at)
+        if waited >= HELD_MESSAGE_STAMP_SECONDS:
+            content = (f"{content} [held {waited / 60:.0f} min waiting for this "
+                       "session; the draft may have moved since]")
         await _channel(content, meta)
 
 
@@ -1918,10 +1942,12 @@ async def _channel(content: str, meta: dict[str, str]) -> None:
     loop and from startup, and neither may die because a notification could not
     be delivered.
     """
+    import time as _time
+
     from mcp import types as _types
 
     if _SESSION is None:
-        _PENDING_CHANNEL.append((content, dict(meta)))
+        _PENDING_CHANNEL.append((content, dict(meta), _time.time()))
         return
     try:
         await _SESSION.send_notification(_types.Notification[dict[str, Any], str](
@@ -1929,7 +1955,7 @@ async def _channel(content: str, meta: dict[str, str]) -> None:
             params={"content": content, "meta": meta}))
     except Exception:
         _log.exception("could not send a channel event; holding it")
-        _PENDING_CHANNEL.append((content, dict(meta)))
+        _PENDING_CHANNEL.append((content, dict(meta), _time.time()))
 
 
 async def _await_first_echo(w, timeout: float | None = None) -> list[int] | None:
@@ -2022,7 +2048,26 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
             ids.append(pid)
     if unresolved:
         return _emit({"error": "unresolved names; nothing sent", "unresolved": unresolved})
+    return _emit(await merge_queue_ids(w, ids, replace=replace, league_id=league_id), indent=2)
 
+
+async def merge_queue_ids(w, ids: list[int], replace: bool = False,
+                          league_id: str = "") -> dict:
+    """Put `ids` at the front of the queue ESPN holds, keeping the rest.
+
+    Ids, not names. Name resolution belongs to the tool, where a human typed the
+    names; a caller that already has ESPN ids must not be made to render them
+    back into text and re-resolve them. That round trip is lossy in exactly the
+    population it matters for: `resolve_espn_id` gates on the crosswalk, so a
+    player on the board but absent from it -- a kicker, a rookie, a Tuesday
+    callup, which is who gets added in the app mid-draft -- comes back
+    unresolved, and one of those anywhere in the list refuses the whole send.
+    The ids the merge preserves are precisely the ones that never went through
+    the crosswalk in the first place.
+
+    What this contributes is the merge itself: wait for ESPN's echo, union with
+    what is live, report against what ESPN accepted rather than what was sent.
+    """
     if not replace and w.queue is None:
         # ESPN sends the first echo unprompted a few seconds after joining, so a
         # fresh connection is a brief window rather than a state to refuse from.
@@ -2031,7 +2076,7 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
         await _await_first_echo(w)
     existing = list(w.queue) if w.queue is not None else None
     if not replace and existing is None:
-        return _emit({
+        return {
             "error": ("no queue echo on this connection yet; pass replace=True to send "
                       "yours, which overwrites whatever the user holds in the app"),
             "why": ("ESPN's protocol sends the whole queue rather than a change, so "
@@ -2041,7 +2086,7 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
             "do": (f"waited {QUEUE_ECHO_WAIT_SECONDS:.0f}s for ESPN's own echo, which "
                    "normally arrives within seconds of joining, and none came; the "
                    "user can touch the queue in the app to force one"),
-            "would_send": _queue_rows(w, ids)}, indent=2)
+            "would_send": _queue_rows(w, ids)}
 
     if replace:
         send = ids
@@ -2052,8 +2097,8 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
     try:
         accepted = await w.set_queue(send)
     except TimeoutError:
-        return _emit({"error": "ESPN did not echo the queue within 10s",
-                      "sent": _queue_rows(w, send)}, indent=2)
+        return {"error": "ESPN did not echo the queue within 10s",
+                "sent": _queue_rows(w, send)}
     # Both of these read ESPN's echo, not what we meant to send. A merge intends
     # to remove nothing, but ESPN drops ids it rejects -- an already-drafted
     # player is the ordinary case -- and reporting the intent would say
@@ -2062,9 +2107,12 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
     kept = [pid for pid in accepted if pid in set(existing or []) and pid not in set(ids)]
     removed = [pid for pid in (existing or []) if pid not in set(accepted)]
     # What ESPN accepted, so a resume after a restart re-sends the queue that is
-    # actually live rather than the one this server started with.
-    watchstore.update_queue(league_id, accepted, from_user=len(kept))
-    return _emit({
+    # actually live rather than the one this server started with. Only on a send
+    # that landed: replacing a good record with the result of a partial failure
+    # would degrade the very thing the record exists to protect.
+    if league_id and accepted:
+        watchstore.update_queue(league_id, accepted, from_user=len(kept))
+    return {
         "mode": "replace" if replace else "merge",
         "sent": _queue_rows(w, send),
         "accepted": _queue_rows(w, accepted),
@@ -2073,7 +2121,8 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
         "removed": _queue_rows(w, removed),
         "queue_before": _queue_rows(w, existing or []),
         "echoes_seen": len(w.queue_echoes),
-    }, indent=2)
+        "accepted_ids": list(accepted),
+    }
 
 
 @mcp.tool()
@@ -2692,12 +2741,19 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
     out: dict = {"league_id": record.league_id, "resumed": False}
     swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
     if not (swid and espn_s2):
-        return {**out, "why": "ESPN_SWID and ESPN_S2 are not set"}
+        return await _refused(out, "ESPN_SWID and ESPN_S2 are not set")
+    if record.league_id in _WATCHES:
+        # A client can call watch_draft for this league while the resume is still
+        # joining: the resume task starts before the transport does. Overwriting
+        # _WATCHES would leak a socket, and ESPN answers two connections on one
+        # team with `LEFT <team> <swid> 2`, which the watch reads as a pause -- so
+        # the survivor can pause itself.
+        return await _refused(out, "a watch for this league is already running")
     try:
         ctx_info = bd.espn_league_context(record.league_id, record.season, swid, espn_s2)
         ok, why = watchstore.resumable(record, draft_complete=bool(ctx_info.get("drafted")))
         if not ok:
-            return {**out, "why": why}
+            return await _refused(out, why, quiet=why.startswith("stopped by"))
         league, weights = _settings()
         directory = bd.espn_league_directory(record.league_id, record.season, swid, espn_s2)
         w = watch_mod.DraftWatch(
@@ -2707,19 +2763,28 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
             refresh=lambda: (_build_board(), _settings()[1].bye))
         task = asyncio.create_task(w.run(), name=f"draft-watch-{record.league_id}")
         _WATCHES[record.league_id] = (w, task)
-        await w.ready.wait()
+        # Bounded. `watch_draft` does not wait for INIT at all, so this waits on
+        # something the tool does not; a room that never sends one would leave a
+        # task that never finishes and a resume that never reports either way.
+        await asyncio.wait_for(w.ready.wait(), timeout=RESUME_READY_SECONDS)
+    except TimeoutError:
+        return await _refused(
+            out, f"joined but ESPN sent no INIT within {RESUME_READY_SECONDS:.0f}s")
     except Exception as exc:
         _log.exception("could not resume the watch for league %s", record.league_id)
-        return {**out, "why": f"{type(exc).__name__}: {exc}"}
+        return await _refused(out, f"{type(exc).__name__}: {exc}")
 
     summary = w.state.summary()
     out.update({"resumed": True, "picks_made": summary["picks_made"],
                 "my_next_pick": summary["my_next_pick"]})
     if record.queue:
-        names_csv = ", ".join(
-            bd._espn_player_name(pid, w.espn_map) for pid in record.queue)
         try:
-            sent = json.loads(await set_draft_queue(record.league_id, names_csv))
+            # Ids straight through. Rendering them into names and re-resolving
+            # would drop the whole queue over one player the crosswalk lacks, and
+            # the entries a merge preserves are exactly the ones that never went
+            # through the crosswalk.
+            sent = await merge_queue_ids(w, list(record.queue),
+                                         league_id=record.league_id)
             out["queue"] = {"entries": len(sent.get("accepted") or []),
                             "from_the_user": len(sent.get("kept_from_the_users_queue") or []),
                             "error": sent.get("error")}
@@ -2727,6 +2792,25 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
             _log.exception("could not re-send the queue for league %s", record.league_id)
             out["queue"] = {"error": f"{type(exc).__name__}: {exc}"}
     await _channel(_resume_message(out), {"league": record.league_id, "event": "resumed"})
+    return out
+
+
+async def _refused(out: dict, why: str, quiet: bool = False) -> dict:
+    """Record a refusal and say it out loud.
+
+    Returning the reason to a caller that discards it is the same silence this
+    module exists to end: `resume_watches` is started as a task and nobody reads
+    its list. A user whose watch did not come back is owed the reason on the
+    channel, not in a log nobody reads on stdio.
+
+    `quiet` is for the one refusal the user already knows about, their own
+    `stop_watch`. Announcing that on every start would be noise forever, for
+    every league they have ever stopped.
+    """
+    out = {**out, "why": why}
+    if not quiet:
+        await _channel(f"watch NOT resumed for league {out['league_id']}: {why}",
+                       {"league": str(out["league_id"]), "event": "not_resumed"})
     return out
 
 
@@ -2744,9 +2828,19 @@ def _resume_message(out: dict) -> str:
 
 
 async def resume_watches() -> list[dict]:
-    """Resume every persisted watch. Reported, never raised."""
+    """Resume every persisted watch. Reported, never raised.
+
+    Sequential on purpose: ESPN allows one draft-room connection per team, and
+    joining several rooms at once is a good way to bump something.
+    """
+    records, skipped = watchstore.load_all()
     out = []
-    for record in watchstore.load_all():
+    for name in skipped:
+        # A record nobody can read is a watch that will not come back. It has no
+        # league id to name, so the file is what gets named.
+        out.append(await _refused({"league_id": name, "resumed": False},
+                                  "its record could not be read"))
+    for record in records:
         out.append(await resume_watch(record))
     return out
 

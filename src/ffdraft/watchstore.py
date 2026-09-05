@@ -21,6 +21,7 @@ Two refusals to resume, both in `resumable`:
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -65,12 +66,22 @@ def path_for(league_id: str) -> Path:
 
 
 def save(record: WatchRecord) -> Path:
-    """Write the record, stamping `started_at_ms` on first write."""
+    """Write the record atomically, stamping `started_at_ms` on first write.
+
+    Temp file then `os.replace`, which is atomic on the same filesystem. A plain
+    write truncates first, so a crash mid-write leaves a truncated file that
+    `load` reads as absent -- and this runs from `set_draft_queue` on every
+    accepted queue, which is mid-draft. An absent record is not even a refusal to
+    report: it is the silent no-resume this module exists to prevent, reachable
+    through its own write path.
+    """
     if not record.started_at_ms:
         record.started_at_ms = int(time.time() * _MS)
     path = path_for(record.league_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(record), indent=1), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(asdict(record), indent=1), encoding="utf-8")
+    os.replace(tmp, path)
     return path
 
 
@@ -95,16 +106,24 @@ def load(league_id: str) -> WatchRecord | None:
         return None
 
 
-def load_all() -> list[WatchRecord]:
-    """Every readable record, oldest first. Unreadable files are skipped."""
+def load_all() -> tuple[list[WatchRecord], list[str]]:
+    """Every readable record oldest first, and the names of the files skipped.
+
+    The skipped list is returned rather than swallowed. A record that cannot be
+    read is a watch that will not come back, and dropping it silently is the
+    failure this module is about; the caller turns it into a refusal a user can
+    see.
+    """
     if not WATCH_DIR.is_dir():
-        return []
-    out = []
+        return [], []
+    out, skipped = [], []
     for path in sorted(WATCH_DIR.glob("*.json")):
         record = load(path.stem)
-        if record is not None:
+        if record is None:
+            skipped.append(path.name)
+        else:
             out.append(record)
-    return sorted(out, key=lambda r: r.started_at_ms)
+    return sorted(out, key=lambda r: r.started_at_ms), skipped
 
 
 def update_queue(league_id: str, queue: list[int], from_user: int = 0) -> WatchRecord | None:

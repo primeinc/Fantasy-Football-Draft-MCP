@@ -1547,11 +1547,25 @@ All notable changes to this project. Format follows
   (`watchstore.py`, `$FFDRAFT_WATCH`), and a new server process rejoins every
   recorded draft room before anyone asks. Every `/mcp` reconnect starts a fresh
   process, and the socket, the watch and the merged queue died with the old one.
-- The queue is re-sent through `set_draft_queue`'s merge path, so entries the
-  user added in the ESPN app while the server was gone are kept.
+- The queue is re-sent as ids through `merge_queue_ids`, the id-taking core
+  `set_draft_queue` is now a name-resolving front over. Rendering ids into names
+  and re-resolving them dropped the whole queue over one player the crosswalk
+  lacks -- a kicker, a rookie, a mid-draft callup -- and those are precisely the
+  entries a merge preserves, because they never went through the crosswalk.
 - No resume for a draft `mDraftDetail` reports complete, a record `stop_watch`
-  cleared, or one older than 24 hours. The record survives a stop rather than
-  being deleted: a stopped watch and an unknown league are different facts.
+  cleared, one older than 24 hours, a league already being watched, a room that
+  sends no INIT within 30 seconds, or a record that cannot be read. Every one is
+  announced on the channel except the user's own stop. A watch that silently does
+  not come back is the same problem as one that silently dies, and the reason was
+  previously returned to a caller nobody reads.
+- The record survives a stop rather than being deleted: a stopped watch and an
+  unknown league are different facts.
+- `watchstore.save` writes to a temp file and renames. It runs on every accepted
+  queue, so mid-draft, and a truncating write plus `load`'s tolerance would turn
+  a crash into a record that reads as absent -- a silent no-resume through the
+  module's own write path.
+- A held channel message is stamped with its age past a minute. A held message is
+  not a delayed message: "47 picks made, your next pick is 130" was true once.
 - `espn_league_context` now returns `drafted` and `draft_in_progress`, which is
   the only place ESPN says whether a draft is over.
 - The resume message arrives with the first tool call rather than at start. There

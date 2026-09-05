@@ -713,22 +713,33 @@ watch and merged queue die with it. `watch_draft` now records its intent under
 the queue as ESPN last accepted it, and a resume flag. The next process rejoins
 every recorded room before anyone asks.
 
-The queue is re-sent through `set_draft_queue`'s **merge** path, so anything the
-user has queued in the ESPN app since the old process died is kept. That path
-waits for ESPN's own echo first, which is what makes re-sending a minutes-old
-queue safe.
+The queue is re-sent through the **merge** path, so anything the user has queued
+in the ESPN app since the old process died is kept. That path waits for ESPN's
+own echo first, which is what makes re-sending a minutes-old queue safe.
+
+It re-sends **ids**, not names. `set_draft_queue` is a name-resolving front over
+`merge_queue_ids`, and only the front resolves names, because `resolve_espn_id`
+gates on the crosswalk: a player on the board but missing from it — a kicker, a
+rookie, a mid-draft callup — comes back unresolved and refuses the entire send.
+Those are exactly the players a merge preserves, since they never went through
+the crosswalk to begin with.
 
 It does **not** resume when `stop_watch` cleared the flag, when `mDraftDetail`
-says the draft is complete, or when the record is more than 24 hours old. The
-record is kept rather than deleted on stop: "the user stopped it" and "we have
-never seen this league" are different answers.
+says the draft is complete, when the record is more than 24 hours old, when a
+watch for that league is already running, when ESPN sends no INIT within 30
+seconds, or when the record cannot be read. **Every one of those is announced on
+the channel** except the user's own `stop_watch`, which they already know about
+and which would otherwise be noise on every start forever. A watch that silently
+does not come back is the same problem as one that silently dies.
 
-One channel event reports it: `watch resumed after restart: N picks made, your
-next pick is P; queue re-sent, K entries, M of them yours`. **It arrives with the
-first tool call, not at start.** There is no session at server start — sessions
-are built per request, and what outlives them is the connection's standalone
-channel — so the message is held until one exists. The socket is live from the
-moment it resumes either way; only the telling waits.
+One channel event reports success: `watch resumed after restart: N picks made,
+your next pick is P; queue re-sent, K entries, M of them yours`. **It arrives
+with the first tool call, not at start.** There is no session at server start —
+sessions are built per request, and what outlives them is the connection's
+standalone channel — so the message is held until one exists. The socket is live
+from the moment it resumes either way; only the telling waits. A message held
+more than a minute is stamped with its age, because a held message is not a
+delayed message: its subject has moved.
 
 ### `make_pick`
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
