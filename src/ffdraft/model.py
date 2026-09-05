@@ -1120,6 +1120,61 @@ def _positional_need(league: LeagueSettings, roster: dict[str, int]) -> dict[str
     return need
 
 
+# Below this, taking a candidate now instead of waiting for the position is
+# worth less than a third of a point a week across a 17-game season, which is
+# inside the noise of any projection this model makes. Policy, and stated as
+# policy: it is not fitted. It was chosen for what the number means per week,
+# not to make any particular recommendation flip -- the incident that prompted
+# it (#39, Woody Marks at pick 132) sits at marginal 3.89, and the same
+# candidate at pick 157 sits at -1.16, where waiting is worth more than taking
+# and no threshold at all is needed to say so.
+NO_URGENCY_MARGINAL = 5.0
+
+
+def urgency_note(survival: float | None, marginal: float | None,
+                 next_pick: int | None) -> str:
+    """Say, in the model's own numbers, whether this pick is urgent.
+
+    Written because the numbers alone were read backwards: a row reporting
+    `survives_to_next_pick` 0.55 under the headline "Take Woody Marks" was
+    narrated as "he does not come back", which is the reverse of what 0.55
+    means. The odds are now spelled out in words next to the pick they belong
+    to, and the direction of the value comparison is never left to the reader:
+    a negative marginal says waiting is worth more, in those words, rather than
+    printing a minus sign and hoping.
+    """
+    if next_pick is None:
+        return "last pick — nothing to wait for"
+    bits = []
+    if survival is not None and np.isfinite(survival):
+        if survival > 0.5:
+            bits.append(f"{survival:.0%} likely still there at {next_pick}")
+        else:
+            bits.append(f"only {survival:.0%} likely still there at {next_pick}")
+    if marginal is not None and np.isfinite(marginal):
+        if marginal >= 0:
+            bits.append(f"taking now is worth +{marginal:.1f} over waiting")
+        else:
+            bits.append(f"waiting is worth {abs(marginal):.1f} more than taking now")
+    return "; ".join(bits) if bits else "no survival estimate for this pick"
+
+
+def headline(player: str, why: str, survival: float | None,
+             marginal: float | None) -> str:
+    """The one-line answer. "Take X" only when there is a reason to take X now.
+
+    A candidate who is more likely than not to still be there next turn, and
+    whose edge over waiting is inside `NO_URGENCY_MARGINAL`, is the best player
+    available and not a player to hurry for. Saying "Take" of him invites
+    exactly the misreading in #39.
+    """
+    if (survival is not None and marginal is not None
+            and np.isfinite(survival) and np.isfinite(marginal)
+            and survival > 0.5 and marginal < NO_URGENCY_MARGINAL):
+        return f"No urgency; best available is {player} — {why}"
+    return f"Take {player} — {why}"
+
+
 def explain(row: pd.Series) -> str:
     """Plain-language reasoning for a recommendation."""
     bits = []

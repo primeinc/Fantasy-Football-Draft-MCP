@@ -8,6 +8,39 @@ All notable changes to this project. Format follows
 
 ### Added
 
+**The recommendation says which way its own numbers point**
+- Incident (#39): at pick 132 `who_should_i_pick` reported
+  `survives_to_next_pick` 0.55 for Woody Marks under the headline "Take Woody
+  Marks", and that was read back as "he does not come back" — the reverse of
+  what 0.55 means. Reproduced on the live record before changing anything:
+  survival 0.55, `marginal_value` 3.89. The same candidate at pick 157 is
+  sharper still — survival 0.78 and marginal **-1.16**, so the model's own
+  arithmetic preferred waiting while the tool said "Take".
+- Every row now carries the four numbers the recommendation is made of:
+  `value_now`, `expected_best_at_next_pick`, `marginal_now_vs_wait` and
+  `survival`, plus `why_now`, which states them in words and never leaves the
+  direction to a minus sign — "55% likely still there at 157; taking now is
+  worth +3.9 over waiting", or "waiting is worth 1.0 more than taking now".
+- `model.headline` prints "Take X" only when there is a reason to hurry. A
+  candidate more likely than not to last, whose edge over waiting is under
+  `NO_URGENCY_MARGINAL`, is reported as "No urgency; best available is X". On
+  the live incident the headline is now exactly that.
+- `NO_URGENCY_MARGINAL` is 5.0 points and is policy, stated as policy: under a
+  third of a point a week over a 17-game season, inside the model's own noise.
+  It was chosen for what the number means per week, not to make the incident
+  flip — sensitivity across the top six at pick 132 is 1 candidate flagged at
+  thresholds 1.0/2.0/3.0 and 2 at 5.0/8.0, and the pick-157 case needs no
+  threshold at all because its marginal is negative.
+- `roster_note` and per-row `roster_slot_note` surface #40's second cause where
+  it applies: a pick the board cannot price still fills its slot in
+  `my_roster`'s count, so `need_mult` sees the position as filled while
+  `roles.bench_values`, which reads the priced rows, sees the slot as open. On
+  the live record that is RB — three counted, two priced, because MarShawn Lloyd
+  has no board row — which is half of why an RB headlined a pick the model also
+  said he was likely to survive.
+- Tested at both levels: `urgency_note` and `headline` directly, and through
+  `who_should_i_pick` itself, since the invariant is about what the tool emits.
+
 **ESPN live draft sync**
 - `sync_draft(platform="espn")` now works while the draft is running. The read API
   returns no picks until a draft completes, so `board.sync_espn` joins the draft

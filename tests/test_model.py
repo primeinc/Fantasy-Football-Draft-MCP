@@ -5,14 +5,17 @@ import pandas as pd
 from ffdraft.board import FORMAT_SHIFT_DAMPING, convert_adp_format, synthetic_adp
 from ffdraft.config import LeagueSettings
 from ffdraft.model import (
+    NO_URGENCY_MARGINAL,
     _discount,
     _positional_need,
     apply_current_team,
     expected_best_at_next_pick,
+    headline,
     recommend,
     survival_probability,
     survival_probability_vec,
     touchdown_luck_multiplier,
+    urgency_note,
 )
 
 
@@ -383,3 +386,51 @@ class TestFormatConversion:
         b = self._board().drop(columns=[])
         out = convert_adp_format(b, "standard")
         assert out["adp"].equals(b["adp"])
+
+
+class TestUrgencyPhrasing:
+    """#39. `survives_to_next_pick` 0.55 under the headline "Take Woody Marks"
+    was narrated as "he does not come back" -- the reverse of what 0.55 means.
+    These pin the phrasing and the headline against that reading."""
+
+    def test_survival_over_a_half_forces_the_likely_available_wording(self):
+        note = urgency_note(0.55, 3.89, 157)
+        assert "55% likely still there at 157" in note
+        assert "only" not in note
+        # And the value comparison is spelled out, not left as a signed number.
+        assert "taking now is worth +3.9 over waiting" in note
+
+    def test_survival_under_a_half_says_only(self):
+        note = urgency_note(0.35, 3.89, 157)
+        assert "only 35% likely still there at 157" in note
+
+    def test_a_negative_marginal_says_waiting_is_worth_more(self):
+        # The sharper form of the same incident: at pick 157 the same player
+        # headlined with marginal -1.16, so the model's own numbers said waiting
+        # was better while the tool said "Take".
+        note = urgency_note(0.78, -1.16, 164)
+        assert "waiting is worth 1.2 more than taking now" in note
+        assert "+" not in note
+
+    def test_the_last_pick_has_nothing_to_wait_for(self):
+        assert urgency_note(None, 4.0, None) == "last pick — nothing to wait for"
+
+    def test_likely_available_and_small_marginal_is_not_a_take(self):
+        # The incident itself: survival 0.55, marginal 3.89.
+        line = headline("Woody Marks", "RB12 by projection", 0.55, 3.89)
+        assert line.startswith("No urgency; best available is Woody Marks")
+        assert "Take" not in line
+
+    def test_likely_available_but_a_real_edge_is_still_a_take(self):
+        line = headline("Woody Marks", "RB12", 0.55, NO_URGENCY_MARGINAL + 0.1)
+        assert line.startswith("Take Woody Marks")
+
+    def test_unlikely_to_last_is_a_take_however_small_the_edge(self):
+        # Urgency is the point: if he will not be there, the size of the edge
+        # over waiting is not what decides it.
+        line = headline("Woody Marks", "RB12", 0.33, 0.5)
+        assert line.startswith("Take Woody Marks")
+
+    def test_a_missing_survival_estimate_does_not_suppress_the_take(self):
+        assert headline("X", "why", None, 0.1).startswith("Take X")
+        assert headline("X", "why", 0.9, None).startswith("Take X")

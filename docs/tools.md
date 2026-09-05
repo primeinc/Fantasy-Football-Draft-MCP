@@ -144,6 +144,31 @@ you're on the clock and want the full picture at once.
 The main one. Returns ranked recommendations with reasoning, the pick being evaluated,
 your roster, and each player's odds of surviving to your next pick.
 
+Every row carries the four numbers the recommendation is made of, so the
+comparison never has to be inferred from a rank: `value_now` (what taking him is
+worth over replacement), `expected_best_at_next_pick` (what his position is
+expected to still offer at your next turn), `marginal_now_vs_wait` (the
+difference — negative whenever waiting is worth more), and `survival` (the
+chance he is still there). `why_now` says all of it in words: *"55% likely still
+there at 157; taking now is worth +3.9 over waiting"*, or *"only 22% likely
+still there at 157; waiting is worth 1.0 more than taking now"*.
+
+The `headline` is `"Take X"` only when there is a reason to hurry. A candidate
+more likely than not to still be there, whose edge over waiting is under
+`model.NO_URGENCY_MARGINAL` (5.0 points — under a third of a point a week, which
+is inside the model's own noise; policy, not fitted), is reported as
+`"No urgency; best available is X"`. This exists because a row reporting a 0.55
+survival under a "Take" headline was read as *he does not come back*, which is
+the reverse of what 0.55 means.
+
+`roster_note`, and `roster_slot_note` on the rows it affects, appear when a pick
+the board cannot price still fills its slot in your roster count — a kicker, a
+defense, a player with no projection. The two halves of the model then disagree
+about the same roster: the roster-need discount sees the position as filled
+while the bench-value model sees only the priced rows and treats the slot as
+open. Both notes name the position and the counts, so a recommendation resting
+on that gap says so.
+
 Each row carries `espn_proj`, ESPN's full-season projection under the league's
 scoring, and `espn_injury`, when ESPN ADP is configured. ESPN's projection reads
 the current depth chart; the model's reads last season's box scores. When ESPN

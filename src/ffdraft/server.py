@@ -518,10 +518,31 @@ def who_should_i_pick(limit: int = 6) -> str:
     # priced — the weights behind them are 0 (see `roles.py` and CHANGELOG.md).
     from . import roles
 
-    bench = roles.bench_values(recs, league, state.my_rows(b))
+    mine = state.my_rows(b)
+    bench = roles.bench_values(recs, league, mine)
+    # #40's second cause, surfaced where it applies. `roster` counts recorded
+    # picks by position; `mine` is the board rows behind them, and a pick the
+    # board cannot price has no row. So the two halves of the model disagree
+    # about the same roster: `need_mult` sees the counted total and treats the
+    # position as filled, while `roles.bench_values` sees only the priced rows
+    # and treats the slot as open. On the live record that is one RB -- three
+    # counted, two priced -- which is half of why an RB headlined a pick where
+    # the model also said he was likely to last.
+    priced = mine["position"].astype(str).value_counts().to_dict() if len(mine) else {}
+    thin = {pos: (n, int(priced.get(pos, 0))) for pos, n in roster.items()
+            if n > int(priced.get(pos, 0))}
     picks = []
+    # Held as typed locals rather than read back out of the answer, whose values
+    # are heterogeneous.
+    head: tuple[str, str, float | None, float | None] | None = None
     for idx, r in recs.iterrows():
         bye = r.get("bye_week")
+        pos = str(r["position"])
+        survival = float(r["p_available_next"]) if pd.notna(r.get("p_available_next")) else None
+        marginal = float(r["marginal_value"]) if pd.notna(r.get("marginal_value")) else None
+        why = model.explain(r)
+        if head is None:
+            head = (str(r["name"]), why, survival, marginal)
         picks.append({
             # Every string field here is guarded on notna, not on truthiness:
             # NaN is truthy and `json.dumps` writes it as a bare NaN literal,
@@ -536,6 +557,23 @@ def who_should_i_pick(limit: int = 6) -> str:
             "espn_injury": (str(r["espn_injury"])
                             if pd.notna(r.get("espn_injury")) else None),
             "consistency": round(float(r["consistency"]), 3),
+            # The four numbers the recommendation is actually made of, so the
+            # reader never has to infer the comparison from a rank. `value_now`
+            # is what taking him is worth over replacement;
+            # `expected_best_at_next_pick` is what the position is expected to
+            # still offer at your next turn; the difference between them is what
+            # taking now buys, and it is negative whenever waiting is better.
+            "value_now": round(float(r["draft_score"]), 1),
+            "expected_best_at_next_pick": round(float(r["fallback_value"]), 1),
+            "marginal_now_vs_wait": (round(marginal, 1) if marginal is not None else None),
+            "survival": (round(survival, 2) if survival is not None else None),
+            "why_now": model.urgency_note(survival, marginal, after),
+            # Only when the counted roster is thicker than the priced one at
+            # this candidate's position (#40).
+            "roster_slot_note": (
+                f"your {pos} count is {thin[pos][0]} but the board prices only "
+                f"{thin[pos][1]} of them, so this is scored against a thinner "
+                f"roster than the count suggests" if pos in thin else None),
             "survives_to_next_pick": round(float(r["p_available_next"]), 2),
             "starts_in_a_given_week": round(float(bench.at[idx, "p_start"]), 2),
             "bench_value": round(float(bench.at[idx, "bench_value"]), 1),
@@ -565,7 +603,7 @@ def who_should_i_pick(limit: int = 6) -> str:
             # normalises an empty result to the empty string.
             "bye_conflicts": (str(r["bye_conflicts"])
                               if pd.notna(r.get("bye_conflicts")) else "") or "",
-            "why": model.explain(r),
+            "why": why,
         })
     return _emit(_jsonable({
         "evaluating_pick": current,
@@ -577,7 +615,12 @@ def who_should_i_pick(limit: int = 6) -> str:
                                         "position where it has enough picks; survival "
                                         "odds are shifted by `shift`"},
         "recommendations": picks,
-        "headline": (f"Take {picks[0]['player']} — {picks[0]['why']}" if picks else "Board empty"),
+        "headline": (model.headline(*head) if head is not None else "Board empty"),
+        "roster_note": (
+            "; ".join(f"{pos}: {n} counted, {p} priced" for pos, (n, p) in sorted(thin.items()))
+            + " — a pick the board cannot model still fills its slot in the count, so the "
+              "roster these are scored against is thinner than it looks"
+            if thin else None),
     }), indent=2)
 
 
