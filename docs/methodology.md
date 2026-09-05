@@ -374,6 +374,105 @@ Unmatched names are excluded rather than counted as zeros. Without that, Joshua 
 showed a 0.00 return across four seasons purely because FantasyPros writes "Josh" — a
 fabricated bust sitting in the middle of the results.
 
+## Rules for measuring things here
+
+Four rules, each of which exists because breaking it cost this project a wrong
+number that survived review. They are about how a measurement is reported and
+checked, not about what to measure.
+
+### One source per number
+
+A number belongs in exactly one place, and everywhere else points at it. When
+you find a number written down twice, **delete the copy and point at the
+source** — do not update both, and do not stamp a second copy next to the first
+because it is easier than finding the first.
+
+Two copies are not a redundancy, they are a fork with a delay fuse: they agree
+until one is updated, and then they disagree silently and forever, because
+nothing compares them. The `_discount` helper was copied verbatim into a second
+module, went stale when the original was rewritten from a divide to a
+reflection, and the copy kept returning plausible numbers the whole time. A
+duplicated ESPN position map in `server.py` was int-keyed while the board's was
+string-keyed; both computed the same answer, so nothing could have caught the
+fork until someone changed one of them.
+
+Keeping the document current is part of the work, not a pass at the end. This
+file and `pr-plan.md` have each gone stale once, and the worst of it was a note
+telling a reader to work around a defect that had since been fixed.
+
+### A control has to contain the thing you changed
+
+Every claim needs a control, and the rule most easily satisfied wrongly is which
+control. **When a fix changes the *type* of a lookup key, the control is an
+input that exercises the new type, not the input that motivated the fix.**
+
+The general form: a control built from the case that made you write the fix will
+pass on any fix, including a broken one, because that case is what you had in
+mind. What has to be in the control is the case the *new* code introduces.
+
+Replacing an int-keyed dict lookup with a string-keyed one looks like pure
+deduplication. The old `.map` resolved `3.0` against key `3`, since Python hashes
+them equal; the new one does not, because `str(3.0)` is `"3.0"`. The column's
+dtype is decided by the payload — `int64` when every row carries the field,
+`float64` when one row does not — so the naive version passes on every capture
+that happens to be complete and fails on the first real pull missing a field.
+The control that catches it is a row with **no** position id, which is not the
+row that motivated anything.
+
+The same rule in its other clothes: **restore the defect and require the tests to
+fail.** A regression test that has never been run against the defect it names is
+a hypothesis. Three tests written for the waiver drop-candidate fix were
+controlled that way and all three failed on the restored defect, one with the
+production traceback. Two tests written for a traded-player crash *passed* against
+it, because the fixture moved the player at the boundary between windows rather
+than inside one; the control run found that, not the tests.
+
+### Blocks, and what agreement is worth
+
+Any effect measured by a sampling harness is reported as **disjoint blocks with
+every block's own number visible**, never as a pooled mean alone. Report
+`block_spread` beside the effect and `blocks_agree` beside both.
+
+`k` blocks of a term that does nothing agree in sign with probability
+`2 ** -(k - 1)`. At the default of two blocks that is one coin flip, so
+`blocks_agree: true` is **not a pass** and the payload carries
+`blocks_agree_p_null` next to it saying so. An effect whose blocks disagree in
+sign is a measurement of the harness and supports no weight. An effect whose
+spread is the size of the effect is the same thing said more slowly.
+
+This is why the bye weight is 0 and why a single 8-trial run cannot confirm a
+mildly-right term, though it can reject a badly-wrong one. Where the discipline
+travels to a different question it keeps the arithmetic and drops the fields that
+do not apply: `waivers._effect_summary` deliberately does not report
+`trials_changed` or `players_swapped`, because a number nobody can interpret is
+worse than a field that is absent.
+
+### A window is a setting, not a fact
+
+A result measured at one setting of a tunable is a result **about that setting**.
+Sweep the tunable and report the sweep. A term whose sign flips as its window
+moves by one week has not been measured, whatever any single row of the sweep
+says.
+
+The role-change score was measured at eight `(recent, prior)` windows across four
+seasons — 64 blocks, every one negative, effects between -7.1 and -8.6. That is
+what licenses quoting a magnitude at all. Had two windows disagreed in sign, the
+honest report would have been the sweep and no number.
+
+### And when the measurement goes against the feature
+
+Say so **where the score is read**, not in a changelog. `evidence.role_change`
+carries its negative result in every claim row, next to `evidence.role_entropy`
+carrying its positive one. A label reading "unmeasured" on a score whose evidence
+exists and is against it is a false statement, and worse than the honest absence
+it replaced. Tests asserting the old label get updated to assert the new value —
+not loosened, and not deleted.
+
+Changing what the code *does* about such a result is a separate decision. "This
+ordering is measured worse than the alternative" is determined by evidence;
+"therefore rank by X instead" usually is not, and gets escalated rather than
+settled by whoever happened to run the backtest.
+
 ## Known limitations
 
 - **Second-year players** sit awkwardly: enough history to leave the rookie curve, not
