@@ -154,11 +154,21 @@ contingency then covers a slot the roster already depends on.
 
 Both are informational. `roles.weight_backtest` ran the paired mock drafts (the same
 machinery as `bye_backtest`: same seed, same bots, same noise, scored on real weekly box
-scores) and neither weight earned a place in `pick_value` — the numbers, and the two
-redesigns the handcuff term needed before it was even worth measuring, are in
+scores) and neither weight earned a place in `pick_value`. Start probability came out
+-10.6 weekly points in 2024 and +20.6 in 2025 across 12 paired drafts each; opposite
+signs by season is not evidence. The handcuff term came out +17.5 and +20.2 across 20
+paired drafts each, the same sign in both of two independent seed blocks — the only one
+of the two that points one way, and still 40 simulated drafts against a 1.5% effect, so
+it stays 0 until a longer run and a season outside 2024-2025. Those numbers and the two
+redesigns the handcuff term needed before it was worth measuring at all are in
 [CHANGELOG.md](../CHANGELOG.md). `who_should_i_pick` reports `starts_in_a_given_week`,
 `bench_value`, `handcuff_for` and `contingent_points` per candidate without pricing
 any of them.
+
+One reporting detail that changes the reading: about half the paired trials draft the
+identical roster, because the weight changes nothing at that seed. `weight_backtest`
+counts those as ties rather than losses (`trials_improved_of_changed`), which is the
+difference between "4 of 12 trials improved" and "4 of the 6 it changed".
 
 ### Role entropy (informational)
 

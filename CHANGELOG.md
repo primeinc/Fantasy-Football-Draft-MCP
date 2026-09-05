@@ -39,8 +39,9 @@ All notable changes to this project. Format follows
   (`VORP + VONA + Expected Starting Utility + Contingent Upside + Roster
   Optionality - ...`). `recommend` already priced the first two; this adds the
   next two behind weights that default to 0, and scores the role-risk term.
-  `model.py` gains one kwarg and five lines; everything else is in the new
-  module. `just roles [what] [seasons] [trials]` runs the evidence.
+  `model.py` gains one kwarg, one block in the `pick_value` chain and two
+  trailing lines in `explain`; everything else is in the new module.
+  `just roles [what] [seasons] [trials] [seed]` runs the evidence.
 - **Start probability** (`roles.start_probability`, weight `start_prob`,
   default 0). With no FLEX slot an RB3 does not compete with a WR3 for a
   starting job: he is in the lineup in a week only when fewer than two of the
@@ -93,8 +94,25 @@ All notable changes to this project. Format follows
   Carlo `bye_backtest` already uses — same season, same seed, same bots, same
   noise, scored on real box scores as the best legal lineup each regular-season
   week, so the pair differs in exactly the weight. `just roles weights` runs it.
-  The paired-draft numbers for each weight are recorded below as they land; the
-  default is 0 until one of them is positive across both seasons.
+  It also reports `trials_improved_of_changed`: about half the trials draft the
+  identical roster, and counting a tie as a loss is how a term that wins most of
+  the drafts it touches reads as a coin flip.
+  `start_prob` at 1.0, 12 paired drafts per season: 2024 -10.6 weekly points
+  (4 of the 9 trials it changed improved), 2025 +20.6 (8 of 11), overall +5.0
+  over 37 changed picks. Opposite signs by season is not evidence, so the weight
+  stays 0 and start probability is reported rather than priced —
+  `who_should_i_pick` carries `starts_in_a_given_week` and `bench_value` per
+  candidate whatever the weight is. On the live board at pick 125 that puts
+  Dalton Schultz at 0.17 and a bench value of 27.7 against a 163-point
+  projection, because the roster already holds a tight end and the league has no
+  FLEX slot.
+  `handcuff` at 1.0, gated, 20 paired drafts per season across two independent
+  seed blocks: 2024 +17.5 (7 of 12 changed trials improved), 2025 +20.2 (9 of
+  11), overall +18.9 over 74 changed picks, and the same sign in both blocks of
+  each season. That is the only one of the two that points one way, and it is
+  still 40 simulated drafts against a 1.5% effect. It stays 0 for now; what
+  would move it is a longer run (`just roles handcuff 2024,2025 40 20` extends
+  the sample rather than repeating it) and a season outside 2024-2025.
 - The handcuff term was **redesigned twice under its own evidence**, which is
   the reason to run it before shipping it rather than after. Version one made
   the bonus a multiplier on `pick_value` and gave contingent value to everyone
@@ -114,16 +132,18 @@ All notable changes to this project. Format follows
   Trubisky. Version three gates the bonus by the chance the player would be in
   *my* lineup when the promotion comes: contingent points a roster can never
   start are not points. Gated, the same 8 paired drafts per season give 2024
-  +37.9 (4/8, 18 swapped) and 2025 +22.1 (4/8, 19 swapped), overall +30.0 — a
-  gate worth +141 weekly points in 2024 alone. Positive in both seasons on a
-  small sample; a longer run is under way before the weight moves off 0.
+  +37.9 and 2025 +22.1, overall +30.0 — the gate alone is worth +141 weekly
+  points in 2024.
 - `model.recommend` applies `roles_mult` as `pv * m` above zero and `pv / m`
   below it, so below 1 always means further down the list. `pick_value` goes
   negative deep in the board, and multiplying a negative by a start probability
   of 0.3 moves it *toward* zero — promoting exactly the bench players the
   discount exists to bury. Found by reading marge's identical fix for
   `role_mult` on the K/DST branch, after a first `start_prob` measurement had
-  already been taken against the broken form.
+  already been taken against the broken form and had to be thrown away. Otto
+  measured the same defect a third time in `need_mult`, so it is one missing
+  invariant at three sites rather than three bugs; a shared `_discount` helper
+  is being proposed and this site should join it.
 
 **Draft room presence**
 - `draft_room_stats` and `just roomstats [dump_dir]` (`roomstats.py`): who was

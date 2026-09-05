@@ -62,23 +62,37 @@ FLEX slot. An RB3 does not compete with a WR3 for a starting job; he starts only
 in the weeks when fewer than two of the running backs ahead of him on *your*
 roster are available, which the model knows from their expected games and their
 byes. At weight 1 a candidate's `pick_value` is scaled by that probability; at 0
-nothing changes. With a FLEX slot the probability is a lower bound, since a
-player can also start through the flex, which it does not count.
+nothing changes. It is whether the lineup has room for him, not whether he
+plays: his own bye and injury risk are already in `proj_points`. With a FLEX
+slot the probability is a lower bound, since a player can also start through the
+flex, which it does not count. `who_should_i_pick` reports it as
+`starts_in_a_given_week` with `bench_value` beside it whatever the weight is.
 
 `handcuff` prices contingent upside. The direct backup at an NFL team and
 position — depth rank 2 by the model's own projection — inherits the games the
 starter is expected to miss at the per-game upgrade between them, and that many
 points are *added* to his `pick_value`, doubled when you already hold the
-starter. Added rather than multiplied on purpose: a deep bench player's
-`pick_value` is negative, so scaling it by his handcuff case would push him
-further down. Only depth rank 2 carries the value; giving it to everyone behind
-the starter rewards whoever is worst, since the gap to the starter is widest for
-the man least likely to inherit anything.
+starter and gated by the chance he would be in your lineup when the promotion
+comes. Each of those three is a correction the evidence forced. Added rather
+than multiplied because a deep bench player's `pick_value` is negative, so
+scaling it by his handcuff case pushes him further down; only depth rank 2,
+because giving it to everyone behind the starter rewards whoever is worst (the
+gap to the starter is widest for the man least likely to inherit anything); and
+gated, because contingent points a roster can never start are not points — a
+QB2's starter has the best per-game output on the board and the bonus lands
+after `need_mult` has already discounted him.
 
-`just roles [what] [seasons] [trials]` is the evidence: `shares` prints
-opportunity-share coverage on the live board and checks `pick_value` does not
-move, `entropy` bins projection error by role entropy on a leak-free board per
-season, and `weights` runs the paired mock drafts behind each weight. Numbers in
+Both terms are applied so that below 1 always means further down the list:
+`pick_value` goes negative deep in the board, so the multiplier is applied by
+division there rather than by multiplication (`model.ROLES_MULT_FLOOR` bounds
+it, since a start probability of exactly 0 is a real answer).
+
+`just roles [what] [seasons] [trials] [seed]` is the evidence. `what`: `shares`
+prints opportunity-share coverage on the live board and checks `pick_value` does
+not move; `entropy` bins projection error by role entropy on a leak-free board
+per season; `weights` runs the paired mock drafts behind both weights, and
+`start_prob` or `handcuff` runs one of them. `seed` shifts the trial seeds, so a
+second run extends a sample rather than repeating it. Numbers in
 [CHANGELOG.md](../CHANGELOG.md).
 
 ## During the draft

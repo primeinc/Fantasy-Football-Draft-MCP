@@ -36,9 +36,11 @@ there at the next pick. This module supplies the next two and scores the fifth.
                       because upside has not resolved is not the same thing as
                       uncertainty because the player barely has a job.
 
-Every weight defaults to 0. `pick_value_multiplier` returns all ones under the
-defaults, so nothing here changes a recommendation until an evidence run says
-otherwise; the numbers behind any non-zero default belong in CHANGELOG.md.
+Every weight defaults to 0: `pick_value_multiplier` returns all ones and
+`pick_value_bonus` all zeros, so nothing here changes a recommendation until an
+evidence run says otherwise. `weight_backtest` is that run — the same paired
+Monte Carlo `adp.bye_backtest` uses — and the numbers behind any weight, moved
+or not, belong in CHANGELOG.md.
 """
 from __future__ import annotations
 
@@ -130,6 +132,11 @@ def start_probability(ahead: list[tuple[float, float | None]], slots: int,
 
     With no FLEX slot this is exact. With a FLEX slot it is a lower bound: a
     player can also start through the flex, which this does not count.
+
+    This is whether the lineup has room for him, not whether he plays. His own
+    bye and his own injury risk are already in `proj_points` through
+    `exp_games`, and `recommend`'s bye term prices the stack; counting them
+    again here would charge him twice.
     """
     if slots <= 0:
         return 0.0
@@ -592,6 +599,7 @@ def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str,
 
         base: list[dict] = []
         tuned: list[dict] = []
+        changed: list[bool] = []
         swaps = 0
         for trial in range(n_trials):
             a = [n for _, n in adp_mod._draft_trial(
@@ -599,28 +607,37 @@ def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str,
             b = [n for _, n in adp_mod._draft_trial(
                 board, league, np.random.default_rng(seed + trial), top_n,
                 role_weights=role_weights)]
-            swaps += len(set(b) - set(a))
+            swapped = sorted(set(b) - set(a))
+            swaps += len(swapped)
+            changed.append(bool(swapped))
             base.append(adp_mod.weekly_lineup_points(a, season, league))
             tuned.append(adp_mod.weekly_lineup_points(b, season, league))
             say(f"{season} trial {trial + 1}/{n_trials}: off {base[-1]['points']:.1f} "
                 f"vs on {tuned[-1]['points']:.1f}"
-                + (f"; swapped in {sorted(set(b) - set(a))}" if set(b) - set(a)
-                   else "; identical rosters"))
+                + (f"; swapped in {swapped}" if swapped else "; identical rosters"))
         pa = np.array([x["points"] for x in base])
         pb = np.array([x["points"] for x in tuned])
+        moved = np.array(changed)
+        # A trial the weight did not change is a tie, not a loss. Counting it as
+        # a loss is how a term that wins most of the drafts it touches reads as
+        # a coin flip: half of these trials draft the identical roster.
         per_season.append({
             "season": season, "n_trials": n_trials,
             "weekly_points_off": round(float(pa.mean()), 1),
             "weekly_points_on": round(float(pb.mean()), 1),
             "improvement": round(float((pb - pa).mean()), 1),
             "trials_improved": int((pb > pa).sum()),
+            "trials_changed": int(moved.sum()),
+            "trials_improved_of_changed": int(((pb > pa) & moved).sum()),
             "players_swapped": swaps,
             "empty_slots_off": round(float(np.mean([x["empty_slots"] for x in base])), 2),
             "empty_slots_on": round(float(np.mean([x["empty_slots"] for x in tuned])), 2),
         })
-        say(f"{season} done: improvement {per_season[-1]['improvement']:+.1f} weekly pts, "
-            f"{per_season[-1]['trials_improved']}/{n_trials} trials improved, "
-            f"{swaps} players swapped")
+        s = per_season[-1]
+        say(f"{season} done: improvement {s['improvement']:+.1f} weekly pts, "
+            f"{s['trials_improved']}/{n_trials} trials improved "
+            f"({s['trials_improved_of_changed']}/{s['trials_changed']} of the trials it "
+            f"changed), {swaps} players swapped")
 
     valid: list[dict] = [s for s in per_season if "error" not in s]
     return {

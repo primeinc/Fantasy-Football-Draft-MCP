@@ -350,7 +350,8 @@ roles $what='all' $seasons='2024,2025' $trials='8' $seed='0':
                     continue
                 print(f"  {s['season']}: off {s['weekly_points_off']} on {s['weekly_points_on']} "
                       f"improvement {s['improvement']:+} ({s['trials_improved']}/{s['n_trials']} "
-                      f"trials, {s['players_swapped']} players swapped, empty slots "
+                      f"trials, {s['trials_improved_of_changed']}/{s['trials_changed']} of the "
+                      f"trials it changed, {s['players_swapped']} players swapped, empty slots "
                       f"{s['empty_slots_off']} -> {s['empty_slots_on']})")
             print(f"  overall improvement {out['overall_improvement']}, "
                   f"{out['players_swapped']} players swapped")
