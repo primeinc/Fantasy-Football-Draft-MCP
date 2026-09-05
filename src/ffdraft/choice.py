@@ -108,6 +108,15 @@ class WalkForward:
         self.rows.append(result)
         return result
 
+    def probabilities(self, recs: pd.DataFrame, recent_positions: list[str],
+                      name: str = "blend") -> np.ndarray:
+        """One predictor's probability over the players available in `recs`, in
+        `recs` order. The predictor is used as it stands, so a caller replaying a
+        draft gets the fit from the picks it has fed in so far and nothing later."""
+        m = self.models[name]
+        return m.probabilities(features(recs, recent_positions)[list(m.cols)]
+                               .to_numpy(dtype=float))
+
     def forecast(self, recs: pd.DataFrame, recent_positions: list[str], top: int = 5) -> dict:
         """Each predictor's view of the pick on the clock: top players with
         probabilities, and the blend's probability by position."""

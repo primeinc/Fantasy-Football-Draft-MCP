@@ -60,6 +60,25 @@ def test_walk_forward_learns_the_list_the_room_follows(tmp_path, monkeypatch):
     assert all(r["espn_list"]["rank"] == 1 for r in rows)
 
 
+def test_probabilities_expose_the_fit_so_far_over_an_arbitrary_pool():
+    # What counterfactual_draft asks for: the blend's distribution over a pool it
+    # chooses, from the predictor as it stands, with no learning as a side effect.
+    wf = choice.WalkForward()
+    recs = _pool(6).set_index("_key", drop=False)
+    p = wf.probabilities(recs, [])
+    assert p.shape == (6,) and abs(float(p.sum()) - 1.0) < 1e-9
+    assert wf.models["blend"].train == [] and wf.rows == []
+
+    before = wf.probabilities(recs, []).copy()
+    by_espn = recs.sort_values("espn_rank")
+    wf.observe(by_espn, str(by_espn["_key"].iloc[0]), [], 1)
+    after = wf.probabilities(recs, [])
+    # One observation of a room following ESPN's list moves the blend toward it.
+    assert not np.allclose(before, after)
+    # The pool is the caller's: a shorter one gets a shorter distribution.
+    assert wf.probabilities(recs.head(3), []).shape == (3,)
+
+
 def test_unscored_pick_does_not_train():
     wf = choice.WalkForward()
     recs = _pool(5).set_index("_key", drop=False)

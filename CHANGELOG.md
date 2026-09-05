@@ -81,6 +81,29 @@ All notable changes to this project. Format follows
   `role_mult` and `p_available_next`; overall adds log loss and survival
   calibration by round and by position.
 
+**Counterfactual replay**
+- `draft_counterfactual` (`replay.counterfactual_draft`, `just counterfactual
+  [slot] [policy] [seed]`): the replay walk with the model intervening. At each
+  of one slot's turns the model picks for that team's simulated roster and the
+  room's drift; the pick changes what is left downstream; every other team takes
+  the walk-forward blend predictor's choice (`choice.WalkForward`, fitted
+  prequentially on the real picks up to that point — `argmax` by default,
+  `sample` with a seed available). Reports the roster the model would have
+  built, projected starter points against the real roster, and the substitution
+  at every turn. Labelled `simulation: true`.
+- A real pick the board cannot model (kicker, defense, unprojected player) is
+  mirrored rather than predicted, so the simulated team does not eat a modelled
+  player who really was still on the board.
+- `board.lineup_value` is `team_strength`'s per-team scoring extracted, so a
+  simulated roster is scored by exactly the logic that scores a recorded one.
+  `choice.WalkForward.probabilities` exposes one predictor's distribution over
+  an arbitrary pool without training on it.
+- On the live record (122 picks, slot 4, argmax): projected starter points 1479
+  simulated vs 1343 real, +136; 6 of 7 turns substituted; 105 of 111 other-team
+  picks differ from the real draft and 5 off-board picks were mirrored. The
+  divergence number is the point — a counterfactual this far from the real room
+  is a simulation of the predictor's room, not of that draft.
+
 **Walk-forward choice model**
 - `choice.py`: four conditional-logit predictors of what the room takes
   (ESPN list order, ADP order, the model's order, and a blend with roster

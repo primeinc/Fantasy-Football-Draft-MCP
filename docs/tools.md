@@ -139,6 +139,33 @@ answer also carries the walk-forward `predictors` score sheet, `predictor_rows`
 (each predictor's rank of and probability for every real pick) and the
 `forecast` for the pick on the clock; see `predict_pick`.
 
+### `draft_counterfactual`
+**A simulation, not a measurement**, and labelled as one in the answer
+(`simulation: true` plus a `note`). The same walk as `draft_replay`, except that
+the model intervenes: at each of `slot`'s turns (yours by default) it picks for
+that team's simulated roster and the room's drift, and that pick changes what is
+left for every pick after it. Every other team takes the walk-forward blend
+predictor's choice among the players still available — `choice.WalkForward`,
+fitted prequentially on the *real* picks up to that point, so nothing from later
+in the draft leaks in. `policy` is `argmax` (the predictor's likeliest player,
+deterministic) or `sample` (drawn from its distribution, with `seed`).
+
+Returns `model_roster` and `real_roster`, `starters_proj` (model, real and the
+delta, scored by `board.lineup_value` — the same best-lineup logic
+`draft_strength` uses), `bench_proj`, `open_starter_slots`, and `substitutions`:
+one row per turn of that team with the real pick, the model's pick, both
+projections and whether they agree. `divergence` says how far the simulated room
+drifted from the real one — how many other-team picks differ, and how many
+off-board picks were mirrored.
+
+Two things bound what it means. A real pick the board cannot model (a kicker, a
+defense, a player with no projection) is *mirrored* rather than predicted: the
+simulated team takes the same player, worth 0 points, because predicting one
+instead would eat a modelled player who really was still there. And the whole
+simulation is priced with today's projections, ADP and room drift, so it is no
+more as-of than `draft_replay` is. `just counterfactual [slot] [policy] [seed]`
+prints the same without a server.
+
 ### `predict_pick`
 For the team on the clock, or a given `slot`: `should` is the model's
 recommendation for that team's roster and next pick; `espn_list` is the next

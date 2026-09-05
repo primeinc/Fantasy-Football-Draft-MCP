@@ -158,6 +158,45 @@ replay $picks='0':
               f"role {r['role_mult']!s:>4} model {r['model_pick']!s:<22} regret {r['pick_regret']!s:>6} "
               f"z {r['market_z']!s:>5}")
 
+# SIMULATION. Replay the draft with the model drafting for $slot (yours by
+# default) while every other team drafts per the walk-forward blend predictor.
+# $policy is argmax (deterministic) or sample. Same numbers as the
+# draft_counterfactual tool, without a server.
+[script]
+counterfactual $slot='0' $policy='argmax' $seed='0':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import replay, server
+
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    slot = int(os.environ["slot"]) or st.my_slot
+    out = replay.counterfactual_draft(b, st, league, slot, policy=os.environ["policy"],
+                                      seed=int(os.environ["seed"]))
+    print(out["note"])
+    print(f"slot {out['slot']}{' (yours)' if out['mine'] else ''}  picks replayed {out['picks_replayed']}  "
+          f"substitutions {out['substitutions_made']} of {len(out['substitutions'])}")
+    d = out["divergence"]
+    print(f"other teams: {d['other_team_picks_changed']} of {d['other_team_picks']} picks differ from the real draft; "
+          f"{d['mirrored_off_board']} off-board picks mirrored")
+    s, bn, o = out["starters_proj"], out["bench_proj"], out["open_starter_slots"]
+    print(f"projected starter points: model {s['model']}  real {s['real']}  delta {s['delta']:+}")
+    print(f"bench: model {bn['model']} real {bn['real']}   open starter slots: model {o['model']} real {o['real']}")
+    print("substitutions (real -> model)")
+    for r in out["substitutions"]:
+        mark = "  =" if r["same"] else "  ->"
+        print(f"  pick {r['pick']:>3} r{r['round']:<2} {r['real']:<26} {r['real_position']!s:<3} {r['real_proj']!s:>6}"
+              f"{mark} {r['model']:<26} {r['model_position']!s:<3} {r['model_proj']!s:>6}")
+    for label, rows in (("model roster", out["model_roster"]), ("real roster", out["real_roster"])):
+        print(label)
+        for r in rows:
+            print(f"  pick {r['pick']:>3} r{r['round']:<2} {r['player']:<26} {r['position']!s:<3} {r['proj_points']!s:>6}")
+
 # The draft_audit tool without a server: invariants between board, picks and
 # recommendation, plus the market-join report (rows priced synthetically, rows
 # priced through an alias).

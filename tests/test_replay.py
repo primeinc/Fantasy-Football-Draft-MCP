@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from ffdraft import board, replay
 from ffdraft.config import LeagueSettings
@@ -150,3 +151,94 @@ def test_adp_shift_lowers_survival_odds():
     p0 = plain.set_index("name")["p_available_next"]
     p8 = shifted.set_index("name")["p_available_next"]
     assert p8["TE One"] < p0["TE One"] and p8["QB One"] < p0["QB One"]
+
+
+def _counterfactual_league() -> LeagueSettings:
+    return LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
+                          starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                    "K": 0, "DST": 0})
+
+
+def _counterfactual_state(tmp_path, monkeypatch) -> board.DraftState:
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    st = board.DraftState(_counterfactual_league())
+    st.record("WR Two", 1, 1)          # slot 1 passes on RB One, the model's choice
+    st.record("RB One", 2, 2)
+    st.record("Some Kicker", 3, 2, position="K")
+    st.record("RB Two", 4, 1)
+    return st
+
+
+def test_counterfactual_substitutes_the_models_pick_and_moves_the_pool(tmp_path, monkeypatch):
+    st = _counterfactual_state(tmp_path, monkeypatch)
+    out = replay.counterfactual_draft(_board(), st, _counterfactual_league(), slot=1)
+
+    assert out["simulation"] is True
+    assert "not a measurement" in out["note"]
+    assert (out["slot"], out["mine"], out["policy"], out["picks_replayed"]) == (1, True, "argmax", 4)
+
+    subs = {s["pick"]: s for s in out["substitutions"]}
+    assert set(subs) == {1, 4}                      # only slot 1's turns are substituted
+    assert subs[1]["real"] == "WR Two" and subs[1]["real_proj"] == 200.0
+    assert subs[1]["model"] == "RB One" and subs[1]["model_proj"] == 300.0
+    assert subs[1]["same"] is False
+    assert subs[1]["basis"] == "model recommendation for the simulated roster"
+    assert out["substitutions_made"] == 2
+
+    # RB One goes to slot 1 at pick 1 in the simulation, so he is not there for
+    # slot 2 at pick 2: the substitution really moved the pool.
+    assert [r["player"] for r in out["model_roster"]][0] == "RB One"
+    assert [r["player"] for r in out["real_roster"]] == ["WR Two", "RB Two"]
+
+    # The kicker is off the board: mirrored, not predicted, and worth nothing.
+    d = out["divergence"]
+    assert d["mirrored_off_board"] == 1
+    assert d["other_team_picks"] == 1 and d["other_team_picks_changed"] <= 1
+
+    # Real starters: WR Two 200 + RB Two 250, the QB slot left empty.
+    assert out["starters_proj"]["real"] == 450
+    assert out["open_starter_slots"]["real"] == 1
+    assert out["starters_proj"]["delta"] == (out["starters_proj"]["model"]
+                                            - out["starters_proj"]["real"])
+    # Nothing was written back: the recorded draft is untouched.
+    assert [p["name"] for p in st.picks] == ["WR Two", "RB One", "Some Kicker", "RB Two"]
+
+
+def test_counterfactual_argmax_is_deterministic_and_sample_is_seeded(tmp_path, monkeypatch):
+    st = _counterfactual_state(tmp_path, monkeypatch)
+    league = _counterfactual_league()
+    first = replay.counterfactual_draft(_board(), st, league, slot=1)
+    again = replay.counterfactual_draft(_board(), st, league, slot=1)
+    assert first["model_roster"] == again["model_roster"]
+
+    s1 = replay.counterfactual_draft(_board(), st, league, slot=1, policy="sample", seed=7)
+    s2 = replay.counterfactual_draft(_board(), st, league, slot=1, policy="sample", seed=7)
+    assert s1["model_roster"] == s2["model_roster"]
+    assert (s1["policy"], s1["seed"]) == ("sample", 7)
+
+    with pytest.raises(ValueError, match="policy must be one of"):
+        replay.counterfactual_draft(_board(), st, league, slot=1, policy="vibes")
+
+
+def test_counterfactual_for_another_slot_hands_your_turns_to_the_predictor(tmp_path, monkeypatch):
+    st = _counterfactual_state(tmp_path, monkeypatch)
+    out = replay.counterfactual_draft(_board(), st, _counterfactual_league(), slot=2)
+    assert [s["pick"] for s in out["substitutions"]] == [2, 3]
+    # Pick 3 was a kicker: mirrored even at the model's own slot, since the board
+    # holds nobody to put in his place.
+    mirrored = [s for s in out["substitutions"] if s["pick"] == 3][0]
+    assert mirrored["same"] is True and mirrored["model"] == "Some Kicker"
+    assert mirrored["basis"].startswith("mirrored") and mirrored["model_proj"] is None
+    # Slot 1's turns now belong to the predictor, not the model.
+    assert out["divergence"]["other_team_picks"] == 2
+    assert out["mine"] is False
+
+
+def test_lineup_value_scores_a_simulated_roster_like_a_recorded_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    picks = [{"name": "RB One", "position": "RB"}, {"name": "WR One", "position": "WR"},
+             {"name": "Some Kicker", "position": "K"}]
+    v = board.lineup_value(_board(), picks, _counterfactual_league())
+    # RB One 300 + WR One 240; the kicker fills no starting slot this league has,
+    # and no flex slot exists to hold him, so he is neither starter nor bench.
+    assert v == {"starters_proj": 540, "bench_proj": 0, "open_starter_slots": 1, "picks": 3}
