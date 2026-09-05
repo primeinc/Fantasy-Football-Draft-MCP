@@ -1213,10 +1213,13 @@ def lineup_value(board: pd.DataFrame, picks: list[dict],
     recorded one does.
 
     A pick that carries its own `proj_points` is taken at its word, position and
-    all. Recorded picks never do, so `team_strength` is unaffected; a caller that
-    knows exactly which board row it took (`replay.counterfactual_draft`) passes
-    it, which is the only way to score two board rows sharing one normalised
-    name without both resolving to whichever came last.
+    all, and must carry a `position` too -- both or neither. Recorded picks carry
+    neither, so `team_strength` is unaffected; a caller that knows exactly which
+    board row it took (`replay.counterfactual_draft`) carries both, which is the
+    only way to score two board rows sharing one normalised name without both
+    resolving to whichever came last. Half a pick is refused rather than
+    half-resolved: falling back to the name for the position would reintroduce
+    exactly the ambiguity the projection was passed to close.
 
     A missing projection is worth 0, and so is a NaN one. Those are not the same
     statement in Python: NaN is truthy, so the obvious `proj.get(key) or 0.0`
@@ -1239,8 +1242,12 @@ def lineup_value(board: pd.DataFrame, picks: list[dict],
         given = p.get("proj_points")
         if given is None:
             pos, value = pos_of.get(key) or p.get("position"), points(proj.get(key))
+        elif not p.get("position"):
+            raise ValueError(
+                f"lineup_value: pick {p.get('name')!r} carries proj_points but no position; "
+                "a caller that knows which board row it took must give both")
         else:
-            pos, value = p.get("position") or pos_of.get(key), points(given)
+            pos, value = p["position"], points(given)
         if not pos:
             continue
         have.setdefault(str(pos), []).append(value)

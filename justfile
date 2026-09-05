@@ -117,7 +117,13 @@ replay $picks='0':
             print(f"  p {c['p_range']}  n {c['n']:>4}  predicted {c['predicted']:.2f}  observed {c['observed']:.2f}")
     print(f"picks scored {out['picks_scored']}  on board {o['on_board_picks']}  off board {o['off_board_picks']}")
     print(f"model match rate {o['model_match_rate']}  top-3 rate {o['top3_rate']}  median rank {o['median_rank']}")
-    print(f"walk-forward predictors ({out['predictors']['picks_scored']} picks scored out of sample)")
+    pr = out["predictors"]
+    print(f"walk-forward predictors ({pr['picks_scored']} picks scored out of sample"
+          + (f"; {pr['picks_unscored']} not priced by the board: {pr['unscored_picks']}"
+             if pr["picks_unscored"] else "") + ")")
+    if pr["picks_unscored"]:
+        print("  these log losses are over the scored picks only -- comparing two runs that "
+              "scored different picks is not a comparison")
     for name, s in out["predictors"]["predictors"].items():
         print(f"  {name:<10} log loss {s['log_loss']!s:>6}  top1 {s['top1']!s:>6}  top3 {s['top3']!s:>6}  "
               f"top5 {s['top5']!s:>6}  median rank {s['median_rank']}")
@@ -200,6 +206,141 @@ asof $league_id='':
               f"median rank {o['median_rank']}")
         p = out["predictors"]["predictors"]
         print("   " + "  ".join(f"{n} {s['log_loss']}" for n, s in p.items()))
+
+# Evaluate blend_pos (the blend plus league-level position intercepts) against
+# the shipped blend on the recorded draft. One walk-forward pass scores both on
+# the same picks in the same order, so every pick is a paired observation.
+# Reports blocks and spread, never a bare mean: rounds as blocks (the unit the
+# correlation lives in), the draft's two halves as disjoint samples, and a
+# round-level block bootstrap run as two disjoint seed blocks. $reps is the
+# bootstrap replicates per seed block.
+[script]
+blendpos $reps='2000':
+    import json
+    import math
+    import os
+    import sys
+
+    import numpy as np
+
+    def sign_p(blocks) -> float:
+        """Two-sided sign test on a set of block signs.
+
+        `blocks_agree` is a boolean and `adp` now publishes what it is worth
+        under the null (2^-(k-1)). This is the same currency for a split that is
+        not unanimous: 7 of 8 blocks pointing one way is not agreement, and it is
+        also not nothing, so report the probability of a split at least this
+        lopsided from a term that does nothing rather than a flag either way.
+        """
+        signs = [b for b in blocks if b != 0]
+        n = len(signs)
+        if not n:
+            return 1.0
+        k = max(sum(1 for b in signs if b > 0), sum(1 for b in signs if b < 0))
+        tail = sum(math.comb(n, i) for i in range(k, n + 1))
+        return min(1.0, 2 * tail / 2 ** n)
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import replay, server
+
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    print(f"board {len(b)} rows, "
+          f"market join version {b['market_join_version'].iloc[0] if 'market_join_version' in b.columns else 'n/a'}, "
+          f"{len(st.picks)} recorded picks")
+    out = replay.replay_draft(b, st, league, adp_shift=replay.room_drift(b, st)["shift"],
+                              team_effects=True)
+    pr = out["predictors"]
+    print(f"sample: {pr['picks_scored']} picks scored, {pr['picks_unscored']} not priced by the "
+          f"board {pr['unscored_picks']}")
+    for name, s in pr["predictors"].items():
+        print(f"  {name:<11} log loss {s['log_loss']!s:>6}  top1 {s['top1']!s:>6}  "
+              f"top3 {s['top3']!s:>6}  top5 {s['top5']!s:>6}  median rank {s['median_rank']}")
+
+    rows = [r for r in out["predictor_rows"] if r["scored"]]
+    rounds = np.array([(r["pick"] - 1) // league.teams + 1 for r in rows])
+    base = np.array([r["blend"]["log_loss"] for r in rows], dtype=float)
+    cand = np.array([r["blend_pos"]["log_loss"] for r in rows], dtype=float)
+    delta = cand - base                      # negative favours blend_pos
+    print(f"paired on {len(delta)} picks; mean delta {delta.mean():+.3f} "
+          f"(negative favours blend_pos)")
+
+    print("blocks: draft rounds (the unit the correlation lives in)")
+    per_round = []
+    for rnd in sorted(set(rounds.tolist())):
+        d = delta[rounds == rnd]
+        per_round.append(float(d.mean()))
+        print(f"  round {rnd:>2}  n {len(d):>3}  delta {d.mean():+.3f}")
+    per_round_arr = np.array(per_round)
+    agree = bool(np.all(per_round_arr > 0) or np.all(per_round_arr < 0))
+    print(f"  round blocks: mean {per_round_arr.mean():+.3f}  "
+          f"spread {per_round_arr.max() - per_round_arr.min():.3f}  "
+          f"favouring blend_pos in {(per_round_arr < 0).sum()} of {len(per_round_arr)}  "
+          f"blocks_agree {agree}  "
+          f"agree_p_null {0.5 ** (len(per_round_arr) - 1):.4f}  "
+          f"sign test p {sign_p(per_round_arr.tolist()):.3f}")
+    if len(per_round_arr) > 1:
+        se = per_round_arr.std(ddof=1) / np.sqrt(len(per_round_arr))
+        print(f"  paired t over round blocks: {per_round_arr.mean() / se:+.2f} on "
+              f"{len(per_round_arr) - 1} df")
+
+    # The rank metrics get the same treatment: a bare top-3 rate is an estimate
+    # too, and the difference between two of them needs its spread beside it.
+    print("blocks: the rank metrics, paired per round")
+    base_rank = np.array([r["blend"]["rank"] for r in rows], dtype=float)
+    cand_rank = np.array([r["blend_pos"]["rank"] for r in rows], dtype=float)
+    for k in (1, 3, 5):
+        d = (cand_rank <= k).astype(float) - (base_rank <= k).astype(float)
+        blocks = np.array([d[rounds == r].mean() for r in sorted(set(rounds.tolist()))])
+        agree_k = bool(np.all(blocks > 0) or np.all(blocks < 0))
+        print(f"  top{k}  blend {(base_rank <= k).mean():.3f} -> blend_pos "
+              f"{(cand_rank <= k).mean():.3f}  delta {d.mean():+.3f}  "
+              f"round spread {blocks.max() - blocks.min():.3f}  "
+              f"blocks_agree {agree_k}  sign test p {sign_p(blocks.tolist()):.3f}")
+
+    print("blocks: the draft's two halves, as disjoint samples")
+    order = np.argsort([r["pick"] for r in rows])
+    half = len(order) // 2
+    halves = []
+    for label, idx in (("first", order[:half]), ("second", order[half:])):
+        d = delta[idx]
+        halves.append(float(d.mean()))
+        print(f"  {label:<7} picks {rows[idx[0]]['pick']:>3}-{rows[idx[-1]]['pick']:<3} "
+              f"n {len(d):>3}  blend {base[idx].mean():.3f}  blend_pos {cand[idx].mean():.3f}  "
+              f"delta {d.mean():+.3f}")
+    print(f"  half blocks: spread {max(halves) - min(halves):.3f}  "
+          f"blocks_agree {bool(halves[0] * halves[1] > 0)}")
+
+    print("blocks: round-level bootstrap, two disjoint seed blocks")
+    reps = int(os.environ["reps"])
+    uniq = np.array(sorted(set(rounds.tolist())))
+    points = []
+    for block, seed in enumerate((0, reps)):
+        rng = np.random.default_rng(seed)
+        draws = np.empty(reps)
+        for i in range(reps):
+            picked = rng.choice(uniq, size=len(uniq), replace=True)
+            draws[i] = np.mean([delta[rounds == r].mean() for r in picked])
+        lo, hi = np.percentile(draws, [2.5, 97.5])
+        points.append(float(draws.mean()))
+        print(f"  block {block + 1} seeds {seed}-{seed + reps - 1}: mean {draws.mean():+.3f}  "
+              f"95% [{lo:+.3f}, {hi:+.3f}]  P(favours blend_pos) {(draws < 0).mean():.2f}")
+    print(f"  seed blocks: spread {abs(points[0] - points[1]):.3f}  "
+          f"blocks_agree {bool(points[0] * points[1] > 0)}")
+
+    # One line saying what this carries, in the same shape as adp.block_verdict
+    # and refusing the same word.
+    p = sign_p(per_round_arr.tolist())
+    effect, spread = abs(per_round_arr.mean()), per_round_arr.max() - per_round_arr.min()
+    print("verdict: " + (
+        f"the round blocks disagree in sign (sign test p {p:.3f}) and the spread between "
+        f"them is {spread / effect:.1f}x the effect, so this improvement is inside the "
+        "harness's own noise and supports nothing"
+        if not agree or p > 0.05 else
+        f"the round blocks agree in sign (p {p:.3f}) — an observation, not a pass, and it "
+        "says nothing about the magnitude"))
 
 # Score choice.py's per-team predictor against the plain blend on the recorded
 # draft. One walk-forward pass scores both on the same picks in the same order,

@@ -136,3 +136,17 @@ def test_unscored_pick_does_not_train():
     assert r["scored"] is False and "rank" not in r["espn_list"]
     assert wf.models["espn_list"].train == []
     assert wf.summary()["picks_scored"] == 0
+
+
+def test_the_summary_names_the_picks_it_could_not_score():
+    # The sample is the board's on-board picks, not the draft, and it moves when
+    # the board does. Two log losses over different samples are not a comparison,
+    # so the score sheet says which picks were left out.
+    wf = choice.WalkForward()
+    recs = _pool(5).set_index("_key", drop=False)
+    wf.observe(recs, str(recs["_key"].iloc[0]), [], 1)
+    wf.observe(recs, None, [], 2)                   # a pick the board cannot price
+    wf.observe(recs, str(recs["_key"].iloc[1]), [], 3)
+    s = wf.summary()
+    assert s["picks_scored"] == 2
+    assert s["picks_unscored"] == 1 and s["unscored_picks"] == [2]

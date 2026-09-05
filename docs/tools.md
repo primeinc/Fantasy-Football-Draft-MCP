@@ -351,6 +351,16 @@ are worse out of sample at every shrinkage tried — see the numbers in
 [CHANGELOG.md](../CHANGELOG.md). Seven or eight picks per team is not enough
 evidence to move a weight further than the penalty pulls it back.
 
+The position intercepts on their own were evaluated separately (`just blendpos`)
+and also not adopted. They are worth about 0.06 of log loss in the right
+direction, consistently across 7 of 8 round blocks and both halves of the draft
+— but the spread between round blocks is 0.30, five times the effect, the blocks
+do not agree in sign, and a round-level bootstrap run as two disjoint seed blocks
+puts the 95% interval on either side of zero depending on the seed. The rank
+metrics move by 0.025 or less against round spreads of 0.07 to 0.29. One
+recorded draft cannot resolve a difference this size; `just blendpos` is the
+reproducer if a second draft ever makes it resolvable.
+
 ### `draft_strength`
 Every team's draft so far ranked by projected starter points: the best lineup
 its picks fill under the league's starting slots, bench projection, starting
