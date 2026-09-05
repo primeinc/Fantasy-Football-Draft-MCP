@@ -26,6 +26,20 @@ def _arrives() -> str:
     return "new"
 
 
+def test_reload_order_lists_every_package_module():
+    # A module absent from RELOAD_ORDER is simply never re-imported, and
+    # reload_code reports success anyway, so the miss is silent until someone
+    # edits that module and wonders why the change did not take. roomstats
+    # reached the integration branch missing from the list; roles is next.
+    import pathlib
+
+    pkg = pathlib.Path(server.__file__).parent
+    on_disk = {p.stem for p in pkg.glob("*.py")} - {"__init__", "server"}
+    listed = set(server.RELOAD_ORDER)
+    assert on_disk - listed == set(), f"modules missing from RELOAD_ORDER: {sorted(on_disk - listed)}"
+    assert listed - on_disk == set(), f"RELOAD_ORDER names modules that do not exist: {sorted(listed - on_disk)}"
+
+
 def test_sync_tools_replaces_adds_and_removes():
     live = server._Server("live")
     fresh = server._Server("fresh")

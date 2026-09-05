@@ -1723,7 +1723,7 @@ async def stop_watch(league_id: str) -> str:
 # dependencies. server.py itself is reloaded last, in place.
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
-                "watch")
+                "watch", "roomstats")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
