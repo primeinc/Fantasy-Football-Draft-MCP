@@ -34,6 +34,25 @@ All notable changes to this project. Format follows
   `sync_draft` refuses while a watch is connected; `just watch <league_id>` runs
   the watch standalone with a log file.
 
+**Draft room presence**
+- `draft_room_stats` and `just roomstats [dump_dir]` (`roomstats.py`): who was
+  in the ESPN draft room, for how long, and who talked, per member by team and
+  owner name. Minutes in the room and each session, joins and leaves, messages
+  with the sender's name and the last one, busiest hours in local time, first
+  and last seen, picks made, and the seconds each pick took from the clock
+  starting — the gap between consecutive `SELECTED` lines, which is when ESPN
+  starts the next team's clock. The pick after `INIT` and the pick after an
+  `UNDONE` have no comparable start; a gap over 30 minutes is a draft pause and
+  is reported but kept out of the median. `kona_league_communication` topics add
+  activity outside the room, dated, and feed the hour histogram only.
+  Source is the running watch's `lines` when there is one, else a dump
+  directory; a dump taken without a watch holds the join burst only and the
+  report says so. The socket names people by SWID: it is the join key here and
+  nothing else, so no SWID reaches the JSON or the table (an unresolvable one
+  reads "unknown member"). `board.league_directory_from_mteam` and
+  `board.mteam_member_names` split out of `espn_league_directory` so a saved
+  `read_api/mTeam.json` reads the same way as the live view.
+
 **Draft audit**
 - `draft_audit` checks the invariants between board, draft state and
   recommendation (key freshness, contiguous picks, no duplicates, your picks on

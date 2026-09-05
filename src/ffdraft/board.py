@@ -1024,15 +1024,33 @@ def espn_league_directory(league_id: str, season: int = CURRENT_SEASON,
     resp = requests.get(url, params={"view": ["mTeam"]}, cookies=cookies, timeout=20,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
     resp.raise_for_status()
-    data = resp.json()
+    return league_directory_from_mteam(resp.json())
+
+
+def mteam_member_names(data: dict) -> dict[str, str]:
+    """Owner SWID (upper case, no braces) -> display name, from an `mTeam` payload.
+
+    The key is the caller's; the value is all that may be shown. Keep the two
+    apart: the SWID identifies a person and does not belong in any report.
+    """
     members = {}
     for m in data.get("members") or []:
         full = " ".join(filter(None, [m.get("firstName"), m.get("lastName")])).strip()
-        members[m["id"].strip("{}").upper()] = full or m.get("displayName") or ""
+        members[str(m["id"]).strip("{}").upper()] = full or m.get("displayName") or ""
+    return members
+
+
+def league_directory_from_mteam(data: dict) -> dict[int, dict]:
+    """ESPN team id -> team name and owner display names, from an `mTeam` payload.
+
+    Split out from `espn_league_directory` so a saved `read_api/mTeam.json`
+    from `espn_dump` reads the same way as the live view.
+    """
+    members = mteam_member_names(data)
     out = {}
     for t in data.get("teams") or []:
         name = (t.get("name") or " ".join(filter(None, [t.get("location"), t.get("nickname")]))).strip()
-        owners = [members.get(o.strip("{}").upper(), o) for o in t.get("owners", [])]
+        owners = [members.get(str(o).strip("{}").upper(), o) for o in t.get("owners", [])]
         out[int(t["id"])] = {"name": name, "owners": owners}
     return out
 

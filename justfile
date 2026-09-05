@@ -258,6 +258,26 @@ dump $league_id $out_dir='.':
     if m["errors"]:
         print("errors:", *m["errors"], sep="\n  ")
 
+# Office presence and chat report from a dump: who was in the draft room, how
+# long, who talked, and how long each pick took. No cookies, no network.
+[script]
+roomstats $dump_dir='.':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    from ffdraft import roomstats
+
+    root = roomstats.find_dump(os.environ["dump_dir"])
+    if root is None:
+        sys.exit(f"no espn_dump_* directory under {os.environ['dump_dir']!r}; run `just dump` first")
+    stats = roomstats.room_stats(roomstats.from_dump(root))
+    print(roomstats.format_table(stats))
+    out = root / "room_stats.json"
+    out.write_text(json.dumps(stats, indent=1), encoding="utf-8")
+    print(f"\njson -> {out}")
+
 # Probe every external data surface; see docs/data-sources.md
 [script]
 surfaces:

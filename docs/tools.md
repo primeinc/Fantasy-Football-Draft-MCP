@@ -122,6 +122,35 @@ watch's socket, with team and owner names from the league member list. `upcoming
 lists the next five picks in order: pick number, slot, team and owner, whether
 that team is in the room, and whether the pick is yours.
 
+### `draft_room_stats` / `just roomstats [dump_dir]`
+Who was in the draft room, for how long, and who talked — the office report.
+Per member, keyed by ESPN team and labelled with the team and owner names:
+`minutes_in_room` and each `session` (from, to, whether it was still open when
+the log ended), `joins` / `leaves`, `in_room_at_start` (the INIT snapshot's
+online flags), `messages` with `messages_by_owner` and the `last_message`,
+`active_hours` and `top_hours` in the machine's local time, `first_seen` /
+`last_seen` in the room, `picks`, and `clock_to_pick`: the seconds from the
+clock starting to the pick landing, measured as the gap between consecutive
+`SELECTED` lines, which is when ESPN starts the next team's clock. The pick
+after `INIT` and the pick after an `UNDONE` have no comparable start and are
+not timed; a gap over `roomstats.PICK_GAP_CAP_SECONDS` (30 minutes) is a draft
+pause and is reported under `slowest_seconds` but kept out of the median and
+mean. `league_activity` counts that member's topics in the read API's
+`kona_league_communication` view, which is where settings changes outside the
+room show up with a date; those dates feed `active_hours` but not
+`first_seen` / `last_seen`.
+
+Source is the running watch for `league_id` when there is one — its `lines` are
+the only timestamped record of picks that exists — otherwise the dump directory
+(`dump_dir`, or the newest `espn_dump_*` under the working directory), which
+reads `live/lines.jsonl`, `live/init.json`, `read_api/mTeam.json` and
+`read_api/kona_league_communication.json`. A dump taken without a watch holds
+the join burst only, so its presence numbers are one instant and the table says
+so. `table` is the same numbers as a plain-text table for an email; `just
+roomstats` prints it and writes the JSON to `room_stats.json` inside the dump.
+The socket identifies people by SWID; SWIDs are the join key and never appear
+in the output, so an unresolvable one is reported as "unknown member".
+
 ### `draft_replay`
 Every recorded pick replayed through the model for the team that made it, with
 that team's roster and the pool as it stood. Per pick: the model's choice, the
