@@ -640,6 +640,50 @@ def replacement_points(board: pd.DataFrame, position: str) -> float:
     return float(chunk.iloc[0]) if len(chunk) else 0.0
 
 
+def is_position(value: object) -> bool:
+    """Whether a value can name a position: a non-empty string, and nothing else.
+
+    The single rule, because it has now been written separately four times and
+    disagreed with itself three of them. A missing board position arrives as
+    NaN, NaN is truthy, so every `or`-based fallback and every truthiness filter
+    written against it let the NaN through -- `my_roster` returned a float key,
+    `picks_by_position` invented a position "nan", `held_by_slot` dropped the
+    pick, and `my_rows` built a stand-in priced at `replacement_points(board,
+    "nan")` for a position that does not exist. One cause, four symptoms, four
+    authors.
+
+    Asking `isinstance(value, str)` asks what a position IS rather than whether
+    a value is present, which is why `pd.notna` is the wrong test here: it
+    passes 0.0, which is not a position, and "", which is not a usable one.
+    """
+    return isinstance(value, str) and bool(value)
+
+
+READS_HOST = "https://lm-api-reads.fantasy.espn.com"
+
+
+def espn_cookies(swid: str | None = None, espn_s2: str | None = None) -> dict[str, str]:
+    """The read API's cookies, from arguments or the environment.
+
+    SWID is sent brace-wrapped; ESPN rejects it bare, and every caller in this
+    file had to remember that separately. Returns an empty dict when either is
+    missing, which is what an unauthenticated read wants -- the public views
+    answer without cookies and the private ones 401, and that is a clearer
+    failure than a half-built cookie jar.
+    """
+    swid = swid or os.environ.get("ESPN_SWID") or ""
+    espn_s2 = espn_s2 or os.environ.get("ESPN_S2") or ""
+    if not (swid and espn_s2):
+        return {}
+    return {"SWID": swid if swid.startswith("{") else f"{{{swid}}}", "espn_s2": espn_s2}
+
+
+def espn_league_url(league_id: str, season: int) -> str:
+    """The read API's league document, which every view is a projection of."""
+    return (f"{READS_HOST}/apis/v3/games/ffl/seasons/{season}"
+            f"/segments/0/leagues/{league_id}")
+
+
 def with_stand_ins(rows: pd.DataFrame, board: pd.DataFrame,
                    missing: list[tuple[str, str]]) -> pd.DataFrame:
     """Append a replacement-level stand-in for each (name, position) not priced.

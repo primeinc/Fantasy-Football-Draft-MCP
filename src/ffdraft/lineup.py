@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .board import is_position
 from .config import LeagueSettings
 
 # The slot a player fills, named on each starter. FLEX and superflex say so
@@ -32,17 +33,18 @@ SUPERFLEX_SLOT = "SUPERFLEX"
 def placeable(rows: pd.DataFrame) -> pd.Series:
     """Whether each row carries a position that can fill a slot.
 
-    A position is a non-empty string, the same question `DraftState._position_of`
-    asks. A row whose board position is missing arrives here as NaN, and NaN
-    matches no slot, so such a row can never be selected as a starter -- which
-    means that without this it falls into the bench and is offered as droppable.
-    That is the waiver defect wearing a different coat: the player might be the
-    only kicker on the roster, and the board being broken about him is not a
-    reason to cut him. Flagged by lena.
+    Through `board.is_position`, which is the one place that rule lives -- it had
+    been written separately four times and disagreed with itself three of them.
+    A row whose board position is missing arrives here as NaN, and NaN matches
+    no slot, so such a row can never be selected as a starter, which means that
+    without this it falls into the bench and is offered as droppable. That is the
+    waiver defect wearing a different coat: the player might be the only kicker
+    on the roster, and the board being broken about him is not a reason to cut
+    him. Flagged by lena.
     """
     if "position" not in rows.columns or rows.empty:
         return pd.Series(False, index=rows.index)
-    return rows["position"].map(lambda p: isinstance(p, str) and bool(p))
+    return rows["position"].map(is_position)
 
 
 def _take(pool: pd.DataFrame, eligible: tuple[str, ...], count: int,

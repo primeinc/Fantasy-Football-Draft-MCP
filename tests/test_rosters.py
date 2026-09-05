@@ -146,6 +146,87 @@ class TestRosterRows:
         assert UNPRICED in out.columns
 
 
+class TestRostersByTeam:
+    def test_keys_by_espn_team_id_not_by_draft_slot(self):
+        teams = [{"id": 7, "roster": {"entries": [_entry(3001, "Real Back", 2)]}},
+                 {"id": 11, "roster": {"entries": [_entry(3003, "A Receiver", 3)]}}]
+        out = rosters.rosters_by_team(teams, _board(), POSITIONS)
+        assert sorted(out) == [7, 11]
+        assert list(out[7]["name"]) == ["Real Back"]
+
+    def test_a_team_with_no_entries_is_empty_not_missing(self):
+        # Today this is every team: the read API withholds rosters until the
+        # draft finishes. A caller iterating teams must see all of them.
+        out = rosters.rosters_by_team(
+            [{"id": 1, "roster": {"entries": []}}, {"id": 2, "roster": {}}],
+            _board(), POSITIONS)
+        assert sorted(out) == [1, 2]
+        assert all(frame.empty for frame in out.values())
+
+    def test_a_team_with_no_id_is_skipped_rather_than_keyed_on_none(self):
+        out = rosters.rosters_by_team([{"roster": {"entries": []}}], _board(),
+                                      POSITIONS)
+        assert out == {}
+
+
+class TestFetch:
+    """The one function that touches the network, so it is the only one mocked."""
+
+    def _fake(self, captured):
+        class _Resp:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {"teams": [{"id": 3, "roster": {"entries": []}}]}
+
+        def get(url, params=None, **kw):
+            captured.update({"url": url, "params": params, **kw})
+            return _Resp()
+        return get
+
+    def test_the_week_becomes_the_scoring_period(self, monkeypatch):
+        # What makes this a question about week 9 rather than about now, which
+        # is the whole reason #47 needs it.
+        captured: dict = {}
+        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        rosters.fetch_roster_teams("123", season=2026, week=9)
+        # Sent as a string: requests encodes an int identically on the wire, and
+        # a homogeneous dict is what the params type wants.
+        assert captured["params"] == {"view": "mRoster", "scoringPeriodId": "9"}
+        assert captured["url"].endswith("/seasons/2026/segments/0/leagues/123")
+
+    def test_no_week_asks_for_the_current_period(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        rosters.fetch_roster_teams("123", season=2026)
+        assert captured["params"] == {"view": "mRoster"}
+
+    def test_cookies_come_from_the_shared_builder_brace_wrapped(self, monkeypatch):
+        # ESPN rejects a bare SWID. The wrapping lived in five copies before
+        # board.espn_cookies; this asserts the reader uses it rather than a sixth.
+        captured: dict = {}
+        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        rosters.fetch_roster_teams("123", swid="ABC", espn_s2="s2")
+        assert captured["cookies"] == {"SWID": "{ABC}", "espn_s2": "s2"}
+
+    def test_an_already_wrapped_swid_is_not_wrapped_twice(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        rosters.fetch_roster_teams("123", swid="{ABC}", espn_s2="s2")
+        assert captured["cookies"]["SWID"] == "{ABC}"
+
+    def test_missing_credentials_send_no_cookies_rather_than_half(self, monkeypatch):
+        captured: dict = {}
+        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        monkeypatch.delenv("ESPN_SWID", raising=False)
+        monkeypatch.delenv("ESPN_S2", raising=False)
+        rosters.fetch_roster_teams("123", swid="ABC", espn_s2=None)
+        assert captured["cookies"] == {}
+
+
 class TestStarted:
     def test_bench_and_ir_are_not_starts(self):
         out = rosters.roster_rows([

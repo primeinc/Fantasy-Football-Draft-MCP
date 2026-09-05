@@ -22,8 +22,17 @@ view for `tradeBlock` and `waiverRank` and the wrong one for players.
 from __future__ import annotations
 
 import pandas as pd
+import requests
 
-from .board import UNPRICED, norm_name, with_stand_ins
+from .board import (
+    UNPRICED,
+    espn_cookies,
+    espn_league_url,
+    is_position,
+    norm_name,
+    with_stand_ins,
+)
+from .config import CURRENT_SEASON
 
 # ESPN's lineupSlotId on a roster entry: where the team currently has him, not
 # what he is eligible for. `board._ESPN_SLOT_NAMES` is the same table for the
@@ -58,10 +67,13 @@ def entry_facts(entry: dict, positions: dict[str, str]) -> dict:
     """
     player = _player_of(entry)
     pid = player.get("id", entry.get("playerId"))
+    position = positions.get(str(player.get("defaultPositionId")) or "")
     return {
         "espn_id": None if pid is None else str(pid),
         "name": str(player.get("fullName") or ""),
-        "position": positions.get(str(player.get("defaultPositionId")) or ""),
+        # Through the one rule, so an unmapped id yields no position rather than
+        # something that fails a slot match later and looks like a data gap.
+        "position": position if is_position(position) else None,
         "lineup_slot": entry.get("lineupSlotId"),
         "espn_injury": player.get("injuryStatus"),
         "injured": bool(player.get("injured", False)),
@@ -130,6 +142,62 @@ def roster_rows(entries: list[dict], board: pd.DataFrame, positions: dict[str, s
     out["espn_injury"] = [live.get(k, {}).get("espn_injury") for k in keys]
     out["shape"] = UNVERIFIED_SHAPE
     return out.reset_index(drop=True)
+
+
+def fetch_roster_teams(league_id: str, season: int = CURRENT_SEASON,
+                       week: int | None = None, swid: str | None = None,
+                       espn_s2: str | None = None) -> list[dict]:
+    """The mRoster view's teams, each carrying its roster entries.
+
+    `week` becomes `scoringPeriodId`, which is what makes this a question about
+    a particular week rather than about now -- #47 evaluating a trade in week 9
+    needs the rosters as they stood, not as they stand. Omitted, ESPN answers
+    for the current period.
+
+    The only function here that touches the network, so a test replaces this one
+    and everything else is pure. Cookies and URL come from `board`, which had
+    five copies of that construction before this and does not need a sixth.
+    """
+    params: dict[str, str] = {"view": "mRoster"}
+    if week:
+        params["scoringPeriodId"] = str(int(week))
+    resp = requests.get(espn_league_url(league_id, season), params=params,
+                        cookies=espn_cookies(swid, espn_s2), timeout=30,
+                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp.raise_for_status()
+    return resp.json().get("teams") or []
+
+
+def rosters_by_team(teams: list[dict], board: pd.DataFrame,
+                    positions: dict[str, str]) -> dict[int, pd.DataFrame]:
+    """Every team's roster in the board's row shape, keyed by ESPN team id.
+
+    Team id rather than draft slot, at freddy's request and for his reason: a
+    slot is a draft-time concept that means nothing in week 9, and a team is the
+    unit that holds players and makes trades. Owner would be worse still, since
+    a team can have co-managers.
+
+    A team with no entries gets an empty frame rather than being omitted, so a
+    caller iterating teams sees all of them and an empty roster is visibly empty
+    rather than missing. Today that is every team: the draft has not finished.
+    """
+    out: dict[int, pd.DataFrame] = {}
+    for team in teams:
+        team_id = team.get("id")
+        if team_id is None:
+            continue
+        entries = (team.get("roster") or {}).get("entries") or []
+        out[int(team_id)] = roster_rows(entries, board, positions)
+    return out
+
+
+def read_rosters(league_id: str, board: pd.DataFrame, positions: dict[str, str],
+                 season: int = CURRENT_SEASON, week: int | None = None,
+                 swid: str | None = None, espn_s2: str | None = None,
+                 ) -> dict[int, pd.DataFrame]:
+    """Fetch and parse in one call: team id -> roster rows. See the two halves."""
+    return rosters_by_team(
+        fetch_roster_teams(league_id, season, week, swid, espn_s2), board, positions)
 
 
 def started(rows: pd.DataFrame) -> pd.DataFrame:
