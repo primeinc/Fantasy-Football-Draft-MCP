@@ -726,11 +726,20 @@ the crosswalk to begin with.
 
 It does **not** resume when `stop_watch` cleared the flag, when `mDraftDetail`
 says the draft is complete, when the record is more than 24 hours old, when a
-watch for that league is already running, when ESPN sends no INIT within 30
-seconds, or when the record cannot be read. **Every one of those is announced on
-the channel** except the user's own `stop_watch`, which they already know about
-and which would otherwise be noise on every start forever. A watch that silently
-does not come back is the same problem as one that silently dies.
+watch for that league is already running, when the watch stops before ESPN sends
+the draft state, or when the record cannot be read. **Every one of those is
+announced on the channel** except the user's own `stop_watch`, which they already
+know about and which would otherwise be noise on every start forever. A watch
+that silently does not come back is the same problem as one that silently dies.
+A refusal also leaves nothing in place: `draft_room` and `draft_status` answer
+from the same registry, so a watch the user was told does not exist must not
+still be answering questions.
+
+A slow join is **not** a refusal. If ESPN has not sent the draft state within 30
+seconds the socket is still up and picks are still being recorded, so the message
+says so — missed picks are the one loss a draft cannot recover from, and killing
+a live watch to make a failure message true would trade it away. The queue is
+re-sent, and the usual resume line follows, whenever the state does arrive.
 
 One channel event reports success: `watch resumed after restart: N picks made,
 your next pick is P; queue re-sent, K entries, M of them yours`. **It arrives

@@ -2763,15 +2763,36 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
             refresh=lambda: (_build_board(), _settings()[1].bye))
         task = asyncio.create_task(w.run(), name=f"draft-watch-{record.league_id}")
         _WATCHES[record.league_id] = (w, task)
-        # Bounded. `watch_draft` does not wait for INIT at all, so this waits on
-        # something the tool does not; a room that never sends one would leave a
-        # task that never finishes and a resume that never reports either way.
-        await asyncio.wait_for(w.ready.wait(), timeout=RESUME_READY_SECONDS)
-    except TimeoutError:
-        return await _refused(
-            out, f"joined but ESPN sent no INIT within {RESUME_READY_SECONDS:.0f}s")
+        ready = asyncio.ensure_future(w.ready.wait())
+        # Whichever comes first: INIT, or the watch dying. The timeout decides
+        # what is SAID now, not what the watch is: the socket is up either way
+        # and it is the socket that stops picks being missed, which is the one
+        # loss a draft cannot recover from. Cancelling here to make a "not
+        # resumed" message true would throw away the thing worth keeping.
+        done, _pending = await asyncio.wait(
+            {ready, task}, timeout=RESUME_READY_SECONDS,
+            return_when=asyncio.FIRST_COMPLETED)
+        if task in done:
+            ready.cancel()
+            raise RuntimeError("the watch stopped before ESPN sent INIT")
+        if ready not in done:
+            # Still joining. The state says a watch exists because one does, and
+            # the message says so too rather than claiming a failure that would
+            # contradict what `draft_room` and `draft_status` will answer.
+            asyncio.create_task(_finish_resume(w, task, record),
+                                name=f"ffdraft-finish-resume-{record.league_id}")
+            out["why"] = (f"joined; ESPN had not sent INIT after "
+                          f"{RESUME_READY_SECONDS:.0f}s, so the picks and the queue "
+                          f"are still to come")
+            await _channel(
+                f"watch rejoined league {record.league_id} but ESPN has not sent the "
+                f"draft state yet; picks are being recorded and the queue will be "
+                f"re-sent when it arrives",
+                {"league": record.league_id, "event": "resuming"})
+            return out
     except Exception as exc:
         _log.exception("could not resume the watch for league %s", record.league_id)
+        _drop_watch(record.league_id)
         return await _refused(out, f"{type(exc).__name__}: {exc}")
 
     summary = w.state.summary()
@@ -2793,6 +2814,56 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
             out["queue"] = {"error": f"{type(exc).__name__}: {exc}"}
     await _channel(_resume_message(out), {"league": record.league_id, "event": "resumed"})
     return out
+
+
+def _drop_watch(league_id: str) -> None:
+    """Take a half-started watch back out and cancel it.
+
+    A refusal must not leave an entry behind: `draft_room` and `draft_status`
+    answer from `_WATCHES`, so a watch the user has been told does not exist
+    would still be answering questions.
+    """
+    entry = _WATCHES.pop(league_id, None)
+    if entry is None:
+        return
+    _w, task = entry
+    if task is not None and hasattr(task, "cancel"):
+        task.cancel()
+
+
+async def _finish_resume(w, task, record: watchstore.WatchRecord) -> None:
+    """Finish a resume whose INIT was slow: re-send the queue and say so.
+
+    Without this the slow-INIT path leaves a live watch and a queue that is never
+    restored, which is half the feature silently missing -- the shape of the
+    defect this whole task is about. Bounded by the watch's own life: if the
+    watch stops before INIT arrives there is nothing to finish and this exits.
+    """
+    import asyncio
+
+    ready = asyncio.ensure_future(w.ready.wait())
+    done, pending = await asyncio.wait({ready, task}, return_when=asyncio.FIRST_COMPLETED)
+    for p in pending:
+        p.cancel()
+    if ready not in done:
+        return
+    out: dict = {"league_id": record.league_id, "resumed": True}
+    try:
+        summary = w.state.summary()
+        out.update({"picks_made": summary["picks_made"],
+                    "my_next_pick": summary["my_next_pick"]})
+        if record.queue:
+            sent = await merge_queue_ids(w, list(record.queue), league_id=record.league_id)
+            out["queue"] = {"entries": len(sent.get("accepted") or []),
+                            "from_the_user": len(sent.get("kept_from_the_users_queue") or []),
+                            "error": sent.get("error")}
+    except Exception as exc:
+        _log.exception("could not finish the resume for league %s", record.league_id)
+        await _channel(f"watch for league {record.league_id} joined, but finishing the "
+                       f"resume failed: {type(exc).__name__}: {exc}",
+                       {"league": record.league_id, "event": "resume_failed"})
+        return
+    await _channel(_resume_message(out), {"league": record.league_id, "event": "resumed"})
 
 
 async def _refused(out: dict, why: str, quiet: bool = False) -> dict:

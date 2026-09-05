@@ -348,8 +348,15 @@ class TestARefusalIsSaidOutLoud:
         assert "already running" in said[-1][0]
         assert server._WATCHES["L"] == ("already", None), "the live watch is untouched"
 
-    def test_a_room_that_never_inits_is_reported_rather_than_hanging(
+    def test_a_slow_init_says_still_joining_and_the_state_agrees(
             self, watch_dir, monkeypatch):
+        """The message and `_WATCHES` must not disagree.
+
+        `draft_room` and `draft_status` answer from `_WATCHES`, so a watch the
+        user was told does not exist would still be answering questions -- and if
+        INIT lands a second after the timeout it is fully live. The socket is up,
+        so the message says so.
+        """
         TestResumingOnStart()._stub(monkeypatch, never_ready=True)
         monkeypatch.setattr(server, "RESUME_READY_SECONDS", 0.01)
         watchstore.save(_record())
@@ -357,8 +364,62 @@ class TestARefusalIsSaidOutLoud:
 
         out = asyncio.run(server.resume_watches())
 
-        assert out[0]["resumed"] is False and "no INIT" in out[0]["why"]
-        assert "no INIT" in said[-1][0]
+        assert out[0]["resumed"] is False, "not finished, so not yet a resume"
+        assert "still to come" in out[0]["why"]
+        content, meta = said[-1]
+        assert "has not sent the draft state yet" in content
+        assert "picks are being recorded" in content
+        assert meta["event"] == "resuming"
+        # The state agrees with the sentence: the watch is there because it is.
+        assert "L" in server._WATCHES
+
+    def test_a_watch_that_dies_before_init_is_refused_and_removed(
+            self, watch_dir, monkeypatch):
+        """The other half: when the watch really is gone, the refusal is true and
+        nothing is left in `_WATCHES` to answer from."""
+        calls = TestResumingOnStart()._stub(monkeypatch, never_ready=True)
+        assert calls is not None
+
+        from ffdraft import watch as watch_mod
+
+        class DyingWatch(watch_mod.DraftWatch):
+            async def run(self):
+                raise RuntimeError("ESPN refused the join")
+
+        monkeypatch.setattr(watch_mod, "DraftWatch", DyingWatch)
+        watchstore.save(_record())
+        said = self._said(monkeypatch)
+
+        out = asyncio.run(server.resume_watches())
+
+        assert out[0]["resumed"] is False
+        assert "stopped before ESPN sent INIT" in out[0]["why"]
+        assert "L" not in server._WATCHES, "a refusal must leave nothing answering"
+        assert "watch NOT resumed" in said[-1][0]
+
+    def test_the_queue_is_still_re_sent_when_init_arrives_late(
+            self, watch_dir, monkeypatch):
+        """A live watch and a queue never restored is half the feature silently
+        missing, which is the shape of the defect this task is about."""
+        calls = TestResumingOnStart()._stub(monkeypatch, never_ready=True)
+        monkeypatch.setattr(server, "RESUME_READY_SECONDS", 0.01)
+        watchstore.save(_record(queue=[11, 22]))
+        said = self._said(monkeypatch)
+
+        async def go():
+            await server.resume_watches()
+            assert "ids" not in calls, "nothing sent while INIT is outstanding"
+            w, _task = server._WATCHES["L"]
+            w.ready.set()                      # ESPN finally sends INIT
+            # Wait on the finisher's own handle rather than on a duration.
+            finish = next(t for t in asyncio.all_tasks()
+                          if t.get_name().startswith("ffdraft-finish-resume"))
+            await finish
+
+        asyncio.run(go())
+
+        assert calls["ids"] == [11, 22]
+        assert "queue re-sent, 2 entries, 1 of them yours" in said[-1][0]
 
 
 class TestTheStoreSurvivesACrashMidWrite:

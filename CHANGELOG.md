@@ -1552,9 +1552,15 @@ All notable changes to this project. Format follows
   and re-resolving them dropped the whole queue over one player the crosswalk
   lacks -- a kicker, a rookie, a mid-draft callup -- and those are precisely the
   entries a merge preserves, because they never went through the crosswalk.
+- A slow join is not a refusal. If ESPN has not sent the draft state within 30
+  seconds the socket is up and picks are being recorded, so the message says
+  that; the queue is re-sent and the resume reported when the state arrives.
+  Cancelling a live watch to make a "not resumed" message true would trade away
+  the one loss a draft cannot recover from. A refusal that IS one removes its
+  entry, since `draft_room` and `draft_status` answer from the same registry.
 - No resume for a draft `mDraftDetail` reports complete, a record `stop_watch`
-  cleared, one older than 24 hours, a league already being watched, a room that
-  sends no INIT within 30 seconds, or a record that cannot be read. Every one is
+  cleared, one older than 24 hours, a league already being watched, a watch that
+  stops before the draft state arrives, or a record that cannot be read. Every one is
   announced on the channel except the user's own stop. A watch that silently does
   not come back is the same problem as one that silently dies, and the reason was
   previously returned to a caller nobody reads.
