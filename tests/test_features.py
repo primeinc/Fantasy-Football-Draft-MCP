@@ -6,7 +6,7 @@ from ffdraft.features import _redzone_identity_shift, _team_drive_efficiency
 
 def _play(season, team, play_type, yardline_100, drive, fixed_drive_result, is_pass):
     return {
-        "season": season, "posteam": team, "play_type": play_type,
+        "season": season, "posteam": team, "game_id": "g1", "play_type": play_type,
         "pass": 1 if is_pass else 0, "rush": 0 if is_pass else 1,
         "yardline_100": yardline_100, "drive": drive,
         "fixed_drive_result": fixed_drive_result,

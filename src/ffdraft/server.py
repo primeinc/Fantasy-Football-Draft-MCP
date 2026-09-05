@@ -1075,7 +1075,9 @@ def on_the_clock(platform: str, league_id: str | None = None, draft_id: str | No
     """The full on-the-clock workflow in one call: sync, status, pick, value, matchup.
 
     Runs, in order:
-    1. sync_draft — a fresh pull from your platform, no cached state.
+    1. sync_draft — a fresh pull from your platform, no cached state; skipped,
+       and said so, when a watch is running for `league_id`, since the watch
+       already holds the room's picks and the read API is blind mid-draft.
     2. draft_status — round, on-the-clock, and your roster, confirmed against the sync.
     3. who_should_i_pick — the recommendation, reasoning, and survival odds.
     4. value_picks — market-value context, scoped to this round and next.
@@ -1086,9 +1088,17 @@ def on_the_clock(platform: str, league_id: str | None = None, draft_id: str | No
     want the full picture in one shot. platform/league_id/draft_id/pasted_board/season
     are exactly sync_draft's arguments.
     """
-    sync = json.loads(sync_draft(platform, league_id, draft_id, pasted_board, season))
-    if "error" in sync:
-        return _emit({"step": "sync_draft", **sync}, indent=2)
+    if league_id and league_id in _WATCHES:
+        # The watch keeps the board current from the room's socket; a read-API
+        # sync mid-draft sees zero filled picks (mDraftDetail is blind until the
+        # draft completes) and would overwrite what the watch holds. The
+        # server's own instructions forbid sync_draft while a watch runs.
+        sync = {"skipped": "a watch is running for this league; the board is "
+                           "current from its socket and sync_draft is not called"}
+    else:
+        sync = json.loads(sync_draft(platform, league_id, draft_id, pasted_board, season))
+        if "error" in sync:
+            return _emit({"step": "sync_draft", **sync}, indent=2)
 
     status = json.loads(draft_status())
     rec = json.loads(who_should_i_pick(limit=limit))
@@ -1260,7 +1270,14 @@ def draft_backtest(league_id: str, season: int, top_n: int = 3) -> str:
     K/DST aren't modelled anywhere in this tool, so those rounds report your
     actual pick only, same as everywhere else. Only ESPN is supported.
     """
-    out = adp_mod.draft_backtest(league_id, season, top_n=top_n)
+    try:
+        out = adp_mod.draft_backtest(league_id, season, top_n=top_n)
+    except Exception as exc:
+        # A league with no draft in `season` answers 404, and the SDK turns a
+        # raised exception into "Error executing tool" with nothing else.
+        return _emit({"error": f"could not replay {season} for league {league_id}: "
+                               f"{type(exc).__name__}: {exc}",
+                      "season": season, "league_id": league_id}, indent=2)
     return _emit(out, indent=2, default=str)
 
 
@@ -1867,21 +1884,27 @@ def model_settings(consistency_weight: float | None = None, injury_weight: float
     validated adjustment, and re-check the underlying rates each season.
     """
     league, weights = _settings()
+    changed: dict[str, float] = {}
     for name, val in [("consistency_weight", consistency_weight), ("injury", injury_weight),
                       ("oline", oline_weight), ("schedule", schedule_weight),
                       ("pace_volume", pace_weight), ("td_luck", td_luck_weight),
                       ("qb_boost", qb_boost), ("coverage_trend", coverage_trend_weight),
                       ("bye", bye_weight)]:
-        if val is not None:
+        if val is not None and float(val) != float(getattr(weights, name)):
             setattr(weights, name, float(val))
+            changed[name] = float(val)
+    if not changed:
+        # A read, or a write of the values already held: the board stays.
+        return _emit({"league": league.name, "weights": weights.__dict__,
+                      "changed": {}, "board": "unchanged"}, indent=2)
     save_settings(league, weights)
     _CACHE.update({"weights": weights})
     _BOARDS.pop(league.cache_key(), None)
     p = _board_path(league)
     if p.exists():
         p.unlink()
-    return _emit({"league": league.name, "weights": weights.__dict__,
-                       "board": "will rebuild on next query"}, indent=2)
+    return _emit({"league": league.name, "weights": weights.__dict__, "changed": changed,
+                  "board": "will rebuild on next query"}, indent=2)
 
 
 @mcp.tool()

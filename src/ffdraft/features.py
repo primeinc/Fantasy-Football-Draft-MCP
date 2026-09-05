@@ -255,9 +255,10 @@ def _team_drive_efficiency(pbp: pd.DataFrame) -> pd.DataFrame:
     if "fixed_drive_result" not in pbp.columns:
         return pd.DataFrame(columns=["season", "team", "drives", "pct_td", "pct_fg", "pct_punt"])
 
+    # `drive` restarts at 1 every game: a drive is (game_id, drive).
     drives = (
         pbp[pbp["posteam"].notna() & pbp["drive"].notna()]
-        .groupby(["season", "posteam", "drive"], observed=True)["fixed_drive_result"]
+        .groupby(["season", "posteam", "game_id", "drive"], observed=True)["fixed_drive_result"]
         .first()
         .reset_index()
         .rename(columns={"posteam": "team"})
