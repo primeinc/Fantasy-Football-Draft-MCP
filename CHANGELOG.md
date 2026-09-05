@@ -26,6 +26,8 @@ All notable changes to this project. Format follows
   the browser room is not needed at all.
 - `draft_room`: who is in the draft room and the latest chat, tracked by the watch
   from the snapshot's online flags and the JOINED/LEFT/CHAT lines.
+- `draft_queue` / `set_draft_queue`: read and replace the ESPN pick queue over the
+  socket (`DRAFT_LIST`), so autopick has your plan if you miss the clock.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 

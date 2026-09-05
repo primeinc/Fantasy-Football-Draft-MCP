@@ -104,6 +104,13 @@ One watch per league; `stop_watch(league_id)` ends it.
 Who is in the ESPN draft room right now and the latest room chat, from the running
 watch's socket, with team and owner names from the league member list.
 
+### `draft_queue` / `set_draft_queue`
+Your ESPN pick queue, the list autopick draws from if you miss the clock.
+`set_draft_queue(league_id, "Name, Name, ...")` replaces it in that order over the
+watch's socket (`DRAFT_LIST id id ...`, the room's own message for add, remove and
+reorder); an empty string clears it. Returns what ESPN echoed back. `draft_queue`
+reads the last echo on this connection.
+
 ### `make_pick`
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
 watch's socket, exactly what the draft room sends, and waits up to ten seconds

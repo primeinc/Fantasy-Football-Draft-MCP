@@ -1260,12 +1260,9 @@ async def make_pick(league_id: str, player_name: str) -> str:
     """
     import traceback
 
-    entry = _WATCHES.get(league_id)
-    if entry is None:
-        return json.dumps({"error": "no active watch for this league; call watch_draft first"})
-    w, _task = entry
-    if not w.connected:
-        return json.dumps({"error": "draft watch is not connected right now"})
+    w, err = _watch_or_error(league_id)
+    if err:
+        return err
     b = _build_board()
     row = bd.match_player(player_name, b)
     if row is None:
@@ -1287,6 +1284,64 @@ async def make_pick(league_id: str, player_name: str) -> str:
                            "traceback": traceback.format_exc()})
     return json.dumps({"picked": accepted, "resolved_from": player_name,
                        **w.state.summary()}, indent=2)
+
+
+def _watch_or_error(league_id: str):
+    entry = _WATCHES.get(league_id)
+    if entry is None:
+        return None, json.dumps({"error": "no active watch for this league; call watch_draft first"})
+    w, _task = entry
+    if not w.connected:
+        return None, json.dumps({"error": "draft watch is not connected right now"})
+    return w, None
+
+
+def _queue_rows(w, ids: list[int]) -> list[dict]:
+    return [{"rank": i + 1, "espn_id": pid, "name": bd._espn_player_name(pid, w.espn_map)}
+            for i, pid in enumerate(ids)]
+
+
+@mcp.tool()
+async def draft_queue(league_id: str) -> str:
+    """Your ESPN pick queue (what autopick uses), as ESPN last echoed it over the
+    watch's socket. `source` says where the list came from."""
+    w, err = _watch_or_error(league_id)
+    if err:
+        return err
+    if w.queue is None:
+        return json.dumps({"source": "none", "queue": [],
+                           "note": "ESPN has not sent a DRAFT_LIST on this connection; "
+                                   "set_draft_queue returns the authoritative list"})
+    return json.dumps({"source": "socket", "queue": _queue_rows(w, w.queue)}, indent=2)
+
+
+@mcp.tool()
+async def set_draft_queue(league_id: str, player_names: str) -> str:
+    """Replace your ESPN pick queue with these players, in this order. Comma-separated
+    names; an empty string clears the queue. This is what ESPN autopicks from if
+    you miss your clock. Sends the room's DRAFT_LIST message and returns the list
+    ESPN accepted. Confirm the order with the user before calling this.
+    """
+    w, err = _watch_or_error(league_id)
+    if err:
+        return err
+    b = _build_board()
+    ids, unresolved = [], []
+    for raw in [n.strip() for n in player_names.split(",") if n.strip()]:
+        row = bd.match_player(raw, b)
+        key = bd.norm_name(row["name"]) if row is not None else None
+        pid = next((p for p, nm in w.espn_map.items() if key and bd.norm_name(nm) == key), None)
+        if pid is None:
+            unresolved.append(raw)
+        else:
+            ids.append(int(pid))
+    if unresolved:
+        return json.dumps({"error": "unresolved names; nothing sent", "unresolved": unresolved})
+    try:
+        accepted = await w.set_queue(ids)
+    except TimeoutError:
+        return json.dumps({"error": "ESPN did not echo the queue within 10s", "sent": _queue_rows(w, ids)})
+    return json.dumps({"sent": _queue_rows(w, ids), "accepted": _queue_rows(w, accepted)}, indent=2)
 
 
 @mcp.tool()

@@ -190,6 +190,42 @@ def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
     assert room["on_the_clock"] == 115
 
 
+def test_set_queue_sends_full_list_and_returns_echo(tmp_path, monkeypatch):
+    w, _events = _watch(tmp_path, monkeypatch)
+    sent = []
+
+    class Ws:
+        async def send(self, text):
+            sent.append(text)
+            # ESPN echoes the accepted list, dropping ids it rejects.
+            await w.handle_line("DRAFT_LIST 4429795 4362628")
+
+    async def go():
+        w.ws = Ws()
+        return await w.set_queue([4429795, 4362628, 999999], timeout=2)
+
+    assert asyncio.run(go()) == [4429795, 4362628]
+    assert sent == ["DRAFT_LIST 4429795 4362628 999999\n"]
+    assert w.queue == [4429795, 4362628]
+
+
+def test_empty_queue_clears(tmp_path, monkeypatch):
+    w, _events = _watch(tmp_path, monkeypatch)
+    sent = []
+
+    class Ws:
+        async def send(self, text):
+            sent.append(text)
+            await w.handle_line("DRAFT_LIST")
+
+    async def go():
+        w.ws = Ws()
+        return await w.set_queue([], timeout=2)
+
+    assert asyncio.run(go()) == []
+    assert sent == ["DRAFT_LIST\n"]
+
+
 def test_error_line_raises(tmp_path, monkeypatch):
     w, _ = _watch(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="No\\+team"):

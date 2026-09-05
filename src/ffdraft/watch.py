@@ -66,6 +66,9 @@ class DraftWatch:
         self.ws = None
         # Set when a SELECTED for our own team arrives after select(); carries the pick.
         self.own_pick: asyncio.Future | None = None
+        # Our pick queue as ESPN last echoed it (DRAFT_LIST line); None until seen.
+        self.queue: list[int] | None = None
+        self.queue_echo: asyncio.Future | None = None
 
     # -- socket loop
 
@@ -189,6 +192,10 @@ class DraftWatch:
                 self.online[team] = False
         elif kind == "CHAT" and len(fields) >= 5:
             self.chat.append((int(fields[3]), int(fields[1]), fields[2], unquote_plus(fields[4])))
+        elif kind == "DRAFT_LIST":
+            self.queue = [int(f) for f in fields[1:] if f.lstrip("-").isdigit()]
+            if self.queue_echo and not self.queue_echo.done():
+                self.queue_echo.set_result(list(self.queue))
         elif kind == "ERROR":
             if self.own_pick and not self.own_pick.done():
                 self.own_pick.set_exception(RuntimeError(line))
@@ -215,6 +222,19 @@ class DraftWatch:
         }
 
     # -- actions
+
+    async def set_queue(self, player_ids: list[int], timeout: float = 10.0) -> list[int]:
+        """Replace our pick queue: `DRAFT_LIST id id ...` (an empty list clears it),
+        exactly what the room sends for add, remove and reorder. Returns the list
+        ESPN echoes back."""
+        if self.ws is None:
+            raise RuntimeError("draft watch is not connected")
+        self.queue_echo = asyncio.get_running_loop().create_future()
+        await self.ws.send("DRAFT_LIST" + "".join(f" {pid}" for pid in player_ids) + "\n")
+        try:
+            return await asyncio.wait_for(self.queue_echo, timeout=timeout)
+        finally:
+            self.queue_echo = None
 
     async def select(self, player_id: int, timeout: float = 10.0) -> dict:
         """Make our pick: `SELECT <playerId>`, then wait for the server's SELECTED
