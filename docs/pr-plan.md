@@ -95,6 +95,18 @@ Three checks on every merge. Each exists because skipping it shipped something.
   diffed as whole files rather than read. The baseline has to predate the work:
   comparing against a commit that already contains it proves only that the later
   commits were inert, which is a weaker claim than the one being made.
+- **Compare what the consumer reads, not a total over it.** An identity or
+  aggregate check is blind to a change that moves a distribution while leaving
+  its mean alone, and that is not a rare case: `counting_survival` takes the
+  Poisson binomial of the per-pick hazards, not their sum. Measured on the fix
+  that stopped `held_by_slot` dropping a malformed row, over one horizon: the
+  D/ST taker total moves by 0.008, which any total-only check calls noise, while
+  that team's per-pick hazards go from `[0.5, 0.5]` to `[0.008, 1.0]` — smeared,
+  against "almost certainly not at his first remaining pick, certainly at his
+  last" — and the survival a user reads moves 0.146 to 0.133. The same commit
+  moves the K total by a whole taker and its survival by 15 points, so one
+  position would have been caught and the other waved through. Ask what function
+  consumes the number before choosing what to diff.
 - **Every new test confirmed to fail with the change reverted.** A test written
   from the claim it is meant to check will pass on code that never had the
   property. This has caught something in three of the last four merges, including
