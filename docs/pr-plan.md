@@ -145,6 +145,15 @@ response. A test over what was sent can be wrong about the wire in a way a test
 over what came back cannot detect, because the second is reading a document the
 first invented.
 
+**A gate that cannot be met is not a strict gate, it is no gate.** The run
+originally required for that tool was a read-only call against a populated
+roster. The read API withholds rosters until a draft completes, so that call did
+not exist and the requirement could only be waived or ignored. What was
+substituted — a run against the league exactly as it stood — exercised the
+fetch, the auth and the parse against a real response, and found the three
+defects above. Choose the substitute for what it exercises rather than for how
+closely it resembles the impossible original, and say which of the two it is.
+
 A test count from a worktree only means what it says if that worktree imported
 its own code. The venv installs the package editable and the resulting path file
 names whichever checkout built the venv, so a worktree borrowing another's venv
