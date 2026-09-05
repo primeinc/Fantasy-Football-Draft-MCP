@@ -930,7 +930,20 @@ def compact_for_client(out: dict, picks: int = 0, detail: bool = False) -> dict:
     slim = dict(out)
     slim["picks"] = [{k: r[k] for k in COMPACT_PICK_KEYS if k in r} for r in shown]
     slim.pop("predictor_rows", None)
+    # The calibration tables are per round and per position, and the whole
+    # block is repeated once more without the room shift. Live that pair was
+    # what pushed the per-team totals out of the payload: the exit trimmed
+    # `teams` to 4 of 16 while two copies of the calibration stayed. The
+    # headline numbers stay; the tables are `detail`.
+    overall = dict(out.get("overall") or {})
+    for k in ("survival_calibration", "survival_by_round", "survival_by_position"):
+        overall.pop(k, None)
+    slim["overall"] = overall
+    without = out.get("calibration_without_shift") or {}
+    slim["calibration_without_shift"] = {
+        k: without.get(k) for k in ("model_match_rate", "top3_rate", "median_rank",
+                                    "survival_brier", "survival_log_loss") if k in without}
     slim["showing"] = (f"last {len(shown)} of {len(rows)} picks with the compact keys; "
-                       f"predictor rows omitted, their score sheet is `predictors`; "
-                       f"pass detail=true for every field")
+                       f"predictor rows and the per-round and per-position calibration "
+                       f"tables omitted; pass detail=true for every field")
     return slim
