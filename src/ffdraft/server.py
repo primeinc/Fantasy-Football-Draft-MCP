@@ -2073,6 +2073,21 @@ def reload_package() -> dict[str, Any]:
         except Exception as exc:
             errors[name] = f"{type(exc).__name__}: {exc}"
     me = sys.modules[__name__]
+    # Launched as `python -m ffdraft.server` -- which is how .mcp.json starts it
+    # -- this module runs as `__main__` and `ffdraft.server` is never entered
+    # into sys.modules at all. `importlib.reload` resolves `__spec__.name` and
+    # requires that name to map to this module, so it raised "module
+    # ffdraft.server not in sys.modules" while every package module around it
+    # reloaded fine: the live process then served new package code under the old
+    # server.py, and reported success for the modules it did manage.
+    #
+    # Registering the module under its spec name is what an ordinary import
+    # would have left behind. Reload then renames the module to that name as
+    # well (`_init_module_attrs` runs before the body), so a second reload finds
+    # it by the ordinary route and this branch does not fire again.
+    spec = getattr(me, "__spec__", None)
+    if spec is not None and sys.modules.get(spec.name) is not me:
+        sys.modules[spec.name] = me
     try:
         importlib.reload(me)
     except Exception as exc:

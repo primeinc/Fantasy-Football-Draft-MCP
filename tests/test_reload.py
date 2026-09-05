@@ -92,6 +92,71 @@ def test_reload_code_tool_reports_and_notifies():
     assert Ctx.session.sent == 1
 
 
+def _as_main(monkeypatch):
+    """A second copy of server.py in the state a `-m` launch leaves behind.
+
+    `python -m ffdraft.server` runs the file as `__main__`: the module object is
+    registered under that name only, `ffdraft.server` never enters sys.modules,
+    and `__spec__.name` still says `ffdraft.server`. Reproduced here rather than
+    described, because the bug lives entirely in the gap between those names.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ffdraft.server", server.__file__)
+    assert spec is not None and spec.loader is not None, "could not load a second server.py"
+    copy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(copy)
+    copy.__name__ = "__main__"
+    monkeypatch.setitem(sys.modules, "__main__", copy)
+    # The absence IS the bug; assert the setup rather than trusting it.
+    monkeypatch.delitem(sys.modules, "ffdraft.server", raising=False)
+    assert spec.name == "ffdraft.server"
+    assert "ffdraft.server" not in sys.modules
+    return copy
+
+
+def test_reload_works_when_the_server_was_launched_as_main(monkeypatch):
+    """The live failure: reload_code returned `ImportError: module
+    ffdraft.server not in sys.modules` and tools null, while every package
+    module reloaded, so the process ran new package code under the old
+    server.py."""
+    copy = _as_main(monkeypatch)
+
+    result = copy.reload_package()
+
+    assert result["errors"] == {}, result["errors"]
+    assert result["tools"] is not None
+    # The tools were synced onto the object the transport is serving, not onto
+    # the fresh one the re-executed body built.
+    assert copy.__dict__["mcp"] is copy.mcp
+    assert _names(copy.mcp)
+
+
+def test_reloading_as_main_does_not_re_enter_the_entry_point(monkeypatch):
+    """`main()` calls `mcp.run()`, which would open a second stdio loop inside
+    the tool call that asked for the reload.
+
+    It does not happen, and the reason is worth pinning rather than assuming:
+    `importlib.reload` sets `__name__` to `__spec__.name` before re-executing
+    the body, so the trailing `if __name__ == "__main__"` is False on a reload
+    even though it was True at launch. Measured under a real `python -m` launch,
+    not inferred. This test is what would notice if that ever changed.
+    """
+    copy = _as_main(monkeypatch)
+
+    def explode() -> None:
+        raise AssertionError("main() ran during a reload; a second stdio loop "
+                             "would have started inside the tool call")
+
+    monkeypatch.setattr(copy, "main", explode)
+    result = copy.reload_package()
+
+    assert result["errors"] == {}, result["errors"]
+    # Renamed by the reload, which is also why a second reload needs no special
+    # case: the module is reachable under its spec name from here on.
+    assert copy.__name__ == "ffdraft.server"
+
+
 def test_reload_survives_a_module_that_fails_to_import(monkeypatch):
     # reload_package skips modules not yet imported. Run alone, this file never
     # imports ffdraft.choice, the fake failure never fires, and the assertion
