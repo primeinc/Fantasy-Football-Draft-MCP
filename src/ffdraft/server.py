@@ -1479,7 +1479,10 @@ def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
     starting, plus league activity from the read API. Uses the running watch for
     `league_id` when there is one, else the dump directory (`dump_dir`, or the
     newest `espn_dump_*` under the working directory). `table` is the same
-    numbers as plain text. SWIDs are never reported."""
+    numbers as plain text and `definitions` says what each number means, which
+    is worth reading: `clock_to_pick` cannot tell an autopick from a person, and
+    `active_hours` counts league activity that `first_seen` deliberately does
+    not. SWIDs are never reported."""
     from . import roomstats
 
     entry = _WATCHES.get(league_id) if league_id else None

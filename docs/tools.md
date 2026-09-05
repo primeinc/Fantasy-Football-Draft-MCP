@@ -129,16 +129,29 @@ Per member, keyed by ESPN team and labelled with the team and owner names:
 the log ended), `joins` / `leaves`, `in_room_at_start` (the INIT snapshot's
 online flags), `messages` with `messages_by_owner` and the `last_message`,
 `active_hours` and `top_hours` in the machine's local time, `first_seen` /
-`last_seen` in the room, `picks`, and `clock_to_pick`: the seconds from the
-clock starting to the pick landing, measured as the gap between consecutive
-`SELECTED` lines, which is when ESPN starts the next team's clock. The pick
-after `INIT` and the pick after an `UNDONE` have no comparable start and are
-not timed; a gap over `roomstats.PICK_GAP_CAP_SECONDS` (30 minutes) is a draft
-pause and is reported under `slowest_seconds` but kept out of the median and
-mean. `league_activity` counts that member's topics in the read API's
+`last_seen` in the room, `picks`, and `clock_to_pick`.
+
+`clock_to_pick` is the seconds from the team going on the clock to its pick
+landing, measured from the `SELECTING teamId secs` line when the log has one
+and otherwise from the previous `SELECTED` (`measured_by` says which produced
+each number). A pick with no comparable start — the first after `INIT`, or one
+after an `UNDONE` — is not timed; a gap over `roomstats.PICK_GAP_CAP_SECONDS`
+(30 minutes) is a draft pause and is reported under `slowest_seconds` but kept
+out of the median and mean. An autopick lands a `SELECTED` at clock expiry and
+the live socket does not flag one, so read the median as time until the pick,
+not time a person took.
+
+`league_activity` counts that member's topics in the read API's
 `kona_league_communication` view, which is where settings changes outside the
 room show up with a date; those dates feed `active_hours` but not
-`first_seen` / `last_seen`.
+`first_seen` / `last_seen`, which is why a busiest hour can fall outside the
+first-to-last-seen span. The JSON carries a `definitions` block saying so.
+
+`LEFT <team> <swid> 2` is ESPN closing a connection because that team opened
+the room somewhere else. For the team whose connection produced the log it is
+not a departure — `watch.py` treats it as a pause — so it is counted under
+`connections_replaced` and leaves the session open; for any other team it ends
+the session with `ended_by: "connection_replaced"`.
 
 Source is the running watch for `league_id` when there is one — its `lines` are
 the only timestamped record of picks that exists — otherwise the dump directory
@@ -148,8 +161,18 @@ reads `live/lines.jsonl`, `live/init.json`, `read_api/mTeam.json` and
 the join burst only, so its presence numbers are one instant and the table says
 so. `table` is the same numbers as a plain-text table for an email; `just
 roomstats` prints it and writes the JSON to `room_stats.json` inside the dump.
+
+Presence is seeded from the INIT snapshot's online flags as they were, not from
+`DraftWatch.online`, which every `JOINED` and `LEFT` mutates: reading the live
+dict would credit everyone still in the room with the whole draft.
+
 The socket identifies people by SWID; SWIDs are the join key and never appear
-in the output, so an unresolvable one is reported as "unknown member".
+in the output. `board.league_directory_from_mteam` names an owner the member
+list does not carry `board.UNKNOWN_OWNER` ("unknown member") rather than
+falling back to his SWID — that fallback used to reach `draft_room` and the
+watch's pushed channel messages through `DraftWatch.team_label` too. The
+directory also carries `owner_ids`, the SWIDs, so chat and activity join
+exactly instead of through a display name two members could share.
 
 ### `draft_replay`
 Every recorded pick replayed through the model for the team that made it, with

@@ -1027,6 +1027,11 @@ def espn_league_directory(league_id: str, season: int = CURRENT_SEASON,
     return league_directory_from_mteam(resp.json())
 
 
+# Shown wherever an owner cannot be named. Never the SWID: it identifies a
+# person, and a display-name fallback puts it into channel messages and reports.
+UNKNOWN_OWNER = "unknown member"
+
+
 def mteam_member_names(data: dict) -> dict[str, str]:
     """Owner SWID (upper case, no braces) -> display name, from an `mTeam` payload.
 
@@ -1041,17 +1046,25 @@ def mteam_member_names(data: dict) -> dict[str, str]:
 
 
 def league_directory_from_mteam(data: dict) -> dict[int, dict]:
-    """ESPN team id -> team name and owner display names, from an `mTeam` payload.
+    """ESPN team id -> team name, owner display names and owner SWIDs, from an
+    `mTeam` payload.
 
     Split out from `espn_league_directory` so a saved `read_api/mTeam.json`
     from `espn_dump` reads the same way as the live view.
+
+    An owner the payload's member list does not name reads `UNKNOWN_OWNER`, not
+    his SWID. A SWID identifies a person and is not a display name: the moment
+    it is used as one it ends up in a channel message or a report. `owner_ids`
+    keeps the SWIDs available for joining, separately and deliberately.
     """
     members = mteam_member_names(data)
     out = {}
     for t in data.get("teams") or []:
         name = (t.get("name") or " ".join(filter(None, [t.get("location"), t.get("nickname")]))).strip()
-        owners = [members.get(str(o).strip("{}").upper(), o) for o in t.get("owners", [])]
-        out[int(t["id"])] = {"name": name, "owners": owners}
+        ids = [str(o).strip("{}").upper() for o in t.get("owners", [])]
+        out[int(t["id"])] = {"name": name,
+                             "owners": [members.get(i) or UNKNOWN_OWNER for i in ids],
+                             "owner_ids": ids}
     return out
 
 

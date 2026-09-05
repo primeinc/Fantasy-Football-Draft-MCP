@@ -40,18 +40,32 @@ All notable changes to this project. Format follows
   owner name. Minutes in the room and each session, joins and leaves, messages
   with the sender's name and the last one, busiest hours in local time, first
   and last seen, picks made, and the seconds each pick took from the clock
-  starting — the gap between consecutive `SELECTED` lines, which is when ESPN
-  starts the next team's clock. The pick after `INIT` and the pick after an
-  `UNDONE` have no comparable start; a gap over 30 minutes is a draft pause and
-  is reported but kept out of the median. `kona_league_communication` topics add
-  activity outside the room, dated, and feed the hour histogram only.
+  starting — measured from the `SELECTING teamId secs` line when the log has
+  one, else from the previous `SELECTED`, with `measured_by` saying which. A
+  pick with no comparable start (the first after `INIT`, or one after an
+  `UNDONE`) is not timed; a gap over 30 minutes is a draft pause, reported but
+  kept out of the median. An autopick lands at clock expiry and the socket does
+  not flag one, so the median is time until the pick, not time a person took.
+  `kona_league_communication` topics add activity outside the room, dated, and
+  feed the hour histogram only — a `definitions` block in the JSON says so, and
+  says why a busiest hour can fall outside first/last seen.
   Source is the running watch's `lines` when there is one, else a dump
   directory; a dump taken without a watch holds the join burst only and the
-  report says so. The socket names people by SWID: it is the join key here and
-  nothing else, so no SWID reaches the JSON or the table (an unresolvable one
-  reads "unknown member"). `board.league_directory_from_mteam` and
-  `board.mteam_member_names` split out of `espn_league_directory` so a saved
-  `read_api/mTeam.json` reads the same way as the live view.
+  report says so. Presence is seeded from the INIT snapshot's flags
+  (`DraftWatch.online_at_init`, new), not from `DraftWatch.online`, which every
+  JOINED and LEFT mutates: the live dict would credit everyone still in the room
+  with the whole draft. `LEFT <team> <swid> 2` for the team whose connection
+  produced the log is a duplicate connection, not a departure — the same reading
+  `watch.py` already takes — and is counted under `connections_replaced`.
+- The socket names people by SWID: it is the join key and nothing else, so no
+  SWID reaches the JSON or the table. `board.league_directory_from_mteam` and
+  `board.mteam_member_names` split out of `espn_league_directory` (so a saved
+  `read_api/mTeam.json` reads the same way as the live view) and an owner the
+  member list does not name now reads `board.UNKNOWN_OWNER` instead of his
+  SWID. The old fallback put a raw SWID in `draft_room` and in the watch's
+  pushed channel messages through `DraftWatch.team_label`, not only in this
+  report. The directory also carries `owner_ids` so chat and activity join on
+  the SWID rather than on a display name two members could share.
 
 **Draft audit**
 - `draft_audit` checks the invariants between board, draft state and
