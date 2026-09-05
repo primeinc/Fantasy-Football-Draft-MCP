@@ -21,13 +21,23 @@ _common_dir := if path_exists(_local) == 'true' { '' } else { shell('git -C "$1"
 venv := if path_exists(_local) == 'true' { _local } else if _common_dir != '' { parent_directory(_common_dir) / '.venv' } else { '' }
 python := venv / 'Scripts' / 'python.exe'
 
-# `[script]` recipes still need a local `.venv`: a setting is a const context and
-# rejects `python`, which is derived ("cannot access non-const variable `python`
-# in const context"). In a worktree without one, every `[script]` recipe fails
-# with "execution error: The system cannot find the path specified" before its
-# first line runs. Fixing it means a second copy of the venv rule written in sh,
-# which is a design call, not a typo.
-set script-interpreter := ['.venv/Scripts/python.exe']
+# `[script]` recipes need the same venv, and a setting cannot name `venv`
+# directly: a setting is a const context and rejects a derived variable ("cannot
+# access non-const variable `python` in const context"). So the interpreter asks
+# for it at run time instead of restating the rule -- `just --evaluate venv` is
+# the same single definition above, read back out, and there is still only one
+# place that decides where the virtualenv is.
+#
+# just writes the recipe body to a temporary file and passes its path as an
+# argument to this command (README: "run by passing its path as an argument to
+# COMMAND"), so under `sh -c SCRIPT` the body arrives as `$0` and is handed
+# straight to python. Recipe parameters are exported, not positional, so `$@` is
+# ordinarily empty and is forwarded for the case where it is not.
+#
+# The named line matters more here than in `check`: without it a worktree with no
+# venv fails as "The system cannot find the path specified", which names nothing
+# and arrives before the recipe's first line.
+set script-interpreter := ['sh', '-euc', 'v="$(just --evaluate venv)"; if [ -z "$v" ] || [ ! -x "$v/Scripts/python.exe" ]; then echo "just: no virtualenv python for this checkout, and none in the main checkout. Run: just setup" >&2; exit 1; fi; exec "$v/Scripts/python.exe" "$0" "$@"']
 
 # Every recipe imports THIS checkout's source. The venv installs the package
 # editable, and that `.pth` names whichever checkout created the venv -- so a
