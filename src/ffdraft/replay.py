@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from . import model
+from . import choice, model
 from .board import DraftState
 from .config import LeagueSettings
 from .names import normalize as norm_name
@@ -59,11 +59,13 @@ def room_drift(board: pd.DataFrame, state: DraftState, last: int = 0) -> dict:
 
 
 def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
-                 candidates: int = 10, adp_shift: float | dict[str, float] = 0.0) -> dict:
+                 candidates: int = 10, adp_shift: float | dict[str, float] = 0.0,
+                 walk_forward: bool = True) -> dict:
     """Score every recorded pick against the model and return per-pick rows,
     per-team totals, and the survival model's calibration. `adp_shift` is
     passed to recommend() so the calibration can be read with and without the
-    room's drift applied."""
+    room's drift applied. With `walk_forward` the choice predictors are scored
+    prequentially as well and a forecast for the pick on the clock is returned."""
     b = board.copy()
     if "_key" not in b.columns:
         b["_key"] = b["name"].map(norm_name)
@@ -74,16 +76,24 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
     rows: list[dict] = []
     forecasts: list[tuple[float, bool, int, str]] = []
     taken: set[str] = set()
+    wf = choice.WalkForward() if walk_forward else None
+    recent_positions: list[str] = []
 
-    for p in picks:
-        overall, slot = p["overall"], p["slot"]
-        key = norm_name(p["name"])
-        pool = b[~b["_key"].isin(taken)]
+    def recommend_for(slot: int, overall: int, pool: pd.DataFrame) -> tuple[pd.DataFrame, int | None]:
         later = [n for n in league.picks_for_slot(slot) if n > overall]
         next_pick = later[0] if later else None
         recs = model.recommend(pool, league, current_pick=overall, next_pick=next_pick,
                                roster=rosters.get(slot, {}), top_n=len(pool),
                                adp_shift=adp_shift)
+        return recs, next_pick
+
+    for p in picks:
+        overall, slot = p["overall"], p["slot"]
+        key = norm_name(p["name"])
+        pool = b[~b["_key"].isin(taken)]
+        recs, next_pick = recommend_for(slot, overall, pool)
+        if wf is not None and len(recs):
+            wf.observe(recs, key if key in recs.index else None, recent_positions, overall)
         where = np.flatnonzero(recs.index.to_numpy() == key)
         rnd = (overall - 1) // league.teams + 1
         row = {
@@ -136,11 +146,12 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         pos = row["position"]
         if pos:
             rosters.setdefault(slot, {})[pos] = rosters.get(slot, {}).get(pos, 0) + 1
+            recent_positions.append(str(pos))
         taken.add(key)
 
     per_pick = pd.DataFrame(rows)
     teams = _team_totals(per_pick, league, state.my_slot)
-    return {
+    out = {
         "picks_scored": len(rows), "adp_shift": adp_shift,
         "room_drift": room_drift(board, state),
         "overall": _overall(per_pick, forecasts),
@@ -148,6 +159,17 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         # The dict rows, not the frame: a frame turns None into NaN.
         "picks": rows,
     }
+    if wf is not None:
+        out["predictors"] = wf.summary()
+        out["predictor_rows"] = wf.rows
+        on_clock = state.on_the_clock
+        if on_clock <= league.teams * league.rounds:
+            slot = state.slot_for_pick(on_clock)
+            pool = b[~b["_key"].isin(taken)]
+            recs, next_pick = recommend_for(slot, on_clock, pool)
+            out["forecast"] = {"pick": on_clock, "slot": slot, "next_pick": next_pick,
+                               **wf.forecast(recs, recent_positions)}
+    return out
 
 
 # A team whose median pick passed at most this many better-ranked players on

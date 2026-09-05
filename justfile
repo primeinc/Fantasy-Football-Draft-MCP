@@ -117,6 +117,17 @@ replay $picks='0':
             print(f"  p {c['p_range']}  n {c['n']:>4}  predicted {c['predicted']:.2f}  observed {c['observed']:.2f}")
     print(f"picks scored {out['picks_scored']}  on board {o['on_board_picks']}  off board {o['off_board_picks']}")
     print(f"model match rate {o['model_match_rate']}  top-3 rate {o['top3_rate']}  median rank {o['median_rank']}")
+    print(f"walk-forward predictors ({out['predictors']['picks_scored']} picks scored out of sample)")
+    for name, s in out["predictors"]["predictors"].items():
+        print(f"  {name:<10} log loss {s['log_loss']!s:>6}  top1 {s['top1']!s:>6}  top3 {s['top3']!s:>6}  "
+              f"top5 {s['top5']!s:>6}  median rank {s['median_rank']}")
+    fc = out.get("forecast")
+    if fc:
+        print(f"forecast for pick {fc['pick']} (slot {fc['slot']}, next {fc['next_pick']})")
+        print("  position: " + ", ".join(f"{k} {v:.0%}" for k, v in fc["position_probabilities"].items()))
+        for name in ("blend", "espn_list", "model"):
+            print(f"  {name:<10} " + "; ".join(f"{c['player']} {c['p']:.0%}" for c in fc[name]))
+        print("  blend weights: " + ", ".join(f"{k} {v:+.2f}" for k, v in fc["weights"]["blend"].items()))
     print("teams (least projected points left on the table first)")
     for t in out["teams"]:
         me = " <- you" if t["mine"] else ""
@@ -164,6 +175,9 @@ predict $slot='0':
     b, st = server._build_board(), server._state()
     slot = int(os.environ["slot"]) or st.slot_for_pick(st.on_the_clock)
     out = replay.predict_pick(b, st, league, slot, adp_shift=replay.room_drift(b, st)["shift"])
+    if slot == st.slot_for_pick(st.on_the_clock):
+        rp = replay.replay_draft(b, st, league, adp_shift=replay.room_drift(b, st)["shift"])
+        out["forecast"], out["predictors"] = rp.get("forecast"), rp["predictors"]
     print(f"slot {slot}: pick {out['on_the_clock']} on the clock, next {out['next_pick']}, roster {out['roster']}, "
           f"open starters {out['open_starter_slots']}")
     t = out["tendency"]
@@ -178,7 +192,15 @@ predict $slot='0':
     for e in out["espn_list"]:
         print(f"  {e['player']:<26} {e['position']:<3} rank {e['espn_rank']:>4} adp {e['adp']:>6}")
     p = out["predicted"]
-    print(f"predicted: {p['player']} ({p['position']}) -- {p['basis']}")
+    print(f"predicted (tendency rule): {p['player']} ({p['position']}) -- {p['basis']}")
+    fc = out.get("forecast")
+    if fc:
+        print(f"walk-forward forecast (picks scored so far: {out['predictors']['picks_scored']}):")
+        print("  position: " + ", ".join(f"{k} {v:.0%}" for k, v in fc["position_probabilities"].items()))
+        for name in ("blend", "espn_list", "adp", "model"):
+            print(f"  {name:<10} " + "; ".join(f"{c['player']} {c['p']:.0%}" for c in fc[name]))
+        for name, s in out["predictors"]["predictors"].items():
+            print(f"    {name:<10} out-of-sample log loss {s['log_loss']!s:>6} top1 {s['top1']!s:>6} top3 {s['top3']!s:>6}")
 
 # Dump everything ESPN reports about a league's draft into $out_dir (default: cwd).
 # Cookies come from .mcp.json. Opens the draft room once for the snapshot, which

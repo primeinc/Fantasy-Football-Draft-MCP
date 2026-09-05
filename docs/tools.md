@@ -134,7 +134,10 @@ to that team's next pick, by probability bin) and Brier score against the base
 rate, plus the biggest reaches and values. The calibration is reported with the
 room's drift applied and, as `calibration_without_shift`, without it.
 Projections and ADP are today's, not as of the pick. `picks` caps the per-pick
-rows (0 = all). `just replay [picks]` prints the same without a server.
+rows (0 = all). `just replay [picks]` prints the same without a server. The
+answer also carries the walk-forward `predictors` score sheet, `predictor_rows`
+(each predictor's rank of and probability for every real pick) and the
+`forecast` for the pick on the clock; see `predict_pick`.
 
 ### `predict_pick`
 For the team on the clock, or a given `slot`: `should` is the model's
@@ -144,6 +147,16 @@ far (for each pick, how many higher-ranked ESPN players were still available;
 a median of 3 or fewer marks a team that drafts from ESPN's list) and its
 position counts; `predicted` follows ESPN's list at an open starting slot for
 such a team, else the model. ESPN rank is today's, not the pick's.
+
+For the pick on the clock the answer also carries `forecast` and `predictors`
+from the walk-forward choice model (`choice.py`): four conditional-logit
+predictors over the available pool (ESPN list order, ADP order, the model's
+order, and a blend of those with roster need, the current positional run and
+injury status), each fitted on picks 1..t-1 only and scored on pick t before
+learning it. `predictors` reports out-of-sample log loss, top-1/3/5 rates and
+median rank per predictor; `forecast` gives each predictor's top five with
+probabilities, the blend's probability by position, and the fitted weights.
+No team-specific effects: eight picks per team cannot support them.
 
 ### `draft_strength`
 Every team's draft so far ranked by projected starter points: the best lineup

@@ -1503,8 +1503,13 @@ def predict_pick(league_id: str = "", slot: int = 0) -> str:
     b = _build_board()
     league = _settings()[0]
     slot = slot or state.slot_for_pick(state.on_the_clock)
-    out = replay.predict_pick(b, state, league, slot,
-                              adp_shift=replay.room_drift(b, state)["shift"])
+    shift = replay.room_drift(b, state)["shift"]
+    out = replay.predict_pick(b, state, league, slot, adp_shift=shift)
+    if slot == state.slot_for_pick(state.on_the_clock):
+        # The walk-forward predictors, scored out of sample on every pick so
+        # far, and their forecast for this one.
+        rp = replay.replay_draft(b, state, league, adp_shift=shift)
+        out["forecast"], out["predictors"] = rp.get("forecast"), rp["predictors"]
     entry = _WATCHES.get(league_id) if league_id else None
     if entry is not None:
         w, _task = entry

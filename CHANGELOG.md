@@ -81,6 +81,14 @@ All notable changes to this project. Format follows
   `role_mult` and `p_available_next`; overall adds log loss and survival
   calibration by round and by position.
 
+**Walk-forward choice model**
+- `choice.py`: four conditional-logit predictors of what the room takes
+  (ESPN list order, ADP order, the model's order, and a blend with roster
+  need, positional run and injury), fitted prequentially, scored out of
+  sample on every pick (log loss, top-1/3/5, median rank), with a forecast
+  for the pick on the clock. Reported by `draft_replay`, `predict_pick`,
+  `just replay` and `just predict`.
+
 **Predicting other teams**
 - `predict_pick` (`replay.predict_pick`, `replay.team_tendency`): the model's
   choice for another team's roster, ESPN's list order, how many higher-ranked
