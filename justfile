@@ -348,13 +348,64 @@ roles $what='all' $seasons='2024,2025' $trials='8' $seed='0':
                 if "error" in s:
                     print(f"  {s['season']}: {s['error']}")
                     continue
-                print(f"  {s['season']}: off {s['weekly_points_off']} on {s['weekly_points_on']} "
-                      f"improvement {s['improvement']:+} ({s['trials_improved']}/{s['n_trials']} "
-                      f"trials, {s['trials_improved_of_changed']}/{s['trials_changed']} of the "
-                      f"trials it changed, {s['players_swapped']} players swapped, empty slots "
-                      f"{s['empty_slots_off']} -> {s['empty_slots_on']})")
-            print(f"  overall improvement {out['overall_improvement']}, "
+                print(f"  {s['season']}: improvement {s['improvement']:+} across blocks "
+                      f"{s['block_improvements']}, spread {s['block_spread']}, "
+                      f"blocks agree {s['blocks_agree']}, "
+                      f"{s['trials_improved_of_changed']}/{s['trials_changed']} of the trials "
+                      f"it changed")
+                for blk in s["blocks"]:
+                    print(f"    block {blk['block']} (seeds {blk['seed_from']}..): off "
+                          f"{blk['weekly_points_off']} on {blk['weekly_points_on']} "
+                          f"improvement {blk['improvement']:+}, "
+                          f"{blk['trials_improved_of_changed']}/{blk['trials_changed']} of the "
+                          f"trials it changed, empty slots {blk['empty_slots_off']} -> "
+                          f"{blk['empty_slots_on']}")
+            print(f"  overall improvement {out['overall_improvement']}, blocks agree "
+                  f"{out['blocks_agree']}, worst block spread {out['worst_block_spread']}, "
                   f"{out['players_swapped']} players swapped")
+            if not out["blocks_agree"]:
+                print("  the blocks disagree in sign: this improvement is inside the "
+                      "harness's own noise and supports nothing")
+
+# Does the bye-week stacking penalty win weekly lineup points? Two disjoint seed
+# blocks per season, both reported: a mean whose blocks disagree is noise.
+[script]
+bye $seasons='2022,2023,2024,2025' $trials='12' $weight='0.08' $seed='0':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import adp, server
+
+    league, weights = server._settings()
+    seasons = [int(s) for s in os.environ["seasons"].split(",") if s.strip()]
+    out = adp.bye_backtest(league, weights, seasons, n_trials=int(os.environ["trials"]),
+                           bye_weight=float(os.environ["weight"]),
+                           seed=int(os.environ["seed"]),
+                           progress=lambda m: print("   " + m, flush=True))
+    print(f"\n== bye_weight {out['bye_weight']}, {out['n_trials']} trials x "
+          f"{out['n_blocks']} blocks per season")
+    for s in out["seasons"]:
+        if "error" in s:
+            print(f"  {s['season']}: {s['error']}")
+            continue
+        print(f"  {s['season']}: improvement {s['improvement']:+} across blocks "
+              f"{s['block_improvements']}, spread {s['block_spread']}, "
+              f"blocks agree {s['blocks_agree']}, "
+              f"{s['trials_improved_of_changed']}/{s['trials_changed']} of the trials it changed")
+        for blk in s["blocks"]:
+            print(f"    block {blk['block']} (seeds {blk['seed_from']}..): off "
+                  f"{blk['weekly_points_off']} on {blk['weekly_points_on']} improvement "
+                  f"{blk['improvement']:+}, empty slots {blk['empty_slots_off']} -> "
+                  f"{blk['empty_slots_on']}")
+    print(f"  overall improvement {out['overall_improvement']}, blocks agree "
+          f"{out['blocks_agree']}, worst block spread {out['worst_block_spread']}")
+    if not out["blocks_agree"]:
+        print("  the blocks disagree in sign in at least one season: this improvement is "
+              "inside the harness's own noise and supports nothing")
 
 # Probe every external data surface; see docs/data-sources.md
 [script]

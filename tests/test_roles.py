@@ -228,6 +228,35 @@ class TestTheModelHook:
         assert roles.pick_value_bonus(avail, league(), None, handcuff_weight=1.0).iloc[1] \
             == pytest.approx(32.0)
 
+    def test_the_gate_does_not_apply_to_a_starter_i_already_hold(self):
+        # His absence is what pays the contingency AND what opens the lineup
+        # slot: one event, not two. Gating on the slot squared a probability
+        # contingent_points had already applied, which made holding the starter
+        # LOWER his handcuff's value than not holding him.
+        avail = roles.attach_handcuffs(board([
+            {"name": "RB1", "position": "RB", "team": "SF", "proj_points": 250.0,
+             "adj_ppg": 16.0, "exp_games": 14.0},
+            {"name": "RB2", "position": "RB", "team": "SF", "proj_points": 90.0,
+             "adj_ppg": 6.0},
+        ]))
+        # A full RB group, so a bench back's start probability is well under 1.
+        full = board([{"name": "RB1", "position": "RB", "proj_points": 250.0,
+                       "exp_games": 14.0},
+                      {"name": "other", "position": "RB", "proj_points": 240.0,
+                       "exp_games": 14.0}])
+        assert roles.start_probabilities(avail, league(), full).iloc[1] < 0.5
+        held = roles.pick_value_bonus(avail, league(), full, handcuff_weight=1.0)
+        # 30 contingent points, ungated because RB1 is mine, doubled for holding him.
+        assert held.iloc[1] == pytest.approx(60.0)
+        # Not holding him: the two events are independent and the gate applies.
+        others = board([{"name": "x", "position": "RB", "proj_points": 250.0,
+                         "exp_games": 14.0},
+                        {"name": "y", "position": "RB", "proj_points": 240.0,
+                         "exp_games": 14.0}])
+        unheld = roles.pick_value_bonus(avail, league(), others, handcuff_weight=1.0)
+        assert 0 < unheld.iloc[1] < 30.0
+        assert held.iloc[1] > unheld.iloc[1]
+
     def test_the_weights_reach_pick_value_through_recommend(self):
         avail = roles.attach_handcuffs(self.avail())
         off = model.recommend(avail, league(), current_pick=1, next_pick=32, top_n=5)
@@ -241,9 +270,11 @@ class TestTheModelHook:
 
 class TestRoleEntropy:
     def frame(self, **kw):
+        # "Settled" agrees to within a rounding error rather than exactly: two
+        # bit-identical projections are one number, not two that agree.
         rows = {"name": ["Settled", "Disputed", "Unknown"],
                 "proj_points": [200.0, 200.0, 200.0],
-                "espn_proj": [200.0, 100.0, np.nan]}
+                "espn_proj": [199.9999, 100.0, np.nan]}
         rows.update(kw)
         return pd.DataFrame(rows)
 
@@ -253,7 +284,7 @@ class TestRoleEntropy:
 
     def test_agreement_scores_zero_and_a_factor_of_two_scores_one(self):
         out = roles.role_entropy(self.frame(), self.churn([np.nan] * 3))
-        assert out.loc[0, "role_entropy"] == pytest.approx(0.0)
+        assert out.loc[0, "role_entropy"] == pytest.approx(0.0, abs=1e-5)
         # ESPN at half the model is exactly the full-disagreement scale.
         assert out.loc[1, "role_entropy"] == pytest.approx(1.0)
 
@@ -279,6 +310,39 @@ class TestRoleEntropy:
         assert out.loc[0, "entropy_kind"] == ""
         assert out.loc[1, "entropy_kind"] == "role in doubt"
         assert out.loc[2, "entropy_kind"] == "unresolved upside"
+
+    def test_a_projection_copied_from_espn_is_not_agreement(self):
+        # A kicker or a team defense is priced from ESPN's own projection, so
+        # its ratio is exactly 1 by construction. Scored as agreement it becomes
+        # the most certain role on the board.
+        b = pd.DataFrame({"name": ["HOU D/ST", "real WR"],
+                          "proj_points": [129.1, 200.0], "espn_proj": [129.1, 199.0]})
+        out = roles.role_entropy(b, self.churn([np.nan, np.nan, np.nan]))
+        assert pd.isna(out.loc[0, "proj_disagreement"])
+        assert pd.isna(out.loc[0, "role_entropy"])
+        assert out.loc[0, "entropy_basis"] == ""
+        # A real pair of estimates that nearly agree still scores.
+        assert out.loc[1, "proj_disagreement"] > 0
+
+    def test_the_score_says_which_halves_it_rests_on(self):
+        # Only the churn half has been tested against real projection error, so
+        # a blended number that does not name its halves lets the untested one
+        # borrow the tested one's credibility.
+        out = roles.role_entropy(self.frame(), self.churn([1.0, np.nan, 0.5]))
+        assert out.loc[0, "entropy_basis"] == roles.ENTROPY_BASIS_BOTH
+        assert out.loc[1, "entropy_basis"] == roles.ENTROPY_BASIS_DISAGREEMENT
+        assert out.loc[2, "entropy_basis"] == roles.ENTROPY_BASIS_CHURN
+        # Nothing to score, nothing to name.
+        assert roles.role_entropy(self.frame(), self.churn([np.nan] * 3)).loc[
+            2, "entropy_basis"] == ""
+
+    def test_explain_names_a_one_sided_basis_but_not_a_two_sided_one(self):
+        row = pd.Series({"name": "x", "position": "WR", "pos_rank": 3,
+                         "proj_points": 200.0, "adj_ppg": 12.0, "role_entropy": 0.5,
+                         "entropy_basis": roles.ENTROPY_BASIS_CHURN})
+        assert roles.ENTROPY_BASIS_CHURN in model.explain(row)
+        row["entropy_basis"] = roles.ENTROPY_BASIS_BOTH
+        assert roles.ENTROPY_BASIS_BOTH not in model.explain(row)
 
     def test_explain_surfaces_entropy_and_the_named_shares(self):
         row = pd.Series({"name": "x", "position": "WR", "pos_rank": 3,
@@ -353,11 +417,11 @@ class TestEntropyBacktest:
 
 class TestAttach:
     def test_attaching_entropy_replaces_rather_than_duplicates(self):
-        b = pd.DataFrame({"name": ["a"], "proj_points": [100.0], "espn_proj": [100.0],
+        b = pd.DataFrame({"name": ["a"], "proj_points": [100.0], "espn_proj": [99.9999],
                           "role_entropy": [0.9]})
         out = roles.attach_role_entropy(b, pd.DataFrame({"player": [], "role_churn": []}))
         assert list(out.columns).count("role_entropy") == 1
-        assert out.loc[0, "role_entropy"] == pytest.approx(0.0)
+        assert out.loc[0, "role_entropy"] == pytest.approx(0.0, abs=1e-5)
 
     def test_attaching_opportunity_needs_a_player_id(self):
         b = pd.DataFrame({"name": ["a"]})

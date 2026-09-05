@@ -73,19 +73,23 @@ position — depth rank 2 by the model's own projection — inherits the games t
 starter is expected to miss at the per-game upgrade between them, and that many
 points are *added* to his `pick_value`, doubled when you already hold the
 starter and gated by the chance he would be in your lineup when the promotion
-comes. Each of those three is a correction the evidence forced. Added rather
-than multiplied because a deep bench player's `pick_value` is negative, so
-scaling it by his handcuff case pushes him further down; only depth rank 2,
-because giving it to everyone behind the starter rewards whoever is worst (the
-gap to the starter is widest for the man least likely to inherit anything); and
-gated, because contingent points a roster can never start are not points — a
-QB2's starter has the best per-game output on the board and the bonus lands
-after `need_mult` has already discounted him.
+comes. Each of those is a correction the evidence forced. Added rather than
+multiplied because a deep bench player's `pick_value` is negative, so scaling it
+by his handcuff case pushes him further down; only depth rank 2, because giving
+it to everyone behind the starter rewards whoever is worst (the gap to the
+starter is widest for the man least likely to inherit anything); and gated,
+because contingent points a roster can never start are not points — a QB2's
+starter has the best per-game output on the board and the bonus lands after
+`need_mult` has already discounted him.
 
-Both terms are applied so that below 1 always means further down the list:
-`pick_value` goes negative deep in the board, so the multiplier is applied by
-division there rather than by multiplication (`model.ROLES_MULT_FLOOR` bounds
-it, since a start probability of exactly 0 is a real answer).
+The gate does **not** apply when the starter is yours. His absence is both what
+pays the contingency and what opens the lineup slot — one event, not two — so
+gating there squares a probability `contingent_points` has already applied.
+Left in, it made holding the starter *lower* his handcuff's value than not
+holding him, the exact reverse of the intent.
+
+Every multiplier in `recommend` goes through `model._discount`, so below 1
+always means further down the list in both halves of the board.
 
 `just roles [what] [seasons] [trials] [seed]` is the evidence. `what`: `shares`
 prints opportunity-share coverage on the live board and checks `pick_value` does
@@ -304,7 +308,26 @@ and seed, one mock draft with `bye_weight` 0 and one with the given weight, same
 bots and noise, scored as the best legal lineup each regular-season week on real
 box scores. Season totals cannot see a bye; weekly lineups can. `improvement` is
 weekly points gained per season; `empty_slots` counts starter slots nothing could
-fill. Run it before trusting a nonzero `bye_weight` in a league.
+fill. `just bye [seasons] [trials] [weight] [seed]` prints the same without a
+server.
+
+**Read `improvement` against `block_spread`, never on its own.** Every paired
+backtest here runs `blocks` disjoint blocks of `n_trials` (default
+`adp.DEFAULT_BLOCKS`, seeds `seed + block * n_trials + trial`) and reports each
+block's own improvement in `blocks`, their range in `block_spread`, and whether
+they point the same way in `blocks_agree`. The spread between two blocks of the
+*same* configuration is the harness's own noise, and it is the size of the
+effects this harness is used to measure: running both `roles.py` weights
+together over 2024 gave +18.4 weekly points on seeds 0-11 and -21.3 on seeds
+8-19. So a run of this length can reject a term that is badly wrong and cannot
+confirm one that is mildly right. When `blocks_agree` is false the improvement
+is inside that noise and supports nothing, whatever its sign.
+
+`trials_improved_of_changed` is the win count over the trials the weight
+actually changed, beside `trials_changed`. About half the paired trials draft
+the identical roster, and counting an abstention as a loss drives any
+conservative term toward a 50% win rate — the difference between "4 of 12
+trials improved" and "4 of the 6 it changed".
 
 ### `draft_queue` / `set_draft_queue`
 Your ESPN pick queue, the list autopick draws from if you miss the clock.
@@ -378,9 +401,21 @@ equals its own mean; under six appearances it is left blank rather than guessed
 from three games. The score is their mean. `entropy_kind` names the direction,
 because uncertainty is not one thing: ESPN projecting *above* a model built from
 past production is `unresolved upside`, ESPN projecting *below* it is
-`role in doubt`. `explain()` prints the score, the kind and whether the snap
-share moved. Nothing in `pick_value` depends on either — they are read-only
-columns; see **Role weights** under `model_settings`.
+`role in doubt`.
+
+`entropy_basis` names which halves a row's score rests on — `disagreement+churn`,
+`disagreement only` or `churn only` — because the two do not have the same
+evidential standing. The churn half is monotonic against real projection error in
+two seasons across 700 players; the disagreement half has no test of its own
+here. Both components are reported beside the blend in `player_report` and
+`who_should_i_pick` so a consumer can use the evidenced half alone, and
+`explain()` names a one-sided basis. Two projections that are bit-identical are
+one number rather than two that agree, so a kicker or defense priced from ESPN's
+own projection scores no disagreement at all rather than reading as the most
+certain role on the board.
+
+Nothing in `pick_value` depends on any of it — they are read-only columns; see
+**Role weights** under `model_settings`.
 
 ### `compare_players`
 Two to four players head to head, with a verdict.

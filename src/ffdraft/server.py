@@ -131,7 +131,8 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         if "bye_week" not in b.columns:
             b = _attach_byes(b)
             changed = True
-        if not {"carry_share", "role_entropy", "contingent_points"} <= set(b.columns):
+        if not {"carry_share", "role_entropy", "entropy_basis",
+                "contingent_points"} <= set(b.columns):
             b = _attach_roles(b, league)
             changed = True
         # A board priced off consensus before ESPN ADP was configured, or keyed
@@ -409,12 +410,18 @@ def who_should_i_pick(limit: int = 6) -> str:
     for idx, r in recs.iterrows():
         bye = r.get("bye_week")
         picks.append({
-            "player": r["name"], "position": r["position"], "team": r.get("team"),
+            # Every string field here is guarded on notna, not on truthiness:
+            # NaN is truthy and `json.dumps` writes it as a bare NaN literal,
+            # which is not JSON. ESPN files no injury status at all for a team
+            # defense, and no team for a player it does not carry.
+            "player": r["name"], "position": r["position"],
+            "team": str(r["team"]) if pd.notna(r.get("team")) else None,
             "adp": round(float(r["adp"]), 1),
             "proj_points": round(float(r["proj_points"]), 1),
             "espn_proj": (round(float(r["espn_proj"]), 1)
                           if pd.notna(r.get("espn_proj")) else None),
-            "espn_injury": r.get("espn_injury"),
+            "espn_injury": (str(r["espn_injury"])
+                            if pd.notna(r.get("espn_injury")) else None),
             "consistency": round(float(r["consistency"]), 3),
             "survives_to_next_pick": round(float(r["p_available_next"]), 2),
             "starts_in_a_given_week": round(float(bench.at[idx, "p_start"]), 2),
@@ -424,12 +431,22 @@ def who_should_i_pick(limit: int = 6) -> str:
                                   if pd.notna(r.get("contingent_points")) else None),
             "role_entropy": (round(float(r["role_entropy"]), 2)
                              if pd.notna(r.get("role_entropy")) else None),
+            # The two halves are reported beside the blend, and `entropy_basis`
+            # names which of them this row's score rests on: only the churn half
+            # has been tested against real projection error.
+            "entropy_basis": (str(r["entropy_basis"]) or None
+                              if pd.notna(r.get("entropy_basis")) else None),
+            "proj_disagreement": (round(float(r["proj_disagreement"]), 2)
+                                  if pd.notna(r.get("proj_disagreement")) else None),
+            "role_churn": (round(float(r["role_churn"]), 2)
+                           if pd.notna(r.get("role_churn")) else None),
             # NaN is truthy and json.dumps writes it as bare NaN, which is not
             # JSON, so this guard is notna rather than a falsiness check.
             "entropy_kind": (str(r["entropy_kind"]) or None
                              if pd.notna(r.get("entropy_kind")) else None),
             "bye_week": int(bye) if bye is not None and pd.notna(bye) else None,
-            "bye_conflicts": r.get("bye_conflicts") or "",
+            "bye_conflicts": (str(r["bye_conflicts"])
+                              if pd.notna(r.get("bye_conflicts")) else ""),
             "why": model.explain(r),
         })
     return json.dumps({
@@ -936,13 +953,19 @@ def mock_draft(season: int, n_trials: int = 30, top_n: int = 5) -> str:
 
 @mcp.tool()
 def bye_backtest(seasons: str = "2022,2023,2024,2025", n_trials: int = 20,
-                 bye_weight: float = 0.08) -> str:
+                 bye_weight: float = 0.08, blocks: int = adp_mod.DEFAULT_BLOCKS) -> str:
     """Backtest: does the bye-week stacking penalty win more weekly lineup points?
 
     Paired mock drafts per season and seed, once with bye_weight 0 and once with
     the given weight, identical bots and noise, scored as the best legal lineup
-    each regular-season week on real box scores. Positive improvement means the
-    penalty earns its keep and belongs in model_settings for this league.
+    each regular-season week on real box scores.
+
+    Run in `blocks` disjoint blocks of `n_trials`, and every block's improvement
+    is reported. Read `improvement` against `block_spread`, the distance between
+    two blocks of the same configuration: when `blocks_agree` is false the
+    improvement is inside the harness's own noise and supports nothing. A
+    positive improvement whose blocks agree means the penalty earns its keep and
+    belongs in `model_settings` for this league.
     """
     import logging
 
@@ -955,7 +978,7 @@ def bye_backtest(seasons: str = "2022,2023,2024,2025", n_trials: int = 20,
         logging.getLogger(__name__).info("bye_backtest: %s", msg)
 
     out = adp_mod.bye_backtest(league, weights, yrs, n_trials=n_trials,
-                               bye_weight=bye_weight, progress=progress)
+                               bye_weight=bye_weight, blocks=blocks, progress=progress)
     out["progress"] = lines
     return json.dumps(out, indent=2, default=str)
 
@@ -1123,6 +1146,7 @@ def player_report(player_name: str) -> str:
               "consistency", "startable_rate", "spike_rate", "floor", "ceiling", "fp_cv",
               "target_share", "carry_share", "redzone_share", "snap_share", "touches",
               "role_entropy", "proj_disagreement", "role_churn", "entropy_kind",
+              "entropy_basis",
               "starter", "depth_rank", "starter_injury_risk", "starter_games_missed",
               "standalone_points", "contingent_points", "ev_handcuff",
               "injury_risk", "games_missed_rate", "report_rate", "heavy_seasons", "recent_burden",

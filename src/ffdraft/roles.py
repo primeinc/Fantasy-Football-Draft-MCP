@@ -64,7 +64,16 @@ HANDCUFF_WEIGHT = 0.0
 HANDCUFF_HELD_BONUS = 1.0
 
 OPPORTUNITY_COLUMNS = ("target_share", "carry_share", "redzone_share", "snap_share")
-ENTROPY_COLUMNS = ("role_entropy", "proj_disagreement", "role_churn", "entropy_kind")
+ENTROPY_COLUMNS = ("role_entropy", "proj_disagreement", "role_churn", "entropy_kind",
+                   "entropy_basis")
+# What `role_entropy` was actually computed from, per row. The two halves do not
+# have the same evidential standing — churn is monotonic against real projection
+# error in two seasons across 700 players, disagreement has no test of its own
+# here — so a blended number must say which halves went into it rather than
+# letting the untested one borrow the tested one's credibility.
+ENTROPY_BASIS_BOTH = "disagreement+churn"
+ENTROPY_BASIS_DISAGREEMENT = "disagreement only"
+ENTROPY_BASIS_CHURN = "churn only"
 HANDCUFF_COLUMNS = ("starter", "depth_rank", "starter_injury_risk",
                     "starter_games_missed", "standalone_points", "contingent_points",
                     "ev_handcuff")
@@ -327,9 +336,17 @@ def pick_value_bonus(avail: pd.DataFrame, league: LeagueSettings,
     already discounted them, so it walks straight past the rule that stops the
     model rostering a second quarterback.
 
-    Doubled when the starter is on my roster: the contingency then also covers a
-    slot the roster is already depending on, which is the brief's roster
-    optionality rather than a second helping of the same points.
+    The gate does not apply when the starter is mine. His absence is the event
+    that pays the contingency AND the event that opens the lineup slot — the
+    same event, not two — so multiplying by the slot's probability squares a
+    probability `contingent_points` has already applied once. Left in, it made
+    holding the starter *lower* his handcuff's value than not holding him: Brian
+    Robinson behind a held Bijan Robinson came out at 11.7 against 17.9, which
+    is the exact reverse of the brief's "higher when you hold that starter".
+
+    Doubled when the starter is on my roster, on top of that: the contingency
+    then also covers a slot the roster is already depending on, which is the
+    brief's roster optionality rather than a second helping of the same points.
     """
     zero = pd.Series(0.0, index=avail.index)
     if avail.empty or not handcuff_weight:
@@ -338,9 +355,9 @@ def pick_value_bonus(avail: pd.DataFrame, league: LeagueSettings,
     contingent = pd.to_numeric(hc["contingent_points"], errors="coerce").fillna(0.0)
     held = set(mine["name"].astype(str)) if mine is not None and not mine.empty \
         and "name" in mine.columns else set()
-    holds = hc["starter"].isin(held) if "starter" in hc.columns else pd.Series(
-        False, index=avail.index)
-    gate = start_probabilities(avail, league, mine)
+    holds = (hc["starter"].isin(held) if "starter" in hc.columns
+             else pd.Series(False, index=avail.index)).fillna(False)
+    gate = start_probabilities(avail, league, mine).where(~holds, 1.0)
     return (handcuff_weight * contingent * gate
             * (1 + HANDCUFF_HELD_BONUS * holds.astype(float)))
 
@@ -497,7 +514,12 @@ def role_entropy(board: pd.DataFrame, churn: pd.DataFrame | None = None) -> pd.D
         else pd.Series(np.nan, index=idx)
     ours = pd.to_numeric(board["proj_points"], errors="coerce") \
         if "proj_points" in board.columns else pd.Series(np.nan, index=idx)
-    ratio = (espn / ours.replace(0, np.nan)).where((espn > 0) & (ours > 0))
+    # Two projections that are bit-identical are one number, not two that agree.
+    # A kicker or a team defense is priced from ESPN's own projection, so its
+    # ratio is exactly 1 by construction; scored as agreement it would read as
+    # the most certain role on the board, which is the opposite of what an
+    # untested projection deserves.
+    ratio = (espn / ours.replace(0, np.nan)).where((espn > 0) & (ours > 0) & (espn != ours))
     log_ratio = np.log(ratio)
     disagreement = log_ratio.abs()
 
@@ -516,8 +538,18 @@ def role_entropy(board: pd.DataFrame, churn: pd.DataFrame | None = None) -> pd.D
     kind = kind.where(~(log_ratio > ENTROPY_KIND_FLOOR), "unresolved upside")
     kind = kind.where(~(log_ratio < -ENTROPY_KIND_FLOOR), "role in doubt")
     kind = kind.where(entropy.notna(), "")
+
+    # Which halves the score actually rests on. A row scored from disagreement
+    # alone is not the same claim as one scored from churn, and only the churn
+    # half has been tested against real projection error.
+    basis = pd.Series("", index=idx, dtype="object")
+    basis = basis.where(~(disagreement.notna() & role_churn.notna()), ENTROPY_BASIS_BOTH)
+    basis = basis.where(~(disagreement.notna() & role_churn.isna()),
+                        ENTROPY_BASIS_DISAGREEMENT)
+    basis = basis.where(~(disagreement.isna() & role_churn.notna()), ENTROPY_BASIS_CHURN)
     return pd.DataFrame({"role_entropy": entropy, "proj_disagreement": disagreement,
-                         "role_churn": role_churn, "entropy_kind": kind}, index=idx)
+                         "role_churn": role_churn, "entropy_kind": kind,
+                         "entropy_basis": basis}, index=idx)
 
 
 def attach_role_entropy(board: pd.DataFrame, churn: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -559,7 +591,7 @@ def entropy_error_backtest(board: pd.DataFrame, season: int, league,
 
 def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str, float],
                     n_trials: int = 12, top_n: int = 5, seed: int = 0,
-                    progress=None) -> dict:
+                    blocks: int | None = None, progress=None) -> dict:
     """Do the start-probability and handcuff terms win weekly lineup points?
 
     The same paired Monte Carlo `adp.bye_backtest` uses, and for the same reason:
@@ -568,8 +600,11 @@ def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str,
     seed, one mock draft with the weights off and one with them on, identical
     bots and identical noise, so the pair differs in exactly the weights.
 
-    `improvement` > 0 means the term earns its keep. Anything else and the weight
-    stays 0, and the number goes in CHANGELOG.md either way.
+    Run in `blocks` disjoint blocks (`adp.DEFAULT_BLOCKS`), and every block's own
+    improvement is reported beside `block_spread` and `blocks_agree`. An
+    `improvement` > 0 whose blocks disagree in sign is a measurement of the
+    harness rather than of the term, and the weight stays 0. The numbers go in
+    CHANGELOG.md either way.
     """
     from . import adp as adp_mod
     from . import board as bd
@@ -579,6 +614,7 @@ def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str,
         if progress is not None:
             progress(msg)
 
+    blocks = adp_mod.DEFAULT_BLOCKS if blocks is None else blocks
     sc_label = "ppr" if float(league.scoring.rec) >= 0.9 else \
                "half_ppr" if float(league.scoring.rec) >= 0.35 else "standard"
     per_season = []
@@ -597,59 +633,40 @@ def weight_backtest(league, weights, seasons: list[int], role_weights: dict[str,
             per_season.append({"season": season, "error": "no box scores for this season"})
             continue
 
-        base: list[dict] = []
-        tuned: list[dict] = []
-        changed: list[bool] = []
-        swaps = 0
-        for trial in range(n_trials):
+        def pair(trial_seed: int, board=board) -> tuple[list[str], list[str]]:
             a = [n for _, n in adp_mod._draft_trial(
-                board, league, np.random.default_rng(seed + trial), top_n)]
+                board, league, np.random.default_rng(trial_seed), top_n)]
             b = [n for _, n in adp_mod._draft_trial(
-                board, league, np.random.default_rng(seed + trial), top_n,
+                board, league, np.random.default_rng(trial_seed), top_n,
                 role_weights=role_weights)]
-            swapped = sorted(set(b) - set(a))
-            swaps += len(swapped)
-            changed.append(bool(swapped))
-            base.append(adp_mod.weekly_lineup_points(a, season, league))
-            tuned.append(adp_mod.weekly_lineup_points(b, season, league))
-            say(f"{season} trial {trial + 1}/{n_trials}: off {base[-1]['points']:.1f} "
-                f"vs on {tuned[-1]['points']:.1f}"
-                + (f"; swapped in {swapped}" if swapped else "; identical rosters"))
-        pa = np.array([x["points"] for x in base])
-        pb = np.array([x["points"] for x in tuned])
-        moved = np.array(changed)
-        # A trial the weight did not change is a tie, not a loss. Counting it as
-        # a loss is how a term that wins most of the drafts it touches reads as
-        # a coin flip: half of these trials draft the identical roster.
-        per_season.append({
-            "season": season, "n_trials": n_trials,
-            "weekly_points_off": round(float(pa.mean()), 1),
-            "weekly_points_on": round(float(pb.mean()), 1),
-            "improvement": round(float((pb - pa).mean()), 1),
-            "trials_improved": int((pb > pa).sum()),
-            "trials_changed": int(moved.sum()),
-            "trials_improved_of_changed": int(((pb > pa) & moved).sum()),
-            "players_swapped": swaps,
-            "empty_slots_off": round(float(np.mean([x["empty_slots"] for x in base])), 2),
-            "empty_slots_on": round(float(np.mean([x["empty_slots"] for x in tuned])), 2),
-        })
-        s = per_season[-1]
-        say(f"{season} done: improvement {s['improvement']:+.1f} weekly pts, "
-            f"{s['trials_improved']}/{n_trials} trials improved "
-            f"({s['trials_improved_of_changed']}/{s['trials_changed']} of the trials it "
-            f"changed), {swaps} players swapped")
+            return a, b
+
+        def score(names: list[str], season=season) -> dict:
+            return adp_mod.weekly_lineup_points(names, season, league)
+
+        summary = adp_mod._paired_blocks(pair, score, n_trials, blocks, seed, say, str(season))
+        per_season.append({"season": season, **summary})
+        say(f"{season} done: improvement {summary['improvement']:+.1f} weekly pts across "
+            f"{blocks} blocks {summary['block_improvements']}, spread "
+            f"{summary['block_spread']}, blocks agree {summary['blocks_agree']}")
 
     valid: list[dict] = [s for s in per_season if "error" not in s]
+    gains: list[float] = [float(s["improvement"]) for s in valid]
+    spreads: list[float] = [float(s["block_spread"]) for s in valid]
     return {
-        "role_weights": dict(role_weights),
+        "role_weights": dict(role_weights), "n_trials": n_trials, "n_blocks": blocks,
         "seasons": per_season,
-        "overall_improvement": (round(float(np.mean([s["improvement"] for s in valid])), 1)
-                                if valid else None),
+        "overall_improvement": round(float(np.mean(gains)), 1) if gains else None,
+        "blocks_agree": bool(valid) and all(s["blocks_agree"] for s in valid),
+        "worst_block_spread": round(max(spreads), 1) if spreads else None,
         "players_swapped": int(sum(int(s["players_swapped"]) for s in valid)),
         "interpretation": ("improvement is mean weekly-lineup points gained per season by "
-                           "turning the weights on over identical drafts without them; "
-                           "players_swapped is how many picks actually changed, which is "
-                           "what makes a zero improvement readable"),
+                           "turning the weights on over identical drafts without them. "
+                           "Read it against block_spread, the distance between two "
+                           "disjoint seed blocks of the same configuration: when "
+                           "blocks_agree is false the improvement is inside the harness's "
+                           "own noise and supports nothing. players_swapped is how many "
+                           "picks actually changed, which is what makes a zero readable."),
     }
 
 

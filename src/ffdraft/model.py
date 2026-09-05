@@ -534,9 +534,12 @@ def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
 # cannot see); above ROLE_GROWTH it has grown (a rookie or a new starter the
 # box scores have not caught up with). Replaying the live draft showed both:
 # Tyrone Tracy at 41 vs 185, KC Concepcion at 156 vs 102.
-# Smallest `roles.pick_value_multiplier` value applied to a negative pick_value.
-# A start probability of 0 is a real answer, and it is applied by division.
-ROLES_MULT_FLOOR = 0.05
+# Clamp on a pick_value multiplier's magnitude. `np.where` evaluates both
+# branches, so a multiplier of exactly 0 would produce inf in rows the branch
+# never selects. A start probability of exactly 0 is a real answer — "he can
+# never enter the lineup" — and this sends him as far down the list as the
+# arithmetic allows, which is what that means.
+DISCOUNT_FLOOR = 1e-6
 ROLE_DISAGREEMENT = 0.70
 ROLE_FLOOR = 0.20
 ROLE_GROWTH = 1.30
@@ -561,6 +564,27 @@ def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
     high = known & (ratio > ROLE_GROWTH)
     out = ones.where(~low, (ratio / ROLE_DISAGREEMENT).clip(lower=ROLE_FLOOR, upper=1.0))
     return out.where(~high, (ratio / ROLE_GROWTH).clip(lower=1.0, upper=ROLE_CEILING))
+
+
+def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
+    """Apply a pick_value multiplier so that below 1 always means further down
+    the list, and above 1 always means further up.
+
+    Multiplication alone does not do that. Almost every candidate on a live
+    board has a negative pick_value -- most players are worth less than what
+    waiting is expected to return -- and multiplying a negative number by a
+    discount moves it *toward* zero, so the ordering inside the negative half
+    comes out inverted: the worse the player, the higher the discount ranks him.
+    Dividing is the same penalty with the sign the other way round.
+
+    Every multiplier in `recommend` goes through here, so they cannot drift
+    apart on this. The same defect was found independently in `role_mult`,
+    `need_mult` and `roles_mult`; it is one missing invariant, not three bugs.
+    """
+    v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
+    m = np.where(np.abs(m) < DISCOUNT_FLOOR, DISCOUNT_FLOOR, m)
+    return np.where(v >= 0, v * m, v / m)
 
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
@@ -636,16 +660,8 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
             start_prob_weight=float(role_weights.get("start_prob", 0.0)))
         avail["roles_bonus"] = roles.pick_value_bonus(
             avail, league, mine, handcuff_weight=float(role_weights.get("handcuff", 0.0)))
-        # Below 1 has to mean "further down the list" in both halves. pick_value
-        # goes negative deep in the board — a candidate worth less than what
-        # waiting is expected to return — and multiplying a negative by 0.3
-        # moves it *toward* zero, promoting exactly the bench players the
-        # start-probability discount exists to bury. Dividing is the same
-        # penalty with the sign the other way round; the floor is there because
-        # a start probability of 0 is a real value.
-        pv = avail["pick_value"].to_numpy(dtype=float)
-        rm = np.clip(avail["roles_mult"].to_numpy(dtype=float), ROLES_MULT_FLOOR, None)
-        avail["pick_value"] = np.where(pv >= 0, pv * rm, pv / rm) + avail["roles_bonus"]
+        avail["pick_value"] = (_discount(avail["pick_value"], avail["roles_mult"])
+                               + avail["roles_bonus"])
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -811,6 +827,12 @@ def explain(row: pd.Series) -> str:
             why.append(str(kind))
         if churn is not None and pd.notna(churn) and churn > roles.ENTROPY_CHURN_SCALE / 2:
             why.append("snap share moved week to week")
+        # Say which half the score rests on when it rests on only one: the two
+        # do not have the same evidential standing.
+        basis = row.get("entropy_basis")
+        if basis is not None and pd.notna(basis) and str(basis) \
+                and str(basis) != roles.ENTROPY_BASIS_BOTH:
+            why.append(str(basis))
         bits.append(f"role uncertainty {float(ent):.2f}"
                     + (f" ({'; '.join(why)})" if why else ""))
     shares = [(label, row.get(key)) for label, key in
