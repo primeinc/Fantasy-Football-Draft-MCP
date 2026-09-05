@@ -2934,7 +2934,6 @@ def reload_package() -> dict[str, Any]:
             importlib.reload(module)
         except Exception as exc:
             errors[name] = f"{type(exc).__name__}: {exc}"
-    watches = _migrate_watches(errors)
     me = sys.modules[__name__]
     # Launched as `python -m ffdraft.server` -- which is how .mcp.json starts it
     # -- this module runs as `__main__` and `ffdraft.server` is never entered
@@ -2964,7 +2963,20 @@ def reload_package() -> dict[str, Any]:
         importlib.reload(me)
     except Exception as exc:
         errors["server"] = f"{type(exc).__name__}: {exc}"
-        return {"errors": errors, "tools": None}
+        # The package modules around this one did reload, so the live watch is
+        # already on a stale class and still has to be moved. The body that runs
+        # here is the previous one, because it is the only one there is.
+        return {"errors": errors, "tools": None, "watches": _migrate_watches(errors)}
+    # After the reload, not before it. This module re-executes in place, so the
+    # module dict this old code object looks names up in now holds the NEW
+    # `_migrate_watches`, `_channel` and `_watch_refresh`. Called earlier, every
+    # server-side migration change took effect one reload late and the reload
+    # that landed it reported the previous behaviour as its result -- measured
+    # live at 5ba1482, where the first reload said `cannot_rebuild: [notify,
+    # refresh]` with no `record`, and a second reload with nothing changed on
+    # disk said `rebound: [notify, refresh], record: present`. The callables the
+    # watch was handed were the outgoing bodies for the same reason.
+    watches = _migrate_watches(errors)
     # The module namespace, not attribute access: the re-executed module bound
     # a fresh server object here, and the transport serves `live`.
     changes = _sync_tools(live, me.__dict__["mcp"])

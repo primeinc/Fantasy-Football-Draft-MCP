@@ -263,6 +263,81 @@ class TestALiveWatchGetsAResumeRecord:
         server._WATCHES.pop("L", None)
 
 
+class TestTheMigrationRunsTheReloadedBody:
+    """`reload_package` re-executes server.py in place, so which body migrates a
+    watch is decided by whether the call sits before or after that reload.
+
+    Measured live at 5ba1482: the first reload after landing the rebind reported
+    `cannot_rebuild: [notify, refresh]` and no `record`, and a second reload with
+    nothing changed on disk reported `rebound: [notify, refresh], record:
+    present`. Every server-side migration change took effect one reload late.
+
+    The discriminator here needs no file on disk. A body patched into the module
+    dict is exactly what the reload overwrites, so it can only run if it is
+    called first.
+    """
+
+    def _stale(self, marker: dict):
+        def stale(errors):
+            marker["ran"] = True
+            return {"migrated": {}, "failed": {}}
+        return stale
+
+    def test_a_body_the_reload_replaces_does_not_migrate(
+            self, tmp_path, monkeypatch):
+        marker: dict = {}
+        w = _watch(tmp_path, monkeypatch)
+        monkeypatch.setitem(server._WATCHES, "L", (w, None))
+        monkeypatch.setattr(server, "_migrate_watches", self._stale(marker))
+
+        server.reload_package()
+
+        assert marker == {}, (
+            "the migration ran before the reload, so it was the outgoing body; "
+            "a change to _migrate_watches lands one reload late")
+        server._WATCHES.pop("L", None)
+
+    def test_the_first_reload_reports_what_the_current_body_does(
+            self, tmp_path, monkeypatch):
+        """The live symptom, in the shape it was seen: a report missing the key
+        the body on disk writes."""
+        w = _watch(tmp_path, monkeypatch)
+        w.queue = [11]
+        monkeypatch.setitem(server._WATCHES, "L", (w, None))
+        monkeypatch.setattr(server, "_migrate_watches", self._stale({}))
+        assert watchstore.load("L") is None
+
+        result = server.reload_package()
+
+        assert result["watches"]["migrated"]["L"]["record"] == "written"
+        server._WATCHES.pop("L", None)
+
+    def test_the_watch_is_handed_the_reloaded_callables_not_the_outgoing_ones(
+            self, tmp_path, monkeypatch):
+        """`_channel` and `_watch_refresh` are looked up inside the migration, so
+        migrating first hands the watch the bodies that are on their way out --
+        the same defect the rebind was added to fix, one level up."""
+        w = _watch(tmp_path, monkeypatch)
+        monkeypatch.setitem(server._WATCHES, "L", (w, None))
+
+        async def outgoing_channel(content, meta=None):
+            return None
+
+        def outgoing_refresh():
+            return ("OLD BOARD", 0.0)
+
+        monkeypatch.setattr(server, "_channel", outgoing_channel)
+        monkeypatch.setattr(server, "_watch_refresh", outgoing_refresh)
+
+        server.reload_package()
+
+        live = sys.modules["ffdraft.server"]
+        assert w.notify is not outgoing_channel
+        assert w.refresh is not outgoing_refresh
+        assert w.notify is live._channel and w.refresh is live._watch_refresh
+        server._WATCHES.pop("L", None)
+
+
 class TestTheLiveFailure:
     """The exact sequence from 2026-09-05, end to end."""
 

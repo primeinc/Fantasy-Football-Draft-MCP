@@ -8,6 +8,22 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**A reload migrated its watches with the body it was replacing (#64)**
+- `reload_package` re-imported every package module, migrated the live watches,
+  and only then reloaded `server.py`. Because this module re-executes in place,
+  the migration that ran was always the outgoing one: every server-side change to
+  it took effect **one reload late**, and the reload that landed the change
+  reported the previous behaviour as its own result.
+- Measured live at 5ba1482. The first `reload_code` after the rebind landed said
+  `cannot_rebuild: [notify, refresh]` with no `record` key; a second, with nothing
+  changed on disk, said `rebound: [notify, refresh], record: present`.
+- The same ordering decided which callables the watch was handed. `_channel` and
+  `_watch_refresh` are looked up inside the migration, so a watch was rebound to
+  the bodies on their way out — the defect the rebind exists to fix, one level up.
+- The migration now runs after the reload. When `server.py` itself fails to
+  reload it still runs, with the only body there is, because the modules around it
+  reloaded and the watch is on a stale class either way.
+
 **A test file that replayed the whole draft to check its punctuation (#56)**
 - `test_json_payloads.py` was **28.5 s** of a 38 s suite; it is now **9.4 s**,
   with four more tests than before. The cost was `draft_replay` (5.46 s) and
