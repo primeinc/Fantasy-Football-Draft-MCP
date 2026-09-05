@@ -380,10 +380,12 @@ All notable changes to this project. Format follows
   board: coverage 63 of 122 (0.516, first 60, last 122), mean pool share 0.495
   (300 rows of a ~600-row pool), the player taken inside the snapshot 60 times,
   exactly 60 picks' `reach` moved and every one by +10 (pick 61: 27.6 -> 37.6),
-  pick 30 unchanged, survival Brier 0.131 -> 0.143. 63 files, 988 KB, so a full
+  pick 30 unchanged, survival Brier 0.132 -> 0.143. 63 files, 988 KB, so a full
   224-pick draft is about 3.5 MB. The coverage fractions are properties of the
   bound and the record; the Brier and the pool share move with the board, and
-  did when kickers and defenses were priced onto it.
+  did when kickers and defenses were priced onto it. Stamped against 854b5da,
+  which carries #26; #26 moved exactly one figure here, the today-board Brier,
+  by 0.001.
 
 **Counterfactual replay**
 - `draft_counterfactual` (`replay.counterfactual_draft`, `just counterfactual
@@ -439,6 +441,15 @@ All notable changes to this project. Format follows
   the two K/DST picks the board can now price. Re-run `just counterfactual`
   rather than trusting the number here; what is stable is the shape of the
   comparison, not its output.
+- Stamped against 854b5da, which carries #26. Every figure above is unchanged by
+  it — not one of them moved. That is worth recording because the obvious
+  expectation was the opposite: #26 removes the terminal fallback from
+  `expected_best_at_next_pick`, which every call to `recommend` reads. It only
+  bites where a position is expected to be exhausted, and this walk always has a
+  next pick and a deep pool, so `p_all_gone` stays small and the removed term
+  was contributing nothing here. "Every caller shifts" is true of the code path
+  and false of the numbers, and which one holds is a question for a measurement
+  rather than for a changelog.
 
 **League position intercepts evaluated, and not adopted**
 - `blend_pos` — the blend plus league-level `is_QB`/`is_RB`/`is_WR`/`is_TE`
