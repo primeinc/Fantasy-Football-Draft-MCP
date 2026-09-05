@@ -2,6 +2,7 @@
 import asyncio
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from ffdraft import board, watch
@@ -10,21 +11,37 @@ from ffdraft.config import LeagueSettings
 FIXTURE = Path(__file__).parent / "fixtures" / "espn_draft_init.b64"
 
 
-def _watch(tmp_path, monkeypatch):
+def _watch(tmp_path, monkeypatch, board_df=None, refresh=None):
     monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(watch, "STATE_DIR", tmp_path)
     monkeypatch.setattr(board, "espn_maps", lambda: (
-        {"4429795": "Jahmyr Gibbs", "4362628": "Ja'Marr Chase"},
-        {"4429795": "RB", "4362628": "WR"}))
+        {"4429795": "Jahmyr Gibbs", "4362628": "Ja'Marr Chase", "3000001": "Bench Guy"},
+        {"4429795": "RB", "4362628": "WR", "3000001": "WR"}))
     league = LeagueSettings(name="t", teams=16, draft_slot=4, rounds=14)
     events = []
 
     async def notify(content, meta):
         events.append((content, meta))
 
-    # No board: the recommendation path is only entered within RECOMMEND_WITHIN
-    # picks of the user's turn, which these snapshots never reach.
-    w = watch.DraftWatch("1734659820", 2026, 3, "{ABC}", "s2", league, None, notify)
+    # No board by default: the recommendation path is only entered within
+    # RECOMMEND_WITHIN picks of the user's turn, which these snapshots never reach.
+    w = watch.DraftWatch("1734659820", 2026, 3, "{ABC}", "s2", league, board_df, notify,
+                         refresh=refresh)
     return w, events
+
+
+def _market_board() -> pd.DataFrame:
+    """A board with the three market columns an as-of snapshot keeps."""
+    names = ["Jahmyr Gibbs", "Ja'Marr Chase", "Bench Guy", "Deep Guy"]
+    b = pd.DataFrame({
+        "name": names, "position": ["RB", "WR", "WR", "TE"], "team": ["A"] * 4,
+        "player_id": ["00-1", "00-2", "00-3", "00-4"],
+        "proj_points": [300.0, 290.0, 120.0, 90.0],
+        "adp": [1.0, 2.0, 90.0, 150.0], "espn_rank": [1, 2, 88, 140],
+        "espn_proj": [280.0, 275.0, 110.0, 80.0],
+    })
+    b["_key"] = b["name"].map(board.norm_name)
+    return b
 
 
 def test_init_seeds_state_with_real_slots(tmp_path, monkeypatch):
@@ -257,3 +274,162 @@ def test_error_line_raises(tmp_path, monkeypatch):
     w, _ = _watch(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="No\\+team"):
         asyncio.run(w.handle_line("ERROR 1 No+team"))
+
+
+class TestAsOfSnapshots:
+    def test_init_and_each_selected_file_the_market_for_the_pick_on_the_clock(
+            self, tmp_path, monkeypatch):
+        w, _events = _watch(tmp_path, monkeypatch, board_df=_market_board())
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        # 114 picks in the snapshot, so the pick on the clock is 115.
+        assert w.snapshots == [115]
+        snap = watch.read_snapshot("1734659820", 115)
+        assert snap is not None
+        assert list(snap.columns) == ["_key", "player_id", "adp", "espn_rank", "espn_proj"]
+        # Cheapest ADP first, and the fixture already has Jahmyr Gibbs (pick 1)
+        # and Ja'Marr Chase (pick 4), so the snapshot records only what is left.
+        assert snap["_key"].tolist() == ["bench guy", "deep guy"]
+        assert snap["adp"].tolist() == [90.0, 150.0]
+        assert snap["espn_proj"].tolist() == [110.0, 80.0]
+
+        asyncio.run(w.handle_line("SELECTED 10 3000001 4"))
+        assert w.snapshots == [115, 116]
+        after = watch.read_snapshot("1734659820", 116)
+        # Bench Guy was just taken, so pick 116's snapshot no longer carries him.
+        assert after is not None and after["_key"].tolist() == ["deep guy"]
+
+    def test_a_snapshot_is_bounded_and_never_breaks_the_socket_loop(self, tmp_path, monkeypatch):
+        w, events = _watch(tmp_path, monkeypatch, board_df=_market_board())
+        monkeypatch.setattr(watch, "SNAPSHOT_ROWS", 1)
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        bounded = watch.read_snapshot("1734659820", 115)
+        assert bounded is not None and len(bounded) == 1
+
+        # A board that cannot be written costs the snapshot, not the pick.
+        w.board = _market_board().drop(columns=["_key"])
+        asyncio.run(w.handle_line("SELECTED 10 4362628 4"))
+        assert w.snapshots == [115]
+        assert events[-1][1]["event"] == "pick"
+
+    def test_no_board_writes_nothing(self, tmp_path, monkeypatch):
+        w, _events = _watch(tmp_path, monkeypatch)
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        assert w.snapshots == []
+        assert watch.read_snapshot("1734659820", 115) is None
+        assert not watch.snapshot_dir("1734659820").exists()
+
+    def test_each_snapshot_re_reads_the_board_rather_than_the_one_it_started_with(
+            self, tmp_path, monkeypatch):
+        # The whole point of the feature. DraftWatch.board is the board the watch
+        # was CONSTRUCTED with, and only _recommendation refreshed it -- on a
+        # handful of picks. Without a refresh here every file would hold the same
+        # ADP while the coverage block reported success.
+        calls = {"n": 0}
+
+        def refresh():
+            calls["n"] += 1
+            b = _market_board()
+            b["adp"] = b["adp"] + calls["n"]
+            return b, 0.0
+
+        w, _events = _watch(tmp_path, monkeypatch, board_df=_market_board(), refresh=refresh)
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        asyncio.run(w.handle_line("SELECTED 10 3000001 4"))
+        first = watch.read_snapshot("1734659820", 115)
+        second = watch.read_snapshot("1734659820", 116)
+        assert first is not None and second is not None
+        assert calls["n"] >= 2
+        assert first.set_index("_key").loc["deep guy", "adp"] == 151.0
+        assert second.set_index("_key").loc["deep guy", "adp"] == 152.0
+
+    def test_selecting_re_anchors_the_snapshot_for_the_reopened_clock(
+            self, tmp_path, monkeypatch):
+        moved = {"n": 0}
+
+        def refresh():
+            moved["n"] += 1
+            b = _market_board()
+            b["adp"] = b["adp"] + moved["n"]
+            return b, 0.0
+
+        w, _events = _watch(tmp_path, monkeypatch, board_df=_market_board(), refresh=refresh)
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        # SELECTING is ESPN naming the team that has just gone on the clock, so
+        # it rewrites the file for the pick it names with a fresher board. Pick
+        # 115 is slot 14's in the fixture.
+        on_clock = {slot: team for team, slot in w.slot_of.items()}[14]
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
+        assert w.snapshots == [115]                 # rewritten, not appended twice
+        again = watch.read_snapshot("1734659820", 115)
+        assert again is not None
+        assert again.set_index("_key").loc["deep guy", "adp"] == 152.0
+
+    def test_a_selecting_for_the_wrong_slot_leaves_the_snapshot_alone(
+            self, tmp_path, monkeypatch):
+        w, _events = _watch(tmp_path, monkeypatch, board_df=_market_board())
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        before = watch.read_snapshot("1734659820", 115)
+        assert before is not None
+        # Pick 115 is slot 14's in the fixture. A SELECTING naming any other
+        # team's slot means the two sources disagree about which pick is on the
+        # clock, and a file numbered from the wrong one is silent corruption.
+        team_of_slot = {slot: team for team, slot in w.slot_of.items()}
+        w.board = _market_board().assign(adp=[9.0, 9.0, 9.0, 9.0])
+        asyncio.run(w.handle_line(f"SELECTING {team_of_slot[1]} 90"))
+        after = watch.read_snapshot("1734659820", 115)
+        assert after is not None
+        assert after["adp"].tolist() == before["adp"].tolist()
+
+        # The matching slot does rewrite it.
+        asyncio.run(w.handle_line(f"SELECTING {team_of_slot[14]} 90"))
+        rewritten = watch.read_snapshot("1734659820", 115)
+        assert rewritten is not None and rewritten["adp"].tolist() == [9.0, 9.0]
+
+    def test_undone_drops_the_snapshots_for_the_rolled_back_picks(self, tmp_path, monkeypatch):
+        w, events = _watch(tmp_path, monkeypatch, board_df=_market_board())
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        asyncio.run(w.handle_line("SELECTED 10 3000001 4"))
+        assert w.snapshots == [115, 116]
+
+        asyncio.run(w.handle_line("UNDONE 114"))
+        # Pick 115's file describes a board state the draft backed out of; the
+        # reopened clock's is rewritten when SELECTING arrives.
+        assert w.snapshots == []
+        assert watch.read_snapshot("1734659820", 115) is None
+        assert watch.read_snapshot("1734659820", 116) is None
+        assert events[-1][1]["event"] == "undone"
+        assert "as-of snapshots dropped" in events[-1][0]
+
+    def test_a_write_failure_is_announced_once_then_stays_quiet(self, tmp_path, monkeypatch):
+        w, events = _watch(tmp_path, monkeypatch, board_df=_market_board())
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        on_clock = {slot: team for team, slot in w.slot_of.items()}[14]
+        # A board the writer cannot use. Two hours of silence is the failure mode.
+        w.board = _market_board().drop(columns=["_key"])
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
+        failures = [e for e in events if e[1]["event"] == "snapshot_failed"]
+        assert len(failures) == 1 and w.snapshot_failures == 1
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
+        assert len([e for e in events if e[1]["event"] == "snapshot_failed"]) == 1
+        assert w.snapshot_failures == 2
+
+        # It recovers quietly and the counter resets.
+        w.board = _market_board()
+        asyncio.run(w.handle_line(f"SELECTING {on_clock} 90"))
+        assert w.snapshot_failures == 0 and w.snapshots == [115]
+
+    def test_the_room_and_the_counters_say_whether_anything_was_recorded(
+            self, tmp_path, monkeypatch):
+        w, _events = _watch(tmp_path, monkeypatch, board_df=_market_board())
+        asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+        room = w.room()
+        assert room["as_of_snapshots"] == 1 and room["snapshot_write_failures"] == 0
+        assert room["picks_made"] == 114
+
+    def test_a_directory_string_is_read_as_a_directory_not_a_league_id(self, tmp_path):
+        # draft_replay takes this over MCP, where every argument is a string.
+        d = tmp_path / "copied_snapshots"
+        d.mkdir()
+        assert watch.resolve_snapshots(d) == d
+        assert watch.resolve_snapshots(str(d)) == d
+        assert watch.resolve_snapshots("1734659820") == watch.snapshot_dir("1734659820")

@@ -135,6 +135,79 @@ The draft room gets its state over a websocket. `espn_live.py` speaks it.
    `LEFT <team> <swid> 2` then the socket drops without a close frame; a browser shows
    "Duplicate Connection". `watch.py` treats that LEFT as a pause signal.
 
+### As-of market snapshots
+
+None of ESPN's surfaces answers "what was this player's ADP when pick 87 was
+made". `ownership.averageDraftPosition`, `draftRanksByRankType.PPR.rank` and the
+projection all move: ADP moves as other leagues draft, the projection moves with
+news. A replay run days later therefore scores every pick against prices nobody
+in the room had.
+
+The watch is the only process present while the draft runs, so it records them.
+`watch.write_snapshot` writes the market for the players still available to
+
+```
+~/.ffdraft/state/snapshots_<league_id>/<pick>.parquet
+```
+
+where `<pick>` is the pick then on the clock — so `115.parquet` is the board as
+it stood when pick 115 was made, not after it.
+
+It is written at three points. After `INIT`, as the seed. After each `SELECTED`,
+so a file exists even if nothing else arrives. And again on `SELECTING`, which is
+ESPN naming the team that has just gone on the clock and is therefore the event
+this actually wants — a state named by the server rather than inferred after a
+different one. The `SELECTING` write rewrites the same pick's file with a fresher
+board, and because ESPN sends a new `SELECTING` when the clock reopens after an
+`UNDONE`, the rewrite self-corrects. `UNDONE` also deletes the files for the
+rolled-back picks: a snapshot of a board state the draft backed out of would
+otherwise let a later replay price a pick from a world that did not happen.
+
+The `SELECTING` line names a team and the file is numbered from the watch's own
+pick count — two sources for one fact. When they disagree the write is skipped
+and logged, leaving the `SELECTED`-anchored file in place: a snapshot filed
+under the wrong pick number is the silent corruption the whole feature exists to
+avoid.
+
+Each write re-reads the board through the watch's `refresh` callback first.
+`DraftWatch.board` is otherwise the board the watch was *constructed* with, and
+the only other thing that refreshes it runs on the handful of picks near your own
+turn — so without this every file would hold identical ADP while the coverage
+block below reported success. `server.watch_draft`'s refresh is a cache lookup,
+so the per-pick cost is a dict hit.
+
+| column | from | why |
+|---|---|---|
+| `_key` | `names.normalize(name)` | what the board and the recorded picks join on |
+| `player_id` | board `player_id` (nflverse gsis) | a stable id alongside the name key |
+| `adp` | board `adp` (ESPN or consensus, per `adp_source`) | the survival model's input |
+| `espn_rank` | ESPN PPR draft rank | the choice model's `espn_list` feature |
+| `espn_proj` | ESPN season projection | `model.role_multiplier` |
+
+Bounds: `watch.SNAPSHOT_ROWS` (300) rows per file, cheapest ADP first, so a full
+14-round 16-team draft writes 224 files of a few hundred rows — single-digit
+megabytes. Only the market columns are kept; projections, roles and consistency
+are the model's own and were never moving ESPN numbers. Nothing prunes a
+league's directory afterwards; `watch.drop_snapshots_above` exists for the
+`UNDONE` case and is the piece to reuse if that is ever wanted.
+
+A failed write is logged and dropped, never raised — the socket loop must not
+lose a pick to a snapshot — but it is not silent: the first failure pushes a
+`snapshot_failed` channel event, and then it stays quiet until a write succeeds
+again. `draft_room` and `stop_watch` both report `as_of_snapshots` next to
+`picks_seen`, so "picks_seen 122, as_of_snapshots 0" is one line to read.
+
+`replay.replay_draft(as_of=True, snapshots=<league id or directory>)` reads them
+back, overwriting those three columns for the rows a snapshot covers before each
+pick is scored. Coverage is reported rather than assumed, in the answer's `as_of`
+block: how many picks had a snapshot at all (none exist before the watch first
+connected), the first and last that did, the mean share of the pool each one
+reached, and how often the player actually taken was inside it. Every per-pick
+row also carries `as_of` (was this pick's own player priced from the snapshot)
+and `as_of_pool_share`, because a reader scanning the rows will not cross-check
+the summary. Anything uncovered keeps today's numbers.
+`draft_replay(league_id=..., as_of=true)` exposes it.
+
 ### Draft history: what ESPN keeps
 
 Enumerated 2026-09-04 from the kona bundles (draft, draftrecap, history pages) and the

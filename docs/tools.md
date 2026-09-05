@@ -218,7 +218,20 @@ to that team's next pick, by probability bin) and Brier score against the base
 rate, plus the biggest reaches and values. The calibration is reported with the
 room's drift applied and, as `calibration_without_shift`, without it.
 Projections and ADP are today's, not as of the pick. `picks` caps the per-pick
-rows (0 = all). `just replay [picks]` prints the same without a server. The
+rows (0 = all).
+
+With `as_of` (and a `league_id`) each pick is priced from the market snapshot the
+watch wrote when that pick was on the clock — ESPN's ADP, PPR rank and projection
+as they stood then — instead of today's. Snapshots exist only from the moment a
+watch first connected and reach the top few hundred available players, so the
+answer carries an `as_of` block: picks covered, the first and last covered pick,
+the mean share of each pool the snapshot reached, and how often the player
+actually taken was inside it. Every per-pick row also carries `as_of` (was that
+pick's own player priced from the snapshot) and `as_of_pool_share`. Anything
+uncovered keeps today's numbers. Format and bounds in
+[data-sources.md](data-sources.md), "As-of market snapshots".
+
+`just replay [picks]` prints the same without a server. The
 answer also carries the walk-forward `predictors` score sheet, `predictor_rows`
 (each predictor's rank of and probability for every real pick) and the
 `forecast` for the pick on the clock; see `predict_pick`.

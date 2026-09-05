@@ -1216,19 +1216,31 @@ def lineup_value(board: pd.DataFrame, picks: list[dict],
     all. Recorded picks never do, so `team_strength` is unaffected; a caller that
     knows exactly which board row it took (`replay.counterfactual_draft`) passes
     it, which is the only way to score two board rows sharing one normalised
-    name without both resolving to whichever came last."""
+    name without both resolving to whichever came last.
+
+    A missing projection is worth 0, and so is a NaN one. Those are not the same
+    statement in Python: NaN is truthy, so the obvious `proj.get(key) or 0.0`
+    hands back the NaN, and one unprojected player turns a whole team's
+    `starters_proj` into NaN instead of under-counting it by that player."""
     proj = dict(zip(board["_key"], board["proj_points"])) if "_key" in board.columns else {}
     pos_of = dict(zip(board["_key"], board["position"])) if "_key" in board.columns else {}
     starters = {p: n for p, n in league.starters.items() if n and p in ("QB", "RB", "WR", "TE")}
     flex = league.starters.get("FLEX", 0)
+
+    def points(raw) -> float:
+        if raw is None:
+            return 0.0
+        value = float(raw)
+        return value if np.isfinite(value) else 0.0
+
     have: dict[str, list[float]] = {}
     for p in picks:
         key = norm_name(p["name"])
         given = p.get("proj_points")
         if given is None:
-            pos, value = pos_of.get(key) or p.get("position"), float(proj.get(key) or 0.0)
+            pos, value = pos_of.get(key) or p.get("position"), points(proj.get(key))
         else:
-            pos, value = p.get("position") or pos_of.get(key), float(given)
+            pos, value = p.get("position") or pos_of.get(key), points(given)
         if not pos:
             continue
         have.setdefault(str(pos), []).append(value)

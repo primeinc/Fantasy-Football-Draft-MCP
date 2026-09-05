@@ -121,6 +121,82 @@ All notable changes to this project. Format follows
   and settings survive (module globals are guarded with `globals().get` so a
   re-execution keeps them). Ends the reconnect-drops-the-watch cycle for code
   changes.
+**Same-name pairs and NaN projections in the replay**
+- `replay_draft` indexed the board by normalised name and added the taken name
+  to a set, so two board rows sharing a key were both removed when one was
+  taken, and the second pick of that name read `off_board`. Harmless while the
+  only duplicate was one player listed twice; not harmless now that the
+  position-aware market join lets a genuine same-name pair coexist as two rows
+  at different positions. It is keyed by board row, the same way
+  `counterfactual_draft` is, and the row-resolution helpers (`_key_rows`,
+  `_row_for`, `_rows_for_picks`) are shared between the two. A recorded pick
+  carries a name, so a duplicate is settled by the pick's own position and by
+  what earlier picks already took.
+- Verified as a pure refactor on the live 632-row board: `just replay` returns
+  identical numbers before and after (122 picks scored, 117 on board, Brier
+  0.128, log loss 0.412, blend 3.107 / top1 0.188).
+- `board.lineup_value` counted a NaN projection as NaN, not 0: NaN is truthy, so
+  `proj.get(key) or 0.0` handed the NaN straight back and one unprojected
+  starter turned a whole team's `starters_proj` into NaN. It is 0 now, which
+  under-counts by that player rather than destroying the total.
+
+**As-of market snapshots**
+- The replay's oldest stated limit was that projections and ADP are today's, not
+  as of the pick. ESPN keeps no history — no surface answers "what was his ADP
+  at pick 87" (`docs/data-sources.md`, "Draft history: what ESPN keeps") — so the
+  watch, the only process present while the draft runs, now records it.
+  `watch.write_snapshot` files the market for the players still available to
+  `~/.ffdraft/state/snapshots_<league>/<pick>.parquet`, keyed by the pick then on
+  the clock. Columns: `_key`, `player_id`, `adp`, `espn_rank`, `espn_proj`.
+- Written after INIT (the seed), after each SELECTED, and again on SELECTING —
+  ESPN naming the team that has just gone on the clock, which is the event this
+  wants rather than a state inferred after a different one, and which arrives
+  again when the clock reopens so the rewrite self-corrects. UNDONE deletes the
+  files for the rolled-back picks (`watch.drop_snapshots_above`): a snapshot of
+  a board state the draft backed out of would let a later replay price a pick
+  from a world that did not happen.
+- Each write re-reads the board through the watch's `refresh` callback.
+  `DraftWatch.board` is otherwise the board the watch was *constructed* with —
+  only `_recommendation` refreshed it, on the handful of picks near your own
+  turn — so without this every file held identical ADP while the coverage block
+  reported success: a silent failure that looks exactly like the feature
+  working. Caught in review by lena; the regression test refreshes the board
+  between two snapshots and asserts the two parquets differ.
+- Bounded at `watch.SNAPSHOT_ROWS` (300) rows per file, cheapest ADP first: a
+  full 16-team 14-round draft is 224 files and single-digit megabytes. A failed
+  write is logged and dropped, never raised — the socket loop must not lose a
+  pick to a snapshot — but not silent: the first failure pushes a
+  `snapshot_failed` channel event and then it stays quiet until a write
+  succeeds. `draft_room` and `stop_watch` report `as_of_snapshots` next to
+  `picks_seen`, so "picks_seen 122, as_of_snapshots 0" is one line to read.
+- `replay_draft(as_of=True, snapshots=...)` and `draft_replay(league_id=...,
+  as_of=true)` price each pick from its snapshot instead of today's board.
+  Coverage is reported, never assumed: the `as_of` block gives picks covered
+  (none exist before the watch first connected), the first and last covered
+  pick, the mean share of each pool the snapshot reached, and how often the
+  player actually taken was inside it, and every per-pick row carries `as_of`
+  and `as_of_pool_share` of its own. Uncovered rows keep today's numbers. The
+  block reports the snapshot directory's basename, not its absolute path, which
+  on a home directory carries the user's account name.
+- `watch.resolve_snapshots` treats a string that names a directory as a
+  directory rather than as a league id. `draft_replay` takes the argument over
+  MCP, where every value is a string, so a caller passing a path would otherwise
+  have read `STATE_DIR/snapshots_<the whole path>` and found nothing — reported
+  as "no snapshot" rather than as an error.
+- Documented in `docs/data-sources.md` ("As-of market snapshots") with the
+  column table and the bounds. Tested against `tests/fixtures/espn_draft_init.b64`
+  and a fake notify; no test opens the draft socket.
+- `just asof [league_id]` prints the coverage and the as-of replay against
+  today's. On the live record it reports 0 of 122 picks covered and says so
+  outright — the recorded draft predates this code, so there is nothing to read
+  and the two runs are identical, which is the right behaviour for an as-of
+  option with no snapshots. Positive control at real scale, against a
+  throwaway league id with ADP shifted +10 for picks 60 onward: coverage 63 of
+  122 (0.516, first 60, last 122), mean pool share 0.553 (300 rows of a ~540-row
+  pool), the player taken inside the snapshot 57 times, exactly 57 picks' `reach`
+  moved and every one by +10 (pick 61: 27.6 -> 37.6), pick 30 unchanged, survival
+  Brier 0.128 -> 0.143. 63 files, 870 KB, so a full 224-pick draft is about 3 MB.
+
 **Counterfactual replay**
 - `draft_counterfactual` (`replay.counterfactual_draft`, `just counterfactual
   [slot] [policy] [seed]`): the replay walk with the model intervening. At each
