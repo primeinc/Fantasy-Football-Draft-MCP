@@ -902,7 +902,8 @@ def weekly_lineup_points(names: list[str], season: int, league, weeks: int = 14)
 
 
 def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
-                 bye_weight: float = 0.08, top_n: int = 5, seed: int = 0) -> dict:
+                 bye_weight: float = 0.08, top_n: int = 5, seed: int = 0,
+                 progress=None) -> dict:
     """Does penalising bye-week stacks win more weekly lineup points?
 
     Paired Monte Carlo: for each season and seed, one mock draft with
@@ -917,8 +918,13 @@ def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
 
     sc_label = "ppr" if float(league.scoring.rec) >= 0.9 else \
                "half_ppr" if float(league.scoring.rec) >= 0.35 else "standard"
+    def say(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
     per_season = []
     for season in seasons:
+        say(f"{season}: building leak-free board")
         tbl = model.build_player_table(league, weights, season=season)
         proj = model.project(tbl, league, weights)
         adp = bd.load_adp(season=season, superflex=bool(getattr(league, "superflex", 0)))
@@ -939,8 +945,16 @@ def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
                                                   top_n, bye_weight=bye_weight)]
             base.append(weekly_lineup_points(names_a, season, league))
             tuned.append(weekly_lineup_points(names_b, season, league))
+            pa_run = np.mean([x["points"] for x in base])
+            pb_run = np.mean([x["points"] for x in tuned])
+            changed = sorted(set(names_b) - set(names_a))
+            say(f"{season} trial {trial + 1}/{n_trials}: no-penalty {base[-1]['points']:.1f} "
+                f"vs penalty {tuned[-1]['points']:.1f}; running means {pa_run:.1f} vs {pb_run:.1f}"
+                + (f"; penalty swapped in {changed}" if changed else "; identical rosters"))
         pa = np.array([x["points"] for x in base])
         pb = np.array([x["points"] for x in tuned])
+        say(f"{season} done: improvement {float((pb - pa).mean()):+.1f} weekly pts, "
+            f"{int((pb > pa).sum())}/{n_trials} trials improved")
         per_season.append({
             "season": season, "n_trials": n_trials,
             "weekly_points_no_penalty": round(float(pa.mean()), 1),

@@ -855,10 +855,20 @@ def bye_backtest(seasons: str = "2022,2023,2024,2025", n_trials: int = 20,
     each regular-season week on real box scores. Positive improvement means the
     penalty earns its keep and belongs in model_settings for this league.
     """
+    import logging
+
     league, weights = _settings()
     yrs = [int(s) for s in seasons.split(",") if s.strip()]
-    return json.dumps(adp_mod.bye_backtest(league, weights, yrs, n_trials=n_trials,
-                                           bye_weight=bye_weight), indent=2, default=str)
+    lines: list[str] = []
+
+    def progress(msg: str) -> None:
+        lines.append(msg)
+        logging.getLogger(__name__).info("bye_backtest: %s", msg)
+
+    out = adp_mod.bye_backtest(league, weights, yrs, n_trials=n_trials,
+                               bye_weight=bye_weight, progress=progress)
+    out["progress"] = lines
+    return json.dumps(out, indent=2, default=str)
 
 
 @mcp.tool()
