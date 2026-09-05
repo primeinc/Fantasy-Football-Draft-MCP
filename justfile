@@ -23,6 +23,51 @@ data:
 serve:
     {{ python }} -m ffdraft.server
 
+# Standalone draft watch for one ESPN league: keeps the pick state current and
+# logs every event to ~/.ffdraft/state/watch_<league>.log without Claude attached.
+# Cookies come from .mcp.json. Ctrl+C stops it. Pauses if you open the draft room.
+[script]
+watch $league_id:
+    import asyncio
+    import datetime
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import board as bd
+    from ffdraft import server, watch
+    from ffdraft.config import CURRENT_SEASON, STATE_DIR
+
+    league_id = os.environ["league_id"]
+    season = int(os.environ.get("FFDRAFT_SEASON", CURRENT_SEASON))
+    swid, s2 = env["ESPN_SWID"], env["ESPN_S2"]
+    info = bd.espn_league_context(league_id, season, swid, s2)
+    if info["my_team_id"] is None:
+        sys.exit("no team owned by ESPN_SWID in this league")
+    league, weights = server._settings()
+    log_path = STATE_DIR / f"watch_{league_id}.log"
+
+    async def notify(content, meta):
+        line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {meta.get('event', '')}: {content}"
+        print(line, flush=True)
+        with open(log_path, "a", encoding="utf-8", newline="") as fh:
+            fh.write(line + "\n")
+
+    w = watch.DraftWatch(league_id, season, int(info["my_team_id"]), swid, s2, league,
+                         server._build_board(), notify,
+                         directory=bd.espn_league_directory(league_id, season, swid, s2),
+                         bye_weight=weights.bye,
+                         refresh=lambda: (server._build_board(), server._settings()[1].bye))
+    print(f"watching league {league_id} as team {info['my_team_id']} (slot {info['draft_slot']}); "
+          f"log {log_path}", flush=True)
+    try:
+        asyncio.run(w.run())
+    except KeyboardInterrupt:
+        print("stopped", flush=True)
+
 # Probe every external data surface; see docs/data-sources.md
 [script]
 surfaces:

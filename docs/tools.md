@@ -140,7 +140,18 @@ reads the last echo on this connection.
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
 watch's socket, exactly what the draft room sends, and waits up to ten seconds
 for ESPN's `SELECTED`. Irreversible once accepted. Claude confirms the player
-with you before calling it.
+with you before calling it. Names resolve through the board, then the ESPN
+crosswalk (kickers and unmodelled players), then team defenses by city,
+nickname or "X D/ST", so rounds 13 and 14 work too.
+
+`sync_draft` refuses while a watch is connected for the league; the watch already
+keeps the state current, and a resync would rewrite the same file under it.
+
+### `just watch <league_id>`
+The same watch as a standalone process, for a slow draft that outlives a Claude
+session. Logs every event to `~/.ffdraft/state/watch_<league>.log` and keeps the
+pick state current so `who_should_i_pick` is right when you come back. Pauses if
+you open the draft room, like the tool.
 
 ### `record_pick` / `undo_pick` / `reset_draft` / `draft_status`
 Manual board management. `record_pick` accepts shorthand.

@@ -240,6 +240,28 @@ class TestAuditState:
         assert "drafted players in recommendations: ['A.J. Brown']" in out["failures"]
 
 
+class TestResolveEspnId:
+    def _board(self):
+        return board.rekey(pd.DataFrame({"name": ["Jakobi Meyers", "DJ Moore"],
+                                         "position": ["WR", "WR"]}))
+
+    def test_board_player_via_crosswalk(self):
+        espn_map = {"3916433": "Jakobi Meyers", "3953687": "Brandon Aubrey"}
+        assert board.resolve_espn_id("Meyers", self._board(), espn_map) == (3916433, "Jakobi Meyers")
+
+    def test_kicker_off_board_via_crosswalk(self):
+        espn_map = {"3916433": "Jakobi Meyers", "3953687": "Brandon Aubrey"}
+        assert board.resolve_espn_id("brandon aubrey", self._board(), espn_map) == (3953687, "Brandon Aubrey")
+
+    def test_defense_by_city_nickname_or_dst(self):
+        for q in ("Denver Broncos D/ST", "Broncos", "denver", "Denver DST"):
+            assert board.resolve_espn_id(q, self._board(), {}) == (-16007, "Denver Broncos D/ST"), q
+
+    def test_unknown_is_a_reason_not_a_crash(self):
+        pid, why = board.resolve_espn_id("Nobody Real", self._board(), {})
+        assert pid is None and "Nobody Real" in why
+
+
 class TestRekey:
     def test_stale_cached_keys_are_recomputed(self):
         # A board cached before the initials fix stored "a j brown"; live draft

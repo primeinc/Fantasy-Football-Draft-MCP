@@ -37,9 +37,13 @@ RECOMMEND_WITHIN = 3
 class DraftWatch:
     def __init__(self, league_id: str, season: int, team_id: int, swid: str, espn_s2: str,
                  league: LeagueSettings, board_df, notify: Notify,
-                 directory: dict[int, dict] | None = None, bye_weight: float = 0.0) -> None:
+                 directory: dict[int, dict] | None = None, bye_weight: float = 0.0,
+                 refresh: Callable[[], tuple] | None = None) -> None:
         self.league_id = league_id
         self.bye_weight = bye_weight
+        # Returns (board, bye_weight) as they are NOW; without it the watch keeps
+        # recommending off the board it was started with.
+        self.refresh = refresh
         # ESPN team id -> {"name": team name, "owners": [display names]}.
         self.directory = directory or {}
         # ESPN team id -> whether an owner is in the draft room. Seeded from the
@@ -269,6 +273,10 @@ class DraftWatch:
                                  "pick": str(overall), "picks_until_my_turn": str(until)})
 
     def _recommendation(self) -> str:
+        if self.refresh is not None:
+            self.board, self.bye_weight = self.refresh()
+        if self.board is None:
+            return "No recommendation: no board."
         b = self.board.copy()
         b["drafted"] = b["_key"].isin(self.state.taken_keys())
         nxt = self.state.next_pick_for_me()

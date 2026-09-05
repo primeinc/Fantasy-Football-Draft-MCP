@@ -28,6 +28,11 @@ All notable changes to this project. Format follows
   from the snapshot's online flags and the JOINED/LEFT/CHAT lines.
 - `draft_queue` / `set_draft_queue`: read and replace the ESPN pick queue over the
   socket (`DRAFT_LIST`), so autopick has your plan if you miss the clock.
+- `board.resolve_espn_id`: name -> ESPN id through the board, the crosswalk
+  (kickers), and team defenses; used by `make_pick` and `set_draft_queue`.
+- The watch re-reads the board and bye weight for every pushed recommendation;
+  `sync_draft` refuses while a watch is connected; `just watch <league_id>` runs
+  the watch standalone with a log file.
 
 **Draft audit**
 - `draft_audit` checks the invariants between board, draft state and

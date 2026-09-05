@@ -566,6 +566,31 @@ def espn_maps(xwalk: pd.DataFrame | None = None) -> tuple[dict, dict]:
     return names, positions
 
 
+def resolve_espn_id(name: str, board: pd.DataFrame, espn_map: dict) -> tuple[int | None, str]:
+    """Free-text name -> ESPN player id, for SELECT and DRAFT_LIST.
+
+    Board first (modelled players, fuzzy), then the crosswalk by normalised name
+    (kickers and unmodelled players), then team defenses by city, nickname or
+    "X D/ST". Returns (id, resolved name) or (None, reason)."""
+    if "name" in board.columns and "position" in board.columns and len(board):
+        row = match_player(name, board)
+        if row is not None:
+            key = norm_name(row["name"])
+            pid = next((p for p, nm in espn_map.items() if norm_name(nm) == key), None)
+            if pid is not None:
+                return int(pid), str(row["name"])
+    key = norm_name(name)
+    pid = next((p for p, nm in espn_map.items() if norm_name(nm) == key), None)
+    if pid is not None:
+        return int(pid), str(espn_map[pid])
+    wanted = key.replace(" d st", "").replace(" dst", "").replace(" defense", "").strip()
+    for team_id, full in _ESPN_PRO_TEAMS.items():
+        parts = norm_name(full).split()
+        if wanted in (norm_name(full), parts[-1], " ".join(parts[:-1])):
+            return -(16000 + team_id), f"{full} D/ST"
+    return None, f"no board, crosswalk or defense match for '{name}'"
+
+
 def _espn_player_position(pid: int, pos_map: dict) -> str | None:
     if pid < 0:
         return "DST"

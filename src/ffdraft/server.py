@@ -405,6 +405,11 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
       needs those cookies and briefly disconnects the browser draft room.
     platform="paste" with pasted_board -- paste the drafted list from any site.
     """
+    entry = _WATCHES.get(str(league_id))
+    if entry is not None and entry[0].connected:
+        return json.dumps({"error": "a draft watch is connected for this league and keeps the "
+                                    "board current; stop_watch first if you really want a resync",
+                           **entry[0].state.summary()})
     state = _state()
     b = _build_board()
     platform = platform.lower()
@@ -1310,7 +1315,8 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
         directory = bd.espn_league_directory(league_id, season, swid, espn_s2)
         w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
                              league, board_df, notify, directory=directory,
-                             bye_weight=weights.bye)
+                             bye_weight=weights.bye,
+                             refresh=lambda: (_build_board(), _settings()[1].bye))
     except Exception as exc:
         # The MCP SDK hides tool tracebacks behind "Error executing tool".
         return json.dumps({"error": f"{type(exc).__name__}: {exc}",
@@ -1338,14 +1344,9 @@ async def make_pick(league_id: str, player_name: str) -> str:
     w, err = _watch_or_error(league_id)
     if err:
         return err
-    b = _build_board()
-    row = bd.match_player(player_name, b)
-    if row is None:
-        return json.dumps({"error": f"no board match for '{player_name}'"})
-    key = bd.norm_name(row["name"])
-    espn_id = next((pid for pid, nm in w.espn_map.items() if bd.norm_name(nm) == key), None)
+    espn_id, resolved = bd.resolve_espn_id(player_name, _build_board(), w.espn_map)
     if espn_id is None:
-        return json.dumps({"error": f"no ESPN id for '{row['name']}' in the crosswalk"})
+        return json.dumps({"error": resolved})
     s = w.state.summary()
     if s["on_the_clock"] != s["my_next_pick"]:
         return json.dumps({"error": f"not your turn: pick {s['on_the_clock']} is on the clock, "
@@ -1357,7 +1358,7 @@ async def make_pick(league_id: str, player_name: str) -> str:
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}",
                            "traceback": traceback.format_exc()})
-    return json.dumps({"picked": accepted, "resolved_from": player_name,
+    return json.dumps({"picked": accepted, "resolved": resolved, "resolved_from": player_name,
                        **w.state.summary()}, indent=2)
 
 
@@ -1403,13 +1404,11 @@ async def set_draft_queue(league_id: str, player_names: str) -> str:
     b = _build_board()
     ids, unresolved = [], []
     for raw in [n.strip() for n in player_names.split(",") if n.strip()]:
-        row = bd.match_player(raw, b)
-        key = bd.norm_name(row["name"]) if row is not None else None
-        pid = next((p for p, nm in w.espn_map.items() if key and bd.norm_name(nm) == key), None)
+        pid, why = bd.resolve_espn_id(raw, b, w.espn_map)
         if pid is None:
-            unresolved.append(raw)
+            unresolved.append(why)
         else:
-            ids.append(int(pid))
+            ids.append(pid)
     if unresolved:
         return json.dumps({"error": "unresolved names; nothing sent", "unresolved": unresolved})
     try:
