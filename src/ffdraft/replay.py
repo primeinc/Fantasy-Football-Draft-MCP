@@ -902,3 +902,35 @@ def _overall(per_pick: pd.DataFrame, forecasts: list[tuple[float, bool, int, str
         "biggest_regrets": on.sort_values("pick_regret", ascending=False).head(5)[
             ["pick", "slot", "actual", "model_pick", "pick_regret"]].to_dict(orient="records"),
     }
+
+
+# What a reader of draft_replay uses per pick. The full row carries eighteen
+# fields and the predictor rows carry every predictor's rank and log loss for
+# every pick; on the live board that came to 201,673 characters, ten times the
+# client's cap, and reached the client only because the exit trimmed it.
+COMPACT_PICK_KEYS = ("pick", "round", "slot", "actual", "position", "actual_rank",
+                     "model_pick", "proj_gap", "reach", "off_board", "as_of")
+DEFAULT_PICK_WINDOW = 32
+
+
+def compact_for_client(out: dict, picks: int = 0, detail: bool = False) -> dict:
+    """Shape a replay for the client: the last `picks` rows with the compact
+    keys, per-team totals, the predictor score sheet without its per-pick rows.
+
+    `detail=True` returns everything. `picks=0` means the default window, not
+    all of them; every row is still computed and totals are over all of them,
+    so a trimmed payload is a view of the same replay rather than a shorter
+    replay. `showing` says what was cut.
+    """
+    if detail:
+        return out
+    rows = out.get("picks") or []
+    window = picks if picks > 0 else DEFAULT_PICK_WINDOW
+    shown = rows[-window:] if window < len(rows) else rows
+    slim = dict(out)
+    slim["picks"] = [{k: r[k] for k in COMPACT_PICK_KEYS if k in r} for r in shown]
+    slim.pop("predictor_rows", None)
+    slim["showing"] = (f"last {len(shown)} of {len(rows)} picks with the compact keys; "
+                       f"predictor rows omitted, their score sheet is `predictors`; "
+                       f"pass detail=true for every field")
+    return slim

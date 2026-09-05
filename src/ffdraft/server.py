@@ -2651,15 +2651,18 @@ def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
 
 
 @mcp.tool()
-def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> str:
+def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False,
+                 detail: bool = False) -> str:
     """Replay every recorded pick through the model for the team that made it:
     the model's choice at that moment, the model's rank of the real pick,
     projected points left on the table, and the reach against ADP. Totals per
     team, and the survival model's calibration (predicted vs observed odds a
     player lasted to that team's next pick, with Brier score against the base
-    rate). `picks` limits the per-pick rows returned (0 = all). Projections
-    and ADP are today's; kickers, defenses and unmodelled players are
-    `off_board`.
+    rate). `picks` is how many of the latest per-pick rows to return, 32 by default,
+    with the compact keys; `detail=true` returns every row with every field
+    and the per-pick predictor rows, which on a full room is ten times the
+    client's cap. Projections and ADP are today's; kickers, defenses and
+    unmodelled players are `off_board`.
 
     With `as_of` each pick is priced from the market snapshot the watch wrote
     when that pick was on the clock — ESPN's ADP, PPR rank and projection as
@@ -2687,9 +2690,8 @@ def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> st
         labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
         for t in out["teams"]:
             t["team"] = labels.get(t["slot"], f"slot {t['slot']}")
-    if picks:
-        out["picks"] = out["picks"][-picks:]
-    return _emit(out, indent=2, default=str)
+    return _emit(replay.compact_for_client(out, picks=picks, detail=detail),
+                 indent=2, default=str)
 
 
 @mcp.tool()
