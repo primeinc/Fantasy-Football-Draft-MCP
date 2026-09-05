@@ -1138,37 +1138,42 @@ All notable changes to this project. Format follows
   original numbers (+5.8, +7.0, -19.2, -2.0, -2.1 overall) were one block each
   and are superseded. 2022-2025, 12 paired drafts per block, weight 0.08:
 
+  Measured at 854b5da, the head that carries #26.
+
   | season | blocks | spread | agree | trials it changed |
   |---|---|---|---|---|
-  | 2022 | +8.1, +6.3 | 1.8 | yes | 3 of 5 improved |
-  | 2023 | +3.8, +7.9 | 4.1 | yes | 5 of 6 improved |
-  | 2024 | **-17.0, +3.0** | **20.0** | **no** | 5 of 15 improved |
-  | 2025 | -5.8, -35.4 | 29.6 | yes | 3 of 10 improved |
+  | 2022 | **-3.3, +4.7** | 8.0 | **no** | 3 of 8 improved |
+  | 2023 | **+5.9, -4.6** | 10.5 | **no** | 5 of 7 improved |
+  | 2024 | **-27.7, +4.1** | 31.8 | **no** | 4 of 11 improved |
+  | 2025 | -19.3, -35.1 | 15.8 | yes | 3 of 11 improved |
 
-  Overall -3.7, worst block spread 29.6, `blocks_agree` false. **The bye weight
-  stays 0**, and now for a reason the numbers support: 2024's two blocks of the
-  same configuration disagree in sign by 20 points, so the season that drove the
-  original conclusion is inside the harness's own noise. The old -19.2 for 2024
-  was one block of a pair whose other half is +3.0 — the single-block form could
-  not have shown that, which is the whole argument for reporting blocks.
-  Two things the block view adds beyond the verdict. The spread tracks how often
-  the penalty fires: 1.8 in 2022 where it changed 5 rosters against 29.6 in 2025
-  where it changed 10 of 24, so `block_spread` is a property of the term and the
-  harness together and `trials_changed` is what tells them apart. And the
-  penalty is close to inert — it changed 5, 6, 15 and 10 rosters out of 24 — so
-  most of these paired trials are ties, which is why `trials_improved_of_changed`
-  is reported instead of a win rate over all trials.
-  Even the two seasons whose blocks agree carry `blocks_agree_p_null` 0.5: two
-  blocks of a term that does nothing agree half the time, so agreement here is
-  an observation and not a pass. The conflicts stay informational.
-  **Baseline for those four rows: the model before #26.** `bye_backtest` runs
-  every trial through `recommend`, and #26 changed
-  `expected_best_at_next_pick`, so `marginal_value` moves for every position on
-  every board and these numbers will not reproduce exactly on a head that has
-  it. The change is far inside a spread that reaches 29.6, so nothing here is
-  expected to flip — but "expected" is the word this whole entry exists to
-  distrust, and the table should be re-run against the integrated head before
-  anyone quotes it as current. Flagged by marge, who made the change.
+  Overall -9.4, worst block spread 31.8, `blocks_agree` false. **The bye weight
+  stays 0.** The verdict is a sign observation and nothing more: three of the
+  four seasons have two blocks of the same configuration pointing opposite ways,
+  by 8.0, 10.5 and 31.8 weekly points. Only 2025 agrees, both blocks negative,
+  and it carries `blocks_agree_p_null` 0.5 — two blocks of a term that does
+  nothing agree half the time, so one season agreeing is one coin flip and is not
+  a pass. No magnitude here is supported by anything.
+  The penalty is close to inert throughout, changing 8, 7, 11 and 11 rosters out
+  of 24, so most of these paired trials are ties. That is why
+  `trials_improved_of_changed` is reported rather than a win rate over all
+  trials, and it is why `block_spread` has to be read beside `trials_changed`:
+  the spread belongs to the term and the harness together, not to the harness
+  alone.
+- **Re-running that table across #26 flipped two of the four seasons, and the
+  prediction that it would not was mine.** The rows above replace a set measured
+  before `expected_best_at_next_pick` changed, which I had stamped with "the
+  change is far inside a spread that reaches 29.6, so nothing here is expected to
+  flip". 2022 went from `[+8.1, +6.3]` agreeing to `[-3.3, +4.7]` disagreeing and
+  2023 from `[+3.8, +7.9]` to `[+5.9, -4.6]`, so the count of seasons whose
+  blocks disagree went from one to three; the overall figure moved -3.7 to -9.4.
+  `bye_backtest` runs every trial through `recommend`, so a change to the
+  fallback moves `marginal_value` on every board and the harness is a different
+  harness. The conclusion is unchanged and in fact rests on more seasons than
+  before, but the numbers behind it did not survive, and "far inside the noise"
+  was a prediction about a distribution nobody had measured across that change.
+  Flagged by marge. Every number this harness produces is a claim about one
+  commit; `docs/methodology.md` says so, and this entry is why.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 
