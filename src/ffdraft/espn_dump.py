@@ -177,6 +177,20 @@ def _write_live(live_dir: Path, manifest: dict, init_b64: str,
         manifest["errors"].append(
             f"state.json: {len(unparsed)} pick events in lines.jsonl could not be parsed")
 
+    # The queue is live state too, and the only place it exists is the event log:
+    # INIT does not carry it and the read API never sees it. It is its own file
+    # because a DRAFT_LIST changes nobody's picks -- folding it into the pick
+    # reducer would move pick numbers that ESPN did not move.
+    queue = espn_live.queue_from_lines(wire)
+    echoes = sum(1 for line in wire if line.split(" ")[0] == "DRAFT_LIST")
+    (live_dir / "queue.json").write_text(json.dumps(
+        {"queue": queue, "echoes": echoes,
+         "note": None if queue is not None else
+                 "ESPN sent no DRAFT_LIST on this connection; the queue is unknown, "
+                 "which is not the same as empty"}, indent=1), encoding="utf-8")
+    manifest["live"].append({"file": "queue.json", "as_of": "now", "echoes": echoes,
+                             "players": None if queue is None else len(queue)})
+
     with (live_dir / "lines.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
         for ts, line in lines:
             fh.write(json.dumps({"ms": ts, "line": line}) + "\n")

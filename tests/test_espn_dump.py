@@ -174,6 +174,29 @@ class TestCurrentState:
         assert state[-1]["player_id"] == 4362628
         assert len(_read(root, "picks.json")) == joined
 
+    def test_the_pick_queue_is_materialised_without_moving_a_pick(self, api, tmp_path):
+        """DRAFT_LIST is the queue echo. It is live state that exists nowhere but
+        the event log, and it changes nobody's picks."""
+        joined = len(espn_live.picks_from_init(espn_live.decode_init(FIXTURE.read_text().strip())))
+        m, root, live = _dump(tmp_path, [(1, "DRAFT_LIST 3916433 4569587"),
+                                         (2, "SELECTED 3 3916433 10 {A}"),
+                                         (3, "DRAFT_LIST 4569587 -16034")])
+
+        assert _read(root, "queue.json")["queue"] == [4569587, -16034]
+        assert live["queue.json"] == {"file": "queue.json", "as_of": "now",
+                                      "echoes": 2, "players": 2}
+        # One SELECTED among three lines: the two DRAFT_LISTs moved nothing.
+        assert len(_read(root, "state.json")) == joined + 1
+        assert live["state.json"]["events_applied"] == 1
+
+    def test_a_queue_espn_never_echoed_is_unknown_not_empty(self, api, tmp_path):
+        m, root, live = _dump(tmp_path, [(1, "SELECTED 10 -16001 16")])
+
+        queue = _read(root, "queue.json")
+        assert queue["queue"] is None and queue["echoes"] == 0
+        assert "not the same as empty" in queue["note"]
+        assert live["queue.json"]["players"] is None
+
     def test_an_unparsable_pick_event_is_counted_not_dropped(self, api, tmp_path):
         m, root, live = _dump(tmp_path, [(1, "SELECTED 10 -16001 16"),
                                          (2, "SELECTED whoever 4362628 4")])

@@ -544,6 +544,13 @@ or `selected`. Every `live` entry in the manifest states the pick count it is
 as-of, so the join number and the current number are never read as the same
 figure; `state.json` also reports `events_applied` and `events_unparsed`.
 
+`live/queue.json` is your pick queue as ESPN last echoed it (`DRAFT_LIST`, the
+whole queue after any add, remove or reorder). It is the other piece of live
+state that exists nowhere else: `INIT` does not carry it and the read API never
+sees it. A `queue` of `null` means ESPN echoed none on this connection, which is
+not the same as a cleared queue (`[]`). A `DRAFT_LIST` changes nobody's picks,
+so it is its own file rather than an input to the pick replay.
+
 `live/reconcile.json` compares the current state against `read_api/mDraftDetail.json`
 and its `status` is one of:
 

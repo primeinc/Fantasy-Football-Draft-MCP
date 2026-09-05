@@ -670,6 +670,24 @@ def replay_picks(init: DraftInit, lines: Iterable[str]) -> list[dict]:
     return picks
 
 
+def queue_from_lines(lines: Iterable[str]) -> list[int] | None:
+    """Our pick queue as ESPN last echoed it, or None if it never did.
+
+    `DRAFT_LIST <playerId> ...` is the room's echo of the whole queue after any
+    add, remove or reorder, so the last one seen is the queue; an empty one is a
+    cleared queue, which is why "never echoed" is None and not `[]`. This is the
+    watch's own parse (`DraftWatch.handle_line`), and the queue is the other
+    piece of live state that exists nowhere but the event log: INIT does not
+    carry it and the read API never sees it.
+    """
+    queue: list[int] | None = None
+    for line in lines:
+        fields = line.split(" ")
+        if fields[0] == "DRAFT_LIST":
+            queue = [int(f) for f in fields[1:] if f.lstrip("-").isdigit()]
+    return queue
+
+
 def slot_by_team(init: DraftInit) -> dict[int, int]:
     """ESPN team id -> 1-based draft slot. `draft_position` is zero-based in the
     snapshot: the team that picks first carries 0."""

@@ -391,3 +391,18 @@ class TestReplayPicks:
         replayed = espn_live.replay_picks(init, ["SELECTED nobody 1 2", "SELECTED 3 4362628 4"])
         assert len(replayed) == made + 1
         assert replayed[-1]["overall"] == made + 1
+
+
+class TestQueueFromLines:
+    def test_the_last_echo_is_the_queue(self):
+        # ESPN echoes the whole queue after every add, remove and reorder.
+        assert espn_live.queue_from_lines([
+            "DRAFT_LIST 3916433 4569587 4429205",
+            "SELECTED 3 3916433 10 {A}",
+            "DRAFT_LIST 4569587 4429205 -16034"]) == [4569587, 4429205, -16034]
+
+    def test_never_echoed_is_unknown_not_empty(self):
+        assert espn_live.queue_from_lines(["CLOCK 30", "SELECTED 3 1 2"]) is None
+
+    def test_a_cleared_queue_is_an_empty_list(self):
+        assert espn_live.queue_from_lines(["DRAFT_LIST 1 2", "DRAFT_LIST"]) == []

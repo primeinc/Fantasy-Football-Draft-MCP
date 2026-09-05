@@ -1195,6 +1195,10 @@ All notable changes to this project. Format follows
   replays them (and `UNDONE`) with the arithmetic the watch runs on live state;
   `init.json` and `picks.json` stay the join snapshot, and every `live` entry in
   the manifest states the pick count it is as-of.
+- `live/queue.json`: the pick queue as ESPN last echoed it (`DRAFT_LIST`), the
+  other piece of live state carried only by the event log -- INIT does not hold
+  it and the read API never sees it. `null` is "never echoed", distinct from a
+  cleared queue. Its own file: a `DRAFT_LIST` moves no picks.
 - `live/reconcile.json`: the live state checked against `mDraftDetail`, naming
   any pick in one and not the other. `status: blind` covers the read API's
   mid-draft behaviour (every slot at `playerId` -1 until the draft completes),
