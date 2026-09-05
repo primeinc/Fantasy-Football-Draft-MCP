@@ -360,9 +360,12 @@ def who_should_i_pick(limit: int = 6) -> str:
 
     roster = state.my_roster(b)
     _, weights = _settings()
+    from .replay import room_drift
+
+    drift = room_drift(b, state)
     recs = model.recommend(b, league, current_pick=current, next_pick=after,
                            roster=roster, top_n=limit, mine=state.my_rows(b),
-                           bye_weight=weights.bye)
+                           bye_weight=weights.bye, adp_shift=drift["median_reach"])
 
     picks = []
     for _, r in recs.iterrows():
@@ -386,6 +389,8 @@ def who_should_i_pick(limit: int = 6) -> str:
         "your_next_pick_after_this": after,
         "picks_you_wait": (after - current) if after else None,
         "your_roster": roster,
+        "room_drift": {**drift, "note": "median picks before ADP this room drafts; "
+                                        "survival odds are shifted by it"},
         "recommendations": picks,
         "headline": (f"Take {picks[0]['player']} — {picks[0]['why']}" if picks else "Board empty"),
     }, indent=2)
@@ -1452,6 +1457,35 @@ async def draft_room(league_id: str, chat_limit: int = 10) -> str:
         return json.dumps({"error": "no active watch for this league; call watch_draft first"})
     w, _task = entry
     return json.dumps(w.room(chat_limit), indent=2, default=str)
+
+
+@mcp.tool()
+def draft_replay(league_id: str = "", picks: int = 0) -> str:
+    """Replay every recorded pick through the model for the team that made it:
+    the model's choice at that moment, the model's rank of the real pick,
+    projected points left on the table, and the reach against ADP. Totals per
+    team, and the survival model's calibration (predicted vs observed odds a
+    player lasted to that team's next pick, with Brier score against the base
+    rate). `picks` limits the per-pick rows returned (0 = all). Projections
+    and ADP are today's; kickers, defenses and unmodelled players are
+    `off_board`."""
+    from . import replay
+
+    state = _state()
+    b = _build_board()
+    league = _settings()[0]
+    drift = replay.room_drift(b, state)["median_reach"]
+    out = replay.replay_draft(b, state, league, adp_shift=drift)
+    out["calibration_without_shift"] = replay.replay_draft(b, state, league)["overall"]
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None:
+        w, _task = entry
+        labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
+        for t in out["teams"]:
+            t["team"] = labels.get(t["slot"], f"slot {t['slot']}")
+    if picks:
+        out["picks"] = out["picks"][-picks:]
+    return json.dumps(out, indent=2, default=str)
 
 
 @mcp.tool()

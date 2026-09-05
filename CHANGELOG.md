@@ -51,6 +51,20 @@ All notable changes to this project. Format follows
   (`espn` / `consensus` / `modelled`); a board cached under consensus is
   repriced in place on the next load (`server._price_board`).
 
+**Draft replay and room drift**
+- `draft_replay` (`replay.py`, `just replay`): every pick re-run through the
+  model for the team on the clock; model rank of the real pick, points left
+  on the table, reach against ADP, per-team totals, and the survival model's
+  calibration and Brier score from the forecasts it made during the draft.
+- `replay.room_drift`: median picks before ADP the room drafts. `recommend`
+  takes `adp_shift` and `who_should_i_pick` and the watch pass the drift, after
+  the replay showed the unshifted odds overconfident (predicted 0.71, observed
+  0.53 in that bin; shifted by the room's 4 picks: 0.71 vs 0.63, Brier 0.140
+  to 0.136).
+- `role_multiplier` also scales up, by 1.3, when ESPN projects over 130% of
+  the model: the replay showed the room taking players the model ranked past
+  300 whose 2026 role is new (KC Concepcion 156 vs 102, Aaron Jones 178 vs 103).
+
 **Room order and team strength**
 - `draft_room.upcoming`: the next five picks with team and owner names, room
   presence and whether the pick is yours (`DraftWatch.upcoming`).

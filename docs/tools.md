@@ -75,7 +75,12 @@ scoring, and `espn_injury`, when ESPN ADP is configured. ESPN's projection reads
 the current depth chart; the model's reads last season's box scores. When ESPN
 projects under 70% of the model's number the player's role has changed (a
 backup now, a new team, an injury the model cannot see) and `pick_value` is
-scaled by the ratio (`model.role_multiplier`, floor 0.2); `why` says so.
+scaled by the ratio (`model.role_multiplier`, floor 0.2); above 130% the role
+has grown (a rookie or new starter the box scores lag) and it is scaled by
+1.3; `why` says which. `room_drift` is the median number of picks before ADP
+this room has been taking players (`replay.room_drift`); survival odds are
+computed against ADP minus it, which the replay's calibration showed brings
+predicted and observed survival into line.
 `draft_audit` warns on every recommended player in that state and on players
 ESPN does not project at all.
 
@@ -114,6 +119,20 @@ Who is in the ESPN draft room right now and the latest room chat, from the runni
 watch's socket, with team and owner names from the league member list. `upcoming`
 lists the next five picks in order: pick number, slot, team and owner, whether
 that team is in the room, and whether the pick is yours.
+
+### `draft_replay`
+Every recorded pick replayed through the model for the team that made it, with
+that team's roster and the pool as it stood. Per pick: the model's choice, the
+model's rank of the real pick, `proj_gap` (model choice minus actual, projected
+points), and `reach` (ADP minus pick number; positive means taken early). Per
+team: matches, top-3 hits, mean rank, `proj_left_on_table`, mean reach,
+`off_board` count. Overall: match and top-3 rates, the survival model's
+calibration (predicted vs observed odds that the model's top candidates lasted
+to that team's next pick, by probability bin) and Brier score against the base
+rate, plus the biggest reaches and values. The calibration is reported with the
+room's drift applied and, as `calibration_without_shift`, without it.
+Projections and ADP are today's, not as of the pick. `picks` caps the per-pick
+rows (0 = all). `just replay [picks]` prints the same without a server.
 
 ### `draft_strength`
 Every team's draft so far ranked by projected starter points: the best lineup

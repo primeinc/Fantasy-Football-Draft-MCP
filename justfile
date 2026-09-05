@@ -68,6 +68,51 @@ watch $league_id:
     except KeyboardInterrupt:
         print("stopped", flush=True)
 
+# Replay the recorded draft through the model: per-team totals, calibration of
+# the survival odds, biggest reaches and values. Same numbers as the draft_replay
+# tool, without a server. $picks limits the per-pick rows printed (0 = none).
+[script]
+replay $picks='0':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import replay, server
+
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    drift = replay.room_drift(b, st)
+    print(f"room drift: median {drift['median_reach']} picks before ADP (mean {drift['mean_reach']}, n {drift['n']})")
+    for shift in (0.0, drift["median_reach"]):
+        out = replay.replay_draft(b, st, league, adp_shift=shift)
+        o = out["overall"]
+        print(f"== adp_shift {shift}")
+        print(f"survival forecasts {o['survival_forecasts']}  brier {o['survival_brier']}  baseline {o['survival_brier_baseline']}")
+        for c in o["survival_calibration"]:
+            print(f"  p {c['p_range']}  n {c['n']:>4}  predicted {c['predicted']:.2f}  observed {c['observed']:.2f}")
+    print(f"picks scored {out['picks_scored']}  on board {o['on_board_picks']}  off board {o['off_board_picks']}")
+    print(f"model match rate {o['model_match_rate']}  top-3 rate {o['top3_rate']}  median rank {o['median_rank']}")
+    print("teams (least projected points left on the table first)")
+    for t in out["teams"]:
+        me = " <- you" if t["mine"] else ""
+        print(f"  slot {t['slot']:>2}  picks {t['picks']}  matches {t['model_matches']}  top3 {t['top3']}  "
+              f"mean rank {t['mean_rank']}  off board {t['off_board']}  left on table {t['proj_left_on_table']:>7}  "
+              f"mean reach {t['mean_reach']}{me}")
+    print("biggest reaches (ADP - pick)")
+    for r in o["biggest_reaches"]:
+        print(f"  pick {r['pick']:>3} slot {r['slot']:>2} {r['actual']:<28} {r['reach']:>7}")
+    print("biggest values")
+    for r in o["biggest_values"]:
+        print(f"  pick {r['pick']:>3} slot {r['slot']:>2} {r['actual']:<28} {r['reach']:>7}")
+    n = int(os.environ["picks"])
+    for r in out["picks"][-n:] if n else []:
+        print(f"  {r['pick']:>3} r{r['round']:<2} slot {r['slot']:>2} {r['actual']:<26} rank {r['actual_rank']!s:>4} "
+              f"proj {r['actual_proj']!s:>6} espn {r['actual_espn_proj']!s:>6} "
+              f"model {r['model_pick']!s:<22} gap {r['proj_gap']!s:>6} reach {r['reach']!s:>6}")
+
 # Dump everything ESPN reports about a league's draft into $out_dir (default: cwd).
 # Cookies come from .mcp.json. Opens the draft room once for the snapshot, which
 # bumps a browser room or a running watch; use the dump_draft tool while watching.

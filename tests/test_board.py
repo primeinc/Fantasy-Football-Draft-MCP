@@ -278,10 +278,10 @@ class TestRoleMultiplier:
     def test_scales_only_large_disagreements(self):
         from ffdraft import model
 
-        tbl = pd.DataFrame({"proj_points": [185.0, 204.7, 200.0, 100.0, 0.0],
-                            "espn_proj": [40.9, 181.9, None, 10.0, 50.0]})
+        tbl = pd.DataFrame({"proj_points": [185.0, 204.7, 200.0, 100.0, 0.0, 102.5, 120.0],
+                            "espn_proj": [40.9, 181.9, None, 10.0, 50.0, 156.0, 150.0]})
         m = model.role_multiplier(tbl)
-        assert m.tolist() == pytest.approx([40.9 / 185.0, 1.0, 1.0, 0.2, 1.0])
+        assert m.tolist() == pytest.approx([40.9 / 185.0, 1.0, 1.0, 0.2, 1.0, 1.3, 1.0])
 
     def test_no_espn_column_is_neutral(self):
         from ffdraft import model
@@ -304,7 +304,7 @@ class TestRoleMultiplier:
         out = model.recommend(b, league, current_pick=125, next_pick=132, roster={"RB": 3})
         assert out["name"].tolist() == ["Woody Marks", "Tyrone Tracy Jr."]
         assert out.set_index("name")["role_mult"]["Tyrone Tracy Jr."] == pytest.approx(40.9 / 185.0)
-        assert "role changed" in model.explain(out.iloc[1])
+        assert "role shrank" in model.explain(out.iloc[1])
 
 
 class TestSyncEspnLive:

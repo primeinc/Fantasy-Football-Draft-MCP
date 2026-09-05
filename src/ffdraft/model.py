@@ -517,16 +517,21 @@ def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
 
 
 # ESPN's projection reads the current depth chart; the model's reads last
-# season's box scores. Below this share of the model's number the player's role
-# has changed (a backup now, a new team, an injury the model cannot see).
+# season's box scores. Below ROLE_DISAGREEMENT of the model's number the
+# player's role has shrunk (a backup now, a new team, an injury the model
+# cannot see); above ROLE_GROWTH it has grown (a rookie or a new starter the
+# box scores have not caught up with). Replaying the live draft showed both:
+# Tyrone Tracy at 41 vs 185, KC Concepcion at 156 vs 102.
 ROLE_DISAGREEMENT = 0.70
 ROLE_FLOOR = 0.20
+ROLE_GROWTH = 1.30
+ROLE_CEILING = 1.30
 
 
 def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
-    """Scale for pick_value from the ESPN/model projection ratio: 1 while ESPN
-    projects at least ROLE_DISAGREEMENT of the model, else the ratio itself
-    (floored at ROLE_FLOOR). Players ESPN does not project keep 1."""
+    """Scale for pick_value from the ESPN/model projection ratio: the ratio
+    itself below ROLE_DISAGREEMENT (floored at ROLE_FLOOR), ROLE_CEILING above
+    ROLE_GROWTH, 1 between. Players ESPN does not project keep 1."""
     ones = pd.Series(1.0, index=tbl.index)
     if "espn_proj" not in tbl.columns or "proj_points" not in tbl.columns:
         return ones
@@ -535,13 +540,15 @@ def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
     ratio = espn / ours
     known = espn.notna() & ours.notna() & (ours > 0)
     low = known & (ratio < ROLE_DISAGREEMENT)
-    return ones.where(~low, ratio.clip(lower=ROLE_FLOOR, upper=1.0))
+    high = known & (ratio > ROLE_GROWTH)
+    out = ones.where(~low, ratio.clip(lower=ROLE_FLOOR, upper=1.0))
+    return out.where(~high, ROLE_CEILING)
 
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
-              bye_weight: float = 0.0) -> pd.DataFrame:
+              bye_weight: float = 0.0, adp_shift: float = 0.0) -> pd.DataFrame:
     """Rank available players for the pick that's on the clock.
 
     Two ideas drive the ordering beyond raw value:
@@ -553,6 +560,9 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     `mine` is the board rows you already hold. With bye_weight > 0 a candidate whose
     bye_week matches theirs loses bye_weight of pick_value per same-position player
     and half that per other player; `bye_conflicts` names them either way.
+
+    `adp_shift` is how many picks earlier than ADP this room has been taking
+    players (replay.room_drift); survival odds are computed against ADP minus it.
     """
     avail = board[~board["drafted"]].copy() if "drafted" in board.columns else board.copy()
     if avail.empty:
@@ -561,7 +571,7 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     roster = roster or {}
     if next_pick:
         avail["p_available_next"] = survival_probability_vec(
-            avail["adp"].to_numpy(), current_pick, next_pick)
+            avail["adp"].to_numpy() - adp_shift, current_pick, next_pick)
     else:
         avail["p_available_next"] = 0.0
 
@@ -719,9 +729,12 @@ def explain(row: pd.Series) -> str:
     ep = row.get("espn_proj")
     if ep is not None and pd.notna(ep):
         rm = row.get("role_mult")
-        bits.append(f"ESPN projects {ep:.0f}"
-                    + (f" ({ep / row['proj_points']:.0%} of model: role changed, value scaled)"
-                       if rm is not None and pd.notna(rm) and rm < 1 else ""))
+        tag = ""
+        if rm is not None and pd.notna(rm) and rm < 1:
+            tag = f" ({ep / row['proj_points']:.0%} of model: role shrank, value scaled)"
+        elif rm is not None and pd.notna(rm) and rm > 1:
+            tag = f" ({ep / row['proj_points']:.0%} of model: role grew, value scaled)"
+        bits.append(f"ESPN projects {ep:.0f}{tag}")
     inj = row.get("espn_injury")
     if inj and inj != "ACTIVE":
         bits.append(f"ESPN status {inj}")
