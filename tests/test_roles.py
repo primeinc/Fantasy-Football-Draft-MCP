@@ -38,6 +38,18 @@ class TestStartProbability:
     def test_a_position_with_no_slots_never_starts_anyone(self):
         assert roles.start_probability([], slots=0) == 0.0
 
+    def test_the_floor_applies_to_the_series_not_the_raw_probability(self):
+        # start_probability answers the modelled question exactly, including 0.
+        assert roles.start_probability([(17.0, None), (17.0, None)], slots=2) == 0.0
+        # start_probabilities is what reaches a pick_value, and it never claims
+        # a certainty the model cannot have: a slot also opens through a trade,
+        # a cut or a benching, none of which are modelled.
+        avail = board([{"name": "RB4", "position": "RB", "proj_points": 50.0}])
+        mine = board([{"name": "a", "position": "RB", "proj_points": 300.0},
+                      {"name": "b", "position": "RB", "proj_points": 250.0}])
+        assert roles.start_probabilities(avail, league(), mine).iloc[0] == \
+            roles.START_PROB_FLOOR
+
     def test_a_third_rb_starts_only_when_one_of_the_two_ahead_is_out(self):
         # Both ahead available every week: the RB3 never starts.
         assert roles.start_probability([(17.0, None), (17.0, None)], slots=2) == 0.0
@@ -88,8 +100,10 @@ class TestBenchValue:
                       {"name": "RB2", "position": "RB", "proj_points": 250.0,
                        "exp_games": 17.0}])
         out = roles.bench_values(avail, league(), mine)
-        assert out["p_start"].iloc[0] == 0.0
-        assert out["bench_value"].iloc[0] == 0.0
+        # Two full-time starters ahead of him at a two-slot position, so the
+        # modelled paths give him nothing and he is left at the floor.
+        assert out["p_start"].iloc[0] == roles.START_PROB_FLOOR
+        assert out["bench_value"].iloc[0] == pytest.approx(150.0 * roles.START_PROB_FLOOR)
 
     def test_an_empty_roster_leaves_a_candidate_at_his_full_value(self):
         avail = board([{"name": "RB1", "position": "RB", "proj_points": 150.0}])
@@ -180,19 +194,74 @@ class TestTheModelHook:
         assert np.allclose(a["pick_value"], b["pick_value"])
         assert np.allclose(a["pick_value"], c["pick_value"])
 
-    def test_a_start_probability_of_zero_is_bounded_not_infinite(self):
-        # A bench player's pick_value is negative and p_start can be exactly 0.
-        # The reflection sends him to twice his own magnitude — as far down as
-        # the rule allows — rather than dividing by an epsilon, which would
-        # inflate one pick enough to dominate any sum built from pick_value.
-        values = pd.Series([-4.0, 4.0])
-        out = model._discount(values, pd.Series([0.0, 0.0]))
-        assert list(out) == [-8.0, 0.0]
-        assert np.isfinite(out).all()
-        # And the multiplier is monotone: a smaller one is never a promotion.
-        worse = model._discount(pd.Series([-4.0]), pd.Series([0.25]))
-        better = model._discount(pd.Series([-4.0]), pd.Series([0.75]))
-        assert worse[0] < better[0] < 0
+    def test_the_term_scales_draft_score_itself(self):
+        # Applied to the input, not reconstructed as a correction afterwards: a
+        # derived difference is only an identity while every factor after it is
+        # a plain multiplication, and role_mult, need_mult and _discount are not.
+        avail = board([{"name": "RB3", "position": "RB", "proj_points": 150.0,
+                        "draft_score": 40.0}])
+        mine = board([{"name": "a", "position": "RB", "proj_points": 300.0},
+                      {"name": "b", "position": "RB", "proj_points": 250.0}])
+        out = roles.scaled_draft_score(avail, league(), mine, start_prob_weight=1.0)
+        assert out.iloc[0] == pytest.approx(40.0 * roles.START_PROB_FLOOR)
+        # At weight 0 the column comes back untouched, to the bit.
+        assert roles.scaled_draft_score(avail, league(), mine,
+                                        start_prob_weight=0.0).iloc[0] == 40.0
+
+    def test_a_player_below_replacement_is_not_lifted_by_playing_less(self):
+        # draft_score is value over replacement, not points, so m * draft_score
+        # is only the right statement while it is positive. Unclipped, players
+        # below replacement rose toward zero and a receiver whose own value had
+        # not changed fell from rank 1 to rank 13.
+        avail = board([{"name": "bad", "position": "RB", "proj_points": 20.0,
+                        "draft_score": -30.0}])
+        mine = board([{"name": "a", "position": "RB", "proj_points": 300.0},
+                      {"name": "b", "position": "RB", "proj_points": 250.0}])
+        assert roles.scaled_draft_score(avail, league(), mine,
+                                        start_prob_weight=1.0).iloc[0] == -30.0
+
+    def test_recommend_keeps_the_unscaled_score_and_reports_p_start(self):
+        avail = board([{"name": "RB3", "position": "RB", "proj_points": 150.0,
+                        "draft_score": 40.0, "adp": 130.0}])
+        mine = board([{"name": "a", "position": "RB", "proj_points": 300.0,
+                       "exp_games": 17.0},
+                      {"name": "b", "position": "RB", "proj_points": 250.0,
+                       "exp_games": 17.0}])
+        out = model.recommend(avail, league(), current_pick=125, next_pick=132,
+                              roster={"RB": 2}, mine=mine, top_n=5,
+                              role_weights={"start_prob": 1.0})
+        assert out["draft_score_full"].iloc[0] == 40.0
+        assert out["draft_score"].iloc[0] == pytest.approx(40.0 * roles.START_PROB_FLOOR)
+        assert out["p_start"].iloc[0] == roles.START_PROB_FLOOR
+        # No column named like the applied multipliers that is not applied.
+        assert "roles_mult" not in out.columns
+
+    def test_the_whole_position_is_scaled_so_the_fallback_moves_with_it(self):
+        # Every candidate at a full position is behind the same held players, so
+        # they all take the same factor -- including the ones the fallback is
+        # built from. Scaling one candidate while holding "what RB offers at my
+        # next pick" fixed would be inconsistent, and it is what made an earlier
+        # derived-difference version penalise 2.9x too hard.
+        rows = [{"name": f"rb{i}", "position": "RB", "proj_points": 150.0 - 10 * i,
+                 "draft_score": 60.0 - 10 * i, "adp": 130.0 + i} for i in range(4)]
+        avail = board(rows)
+        mine = board([{"name": "a", "position": "RB", "proj_points": 400.0,
+                       "exp_games": 17.0},
+                      {"name": "b", "position": "RB", "proj_points": 380.0,
+                       "exp_games": 17.0}])
+        before = model.recommend(avail, league(), current_pick=125, next_pick=132,
+                                 roster={"RB": 2}, mine=mine, top_n=4)
+        after = model.recommend(avail, league(), current_pick=125, next_pick=132,
+                                roster={"RB": 2}, mine=mine, top_n=4,
+                                role_weights={"start_prob": 1.0})
+        # Same order within the position -- the factor is common to all of them.
+        assert before["name"].tolist() == after["name"].tolist()
+        # And every positive value is cut, none is left where it was.
+        top_before = before.set_index("name")["pick_value"]
+        top_after = after.set_index("name")["pick_value"]
+        assert top_after["rb0"] < top_before["rb0"]
+        assert top_after["rb0"] == pytest.approx(
+            top_before["rb0"] * roles.START_PROB_FLOOR, rel=0.35)
 
     def test_the_start_probability_weight_only_scales_down(self):
         mine = board([{"name": "held1", "position": "RB", "proj_points": 400.0},

@@ -148,16 +148,62 @@ All notable changes to this project. Format follows
   start are not points. Gated, the same 8 paired drafts per season give 2024
   +37.9 and 2025 +22.1, overall +30.0 — the gate alone is worth +141 weekly
   points in 2024.
-- `model.recommend` applies `roles_mult` as `pv * m` above zero and `pv / m`
-  below it, so below 1 always means further down the list. `pick_value` goes
-  negative deep in the board, and multiplying a negative by a start probability
-  of 0.3 moves it *toward* zero — promoting exactly the bench players the
-  discount exists to bury. Found by reading marge's identical fix for
-  `role_mult` on the K/DST branch, after a first `start_prob` measurement had
-  already been taken against the broken form and had to be thrown away. Otto
-  measured the same defect a third time in `need_mult`, so it is one missing
-  invariant at three sites rather than three bugs; a shared `_discount` helper
-  is being proposed and this site should join it.
+- **Neither roles term is a multiplier on `pick_value`, and that took three
+  goes.** The first version multiplied, which promoted the bench players the
+  discount existed to bury: `pick_value` is negative deep in the board and
+  multiplying a negative by 0.3 moves it toward zero. Found by reading marge's
+  identical fix for `role_mult`, after a `start_prob` measurement had already
+  been taken against the broken form and had to be thrown away; otto measured
+  the same defect a third time in `need_mult`, so it was one missing invariant
+  at four sites, now marge's `model._discount`. This branch no longer has a
+  fourth site — the fix below removed it — so the copy of that helper carried
+  here has been deleted rather than left unreferenced; `role_mult`, `need_mult`
+  and `bye_mult` are hers and arrive with her branch.
+  The second version routed through that helper, and marge then measured what
+  the helper cannot fix: `_discount(v > 0, m = 0)` is exactly 0.0, and with 96%
+  of available rows negative a `pick_value` of 0 sorts near the top. At pick 125
+  holding two backs who never miss a game, a bench RB the term said could hardly
+  ever start ranked **3rd of 575**. No multiplier can express exclusion on a
+  board shaped like that, at any factor, and the old `1e-6` floor did the same
+  thing — which is why the trap survived three fixes to the negative half.
+  The third version derived the difference the scaling would make and added it:
+  `(m - 1) * draft_score * need_mult`. marge caught that this is an identity only
+  while every factor after it is a plain multiplication, and it is not —
+  `role_mult` lands after `need_mult`, and `_discount` reads a multiplier as a
+  reflection below zero, so on the negative half the true factor is `(2 - need)`
+  and for a candidate crossing zero there is no single factor at all. It
+  under-penalised by about 2.9x in exactly the region the term exists for.
+  The fourth version stops reconstructing the difference and scales the input:
+  `recommend` calls `roles.scaled_draft_score` before the fallback, the marginal
+  value or either multiplier is computed, so all three see the right number and
+  no algebra is needed. At weight 0 the column comes back untouched to the bit.
+  Only value above replacement is scaled — `draft_score` is value over
+  replacement, not points, so a player already below it is not made better by
+  playing less. Unclipped it lifted them, and a receiver the term does not touch
+  fell from rank 1 to rank 13 while his own value had not changed at all; that
+  one was found by printing a control row, not by reasoning.
+  Measured on the merged board at pick 125 holding two backs who never miss a
+  game, 560 of 575 rows negative: the bench RB goes from `pick_value` 7.2 at
+  **rank 3** to 0.5 at **rank 9**, and the control receiver stays at rank 1 on
+  an unchanged 12.7.
+- **What that does not fix, stated because an earlier draft of this entry
+  claimed it did.** The value is cut by 93% and the rank moves six places,
+  because 0.5 is still ahead of 560 negative rows. The `rank 204` this entry
+  previously reported came from the derived-difference version, which scaled the
+  candidate while holding the fallback fixed. That was inconsistent: every
+  candidate at a full position is behind the same held players, so they all take
+  the same factor, and what the position offers at your next pick shrinks with
+  them. The honest number is far smaller than the wrong one. `pick_value`'s zero
+  means "exactly as good as waiting", so anything positive outranks the whole
+  negative field however small — ranking a barely-starting bench player against a
+  starter is a property of comparing marginal-over-waiting across positions, not
+  of this term, and it is not solved here.
+- `roles.START_PROB_FLOOR` (0.05) keeps start probability off exactly zero. The
+  model sees a man ahead injured or on his bye and nothing else — not a trade, a
+  cut, a benching or a mid-season role loss — and `start_probability`'s own
+  docstring calls the result a floor rather than an estimate, so 0 asserts a
+  certainty it cannot have. Policy, not fitted, and not a workaround: the
+  arithmetic above is what makes zero safe.
 
 **Draft room presence**
 - `draft_room_stats` and `just roomstats [dump_dir]` (`roomstats.py`): who was
@@ -850,10 +896,34 @@ All notable changes to this project. Format follows
 - `bye_backtest`: paired mock drafts with and without the penalty, scored on
   weekly best lineups from real box scores (`adp.weekly_lineup_points`,
   `adp.best_weekly_lineup`). The mock-draft trial loop is shared
-  (`adp._draft_trial`). A 2022-2025 run (12 paired drafts per season, weight
-  0.08) gave +5.8, +7.0, -19.2, -2.0 weekly points, -2.1 overall: fewer empty
-  starter slots in three of four seasons, swamped by who gets drafted instead.
-  `bye` therefore stays 0 by default and the conflicts stay informational.
+  (`adp._draft_trial`). **Re-run in two disjoint seed blocks per season** after
+  the single-block form was shown to report harness noise as a result; the
+  original numbers (+5.8, +7.0, -19.2, -2.0, -2.1 overall) were one block each
+  and are superseded. 2022-2025, 12 paired drafts per block, weight 0.08:
+
+  | season | blocks | spread | agree | trials it changed |
+  |---|---|---|---|---|
+  | 2022 | +8.1, +6.3 | 1.8 | yes | 3 of 5 improved |
+  | 2023 | +3.8, +7.9 | 4.1 | yes | 5 of 6 improved |
+  | 2024 | **-17.0, +3.0** | **20.0** | **no** | 5 of 15 improved |
+  | 2025 | -5.8, -35.4 | 29.6 | yes | 3 of 10 improved |
+
+  Overall -3.7, worst block spread 29.6, `blocks_agree` false. **The bye weight
+  stays 0**, and now for a reason the numbers support: 2024's two blocks of the
+  same configuration disagree in sign by 20 points, so the season that drove the
+  original conclusion is inside the harness's own noise. The old -19.2 for 2024
+  was one block of a pair whose other half is +3.0 — the single-block form could
+  not have shown that, which is the whole argument for reporting blocks.
+  Two things the block view adds beyond the verdict. The spread tracks how often
+  the penalty fires: 1.8 in 2022 where it changed 5 rosters against 29.6 in 2025
+  where it changed 10 of 24, so `block_spread` is a property of the term and the
+  harness together and `trials_changed` is what tells them apart. And the
+  penalty is close to inert — it changed 5, 6, 15 and 10 rosters out of 24 — so
+  most of these paired trials are ties, which is why `trials_improved_of_changed`
+  is reported instead of a win rate over all trials.
+  Even the two seasons whose blocks agree carry `blocks_agree_p_null` 0.5: two
+  blocks of a term that does nothing agree half the time, so agreement here is
+  an observation and not a pass. The conflicts stay informational.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 
