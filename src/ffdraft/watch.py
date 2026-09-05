@@ -10,6 +10,7 @@ import asyncio
 import logging
 import random
 from collections.abc import Awaitable, Callable
+from urllib.parse import unquote_plus
 
 from websockets.asyncio.client import connect
 
@@ -35,8 +36,16 @@ RECOMMEND_WITHIN = 3
 
 class DraftWatch:
     def __init__(self, league_id: str, season: int, team_id: int, swid: str, espn_s2: str,
-                 league: LeagueSettings, board_df, notify: Notify) -> None:
+                 league: LeagueSettings, board_df, notify: Notify,
+                 directory: dict[int, dict] | None = None) -> None:
         self.league_id = league_id
+        # ESPN team id -> {"name": team name, "owners": [display names]}.
+        self.directory = directory or {}
+        # ESPN team id -> whether an owner is in the draft room. Seeded from the
+        # INIT snapshot's owner flags, then JOINED/LEFT lines.
+        self.online: dict[int, bool] = {}
+        # (epoch ms, team id, owner SWID, text), newest last. Room chat only.
+        self.chat: list[tuple[int, int, str, str]] = []
         self.season = season
         self.team_id = team_id
         self.swid = swid
@@ -137,6 +146,9 @@ class DraftWatch:
         if kind == "INIT" and len(fields) > 1:
             init = espn_live.decode_init(fields[1])
             self.slot_of = espn_live.slot_by_team(init)
+            teams = init.league.draft_teams if init.league is not None else []
+            self.online = {t.team_id: any(o is not None and o.is_online for o in t.owners)
+                           for t in teams if t is not None}
             picks = espn_live.picks_from_init(init)
             self.state.reset()
             for p in picks:
@@ -166,15 +178,41 @@ class DraftWatch:
             self.state.save()
             await self.notify(f"pick {keep + 1} undone; board rolled back to {keep} picks.",
                               {"league": self.league_id, "event": "undone"})
+        elif kind == "JOINED" and len(fields) >= 3:
+            self.online[int(fields[1])] = True
         elif kind == "LEFT" and len(fields) >= 4:
-            if (int(fields[1]) == self.team_id and fields[2].strip("{}").upper()
+            team = int(fields[1])
+            if (team == self.team_id and fields[2].strip("{}").upper()
                     == self.swid.strip("{}").upper() and fields[3] == "2"):
                 self.bumped = True
+            else:
+                self.online[team] = False
+        elif kind == "CHAT" and len(fields) >= 5:
+            self.chat.append((int(fields[3]), int(fields[1]), fields[2], unquote_plus(fields[4])))
         elif kind == "ERROR":
             if self.own_pick and not self.own_pick.done():
                 self.own_pick.set_exception(RuntimeError(line))
                 return
             raise RuntimeError(line)
+
+    # -- queries
+
+    def room(self, chat_limit: int = 10) -> dict:
+        """Who is in the draft room and what was said, with names from the directory."""
+        def label(team_id: int) -> str:
+            d = self.directory.get(team_id, {})
+            owners = ", ".join(d.get("owners") or [])
+            return f"{d.get('name') or f'team {team_id}'}" + (f" ({owners})" if owners else "")
+
+        online = sorted(t for t, on in self.online.items() if on)
+        return {
+            "connected": self.connected,
+            "online": [{"team_id": t, "slot": self.slot_of.get(t), "team": label(t)} for t in online],
+            "offline_count": sum(1 for on in self.online.values() if not on),
+            "chat": [{"at_ms": ts, "team": label(t), "text": text}
+                     for ts, t, _owner, text in self.chat[-chat_limit:]],
+            **self.state.summary(),
+        }
 
     # -- actions
 

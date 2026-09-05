@@ -1233,8 +1233,9 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
                 params={"content": content, "meta": meta}))
 
         await stop_watch(league_id)
+        directory = bd.espn_league_directory(league_id, season, swid, espn_s2)
         w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
-                             league, board_df, notify)
+                             league, board_df, notify, directory=directory)
     except Exception as exc:
         # The MCP SDK hides tool tracebacks behind "Error executing tool".
         return json.dumps({"error": f"{type(exc).__name__}: {exc}",
@@ -1286,6 +1287,17 @@ async def make_pick(league_id: str, player_name: str) -> str:
                            "traceback": traceback.format_exc()})
     return json.dumps({"picked": accepted, "resolved_from": player_name,
                        **w.state.summary()}, indent=2)
+
+
+@mcp.tool()
+async def draft_room(league_id: str, chat_limit: int = 10) -> str:
+    """Who is in the ESPN draft room right now and the latest room chat, from the
+    running watch's socket. Names come from the league's member list."""
+    entry = _WATCHES.get(league_id)
+    if entry is None:
+        return json.dumps({"error": "no active watch for this league; call watch_draft first"})
+    w, _task = entry
+    return json.dumps(w.room(chat_limit), indent=2, default=str)
 
 
 @mcp.tool()

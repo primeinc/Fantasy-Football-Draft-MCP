@@ -169,6 +169,27 @@ def test_session_pings_on_a_timer_despite_constant_inbound_traffic(tmp_path, mon
     assert len(pings) >= 2
 
 
+def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
+    w, _events = _watch(tmp_path, monkeypatch)
+    w.directory = {3: {"name": "adverse possession", "owners": ["Will Peters"]},
+                   9: {"name": "The Spreadsheet Squad", "owners": ["Cool Breeze"]},
+                   15: {"name": "Sydney Sideline Stars", "owners": ["Sydney Tiller"]}}
+    asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+    online_from_init = {r["team_id"] for r in w.room()["online"]}
+    assert 3 in online_from_init
+
+    asyncio.run(w.handle_line("JOINED 9 {ABC}"))
+    asyncio.run(w.handle_line("LEFT 15 {DEF} 1"))
+    asyncio.run(w.handle_line("CHAT 15 {DEF} 1788469125122 Kate+Pick+your+player+man"))
+    room = w.room()
+    online = {r["team_id"]: r["team"] for r in room["online"]}
+    assert online[9] == "The Spreadsheet Squad (Cool Breeze)"
+    assert 15 not in online
+    assert room["chat"][-1]["text"] == "Kate Pick your player man"
+    assert room["chat"][-1]["team"] == "Sydney Sideline Stars (Sydney Tiller)"
+    assert room["on_the_clock"] == 115
+
+
 def test_error_line_raises(tmp_path, monkeypatch):
     w, _ = _watch(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="No\\+team"):

@@ -100,6 +100,10 @@ Connection" dialog, and opening the room again pauses the watch (it pushes a
 runs and draft with `make_pick`, or open it to pick, then call `watch_draft` again.
 One watch per league; `stop_watch(league_id)` ends it.
 
+### `draft_room`
+Who is in the ESPN draft room right now and the latest room chat, from the running
+watch's socket, with team and owner names from the league member list.
+
 ### `make_pick`
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
 watch's socket, exactly what the draft room sends, and waits up to ten seconds

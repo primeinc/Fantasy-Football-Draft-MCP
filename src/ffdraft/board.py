@@ -577,6 +577,33 @@ def espn_league_context(league_id: str, season: int = CURRENT_SEASON,
     }
 
 
+def espn_league_directory(league_id: str, season: int = CURRENT_SEASON,
+                          swid: str | None = None, espn_s2: str | None = None) -> dict[int, dict]:
+    """ESPN team id -> team name and owner display names, for labelling room events."""
+    swid = swid or os.environ.get("ESPN_SWID")
+    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
+    cookies = {}
+    if swid and espn_s2:
+        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
+                   "espn_s2": espn_s2}
+    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
+           f"/segments/0/leagues/{league_id}")
+    resp = requests.get(url, params={"view": ["mTeam"]}, cookies=cookies, timeout=20,
+                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp.raise_for_status()
+    data = resp.json()
+    members = {}
+    for m in data.get("members") or []:
+        full = " ".join(filter(None, [m.get("firstName"), m.get("lastName")])).strip()
+        members[m["id"].strip("{}").upper()] = full or m.get("displayName") or ""
+    out = {}
+    for t in data.get("teams") or []:
+        name = (t.get("name") or " ".join(filter(None, [t.get("location"), t.get("nickname")]))).strip()
+        owners = [members.get(o.strip("{}").upper(), o) for o in t.get("owners", [])]
+        out[int(t["id"])] = {"name": name, "owners": owners}
+    return out
+
+
 def parse_pasted_board(text: str) -> list[str]:
     """Best-effort parse of a pasted list of drafted players.
 

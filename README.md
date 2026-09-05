@@ -135,6 +135,7 @@ hundredths, ordering correct.
 | `sync_draft` | Pull the live board from Sleeper, ESPN (including a draft in progress), or pasted text |
 | `watch_draft` / `stop_watch` | Hold the ESPN draft room open and push each pick into the session as it happens |
 | `make_pick` | Draft a player over that socket, no browser draft room needed |
+| `draft_room` | Who is in the draft room right now, and the latest room chat |
 | `on_the_clock` | **The main one.** Sync, status, recommendation, round-scoped value, and matchup detail — one call |
 | `who_should_i_pick` | Recommendation + reasoning for the pick on the clock |
 | `best_available` | Next best players, sortable by value, consistency, or ADP bargain |

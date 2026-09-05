@@ -24,6 +24,8 @@ All notable changes to this project. Format follows
   browser room is opened instead of fighting it.
 - `make_pick`: draft a player over the watch's socket (`SELECT <playerId>`), so
   the browser room is not needed at all.
+- `draft_room`: who is in the draft room and the latest chat, tracked by the watch
+  from the snapshot's online flags and the JOINED/LEFT/CHAT lines.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 
