@@ -138,7 +138,8 @@ def _build_board(force: bool = False) -> pd.DataFrame:
             if "key_version" in b.columns and len(b) else True
         if stale_key or (bd.espn_adp_configured() and "adp_source" in b.columns
                          and (not (b["adp_source"] == "espn").any()
-                              or "espn_rank" not in b.columns)):
+                              or "espn_rank" not in b.columns
+                              or "adp_match" not in b.columns)):
             b = _price_board(bd.strip_adp(b), league)
             changed = True
         if changed:
@@ -505,7 +506,11 @@ def draft_audit(limit: int = 10) -> str:
         recs = model.recommend(b, league, current_pick=nxt, next_pick=state.pick_after_next(),
                                roster=state.my_roster(b), top_n=limit, mine=state.my_rows(b),
                                bye_weight=weights.bye)
-    return json.dumps(bd.audit_state(b, state, recs), indent=2)
+    out = bd.audit_state(b, state, recs)
+    # Board rows the market join could not price are the Estimé shape: a
+    # synthetic ADP where a real one may exist under another spelling.
+    out["market_join"] = bd.market_join_report(b, limit)
+    return json.dumps(out, indent=2, default=str)
 
 
 @mcp.tool()

@@ -150,6 +150,11 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+- `attach_adp` joins through the alias index after the exact key ("Josh
+  Palmer" / "Joshua Palmer"), alias and last-name-plus-initial hits at the
+  same position only; `adp_match` records how each row joined. `draft_audit`
+  reports `market_join`: unpriced rows by projection and alias-priced rows
+  (`board.market_join_report`). ESPN ADP rows carry `position`.
 - `names.normalize` folds accents: nflverse "Audric Estimé" and ESPN "Audric
   Estime" keyed differently, so his ESPN ADP (169.99, undrafted) never joined
   and the synthetic fallback priced him at 110.7. The walk-forward ADP

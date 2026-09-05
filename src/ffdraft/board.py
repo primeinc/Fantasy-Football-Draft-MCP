@@ -110,12 +110,13 @@ def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
         if adp is None or not p.get("fullName"):
             continue
         rows.append({"name": p["fullName"], "adp": float(adp), "espn_id": str(p.get("id")),
+                     "position": _ESPN_POSITION_NAMES.get(str(p.get("defaultPositionId"))),
                      "espn_rank": ((p.get("draftRanksByRankType") or {}).get("PPR") or {}).get("rank"),
                      "percent_owned": (p.get("ownership") or {}).get("percentOwned"),
                      "espn_proj": espn_season_projection(p, season),
                      "espn_injury": p.get("injuryStatus")})
-    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "espn_rank", "percent_owned",
-                                      "espn_proj", "espn_injury"])
+    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "position", "espn_rank",
+                                      "percent_owned", "espn_proj", "espn_injury"])
     out["_key"] = out["name"].map(norm_name)
     out["source"] = "espn_adp"
     return out.dropna(subset=["adp"]).drop_duplicates("_key").reset_index(drop=True)
@@ -139,7 +140,7 @@ def espn_adp_configured() -> bool:
 def strip_adp(board: pd.DataFrame) -> pd.DataFrame:
     """The board without its market columns, ready for attach_adp again."""
     return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format",
-                                           "espn_proj", "espn_injury", "espn_rank")
+                                           "adp_match", "espn_proj", "espn_injury", "espn_rank")
                                if c in board.columns])
 
 
@@ -343,6 +344,33 @@ def rekey(board: pd.DataFrame) -> pd.DataFrame:
     return b
 
 
+# PlayerIndex match types the market join accepts beyond the exact key.
+ALIAS_JOINS = ("alias", "lastname_initial")
+
+
+def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
+    """Which board rows the market join could not price, strongest projection
+    first, and which it priced through an alias. A modelled row with a real
+    projection is the Estimé shape: a synthetic ADP standing in for a market
+    value that may exist under another spelling."""
+    if "adp_source" not in board.columns:
+        return {"unjoined": [], "alias_joined": []}
+    un = board[board["adp_source"] == "modelled"].sort_values("proj_points", ascending=False)
+    cols = ["name", "position", "team", "proj_points", "adp"]
+    unjoined = [{**{c: r[c] for c in cols if c in board.columns},
+                 "proj_points": round(float(r["proj_points"]), 1),
+                 "synthetic_adp": round(float(r["adp"]), 1)}
+                for _, r in un.head(limit).iterrows()]
+    for u in unjoined:
+        u.pop("adp", None)
+    alias = []
+    if "adp_match" in board.columns:
+        al = board[board["adp_match"].isin(ALIAS_JOINS)]
+        alias = [{"name": r["name"], "position": r["position"], "how": r["adp_match"],
+                  "adp": round(float(r["adp"]), 1)} for _, r in al.iterrows()]
+    return {"unjoined": unjoined, "unjoined_total": int(len(un)), "alias_joined": alias}
+
+
 def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     """Join ADP onto the board, falling back to positional draft curves where missing."""
     b = board.copy()
@@ -350,13 +378,35 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     if adp is not None and not adp.empty:
         extra = [c for c in ("espn_proj", "espn_injury", "espn_rank") if c in adp.columns]
         b = b.drop(columns=[c for c in extra if c in b.columns])
-        b = b.merge(adp[["_key", "adp", *extra]].drop_duplicates("_key"), on="_key", how="left")
+        src = adp.drop_duplicates("_key")
+        b = b.merge(src[["_key", "adp", *extra]], on="_key", how="left")
+        b["adp_match"] = np.where(b["adp"].notna(), "exact", "none")
+        # Second pass through the alias index for what the exact key missed:
+        # "Josh Palmer" on the board, "Joshua Palmer" at ESPN. Only alias and
+        # last-name-plus-initial hits at the same position are taken; fuzzy and
+        # ambiguous hits would join the wrong player silently.
+        missing = b.index[b["adp"].isna()]
+        if len(missing) and "position" in src.columns:
+            idx = names.PlayerIndex(src)
+            for i in missing:
+                row, how = idx.resolve(str(b.at[i, "name"]), str(b.at[i, "position"]))
+                # "exact" here is the query's key hitting one of the source
+                # row's alias keys (the true exact key already missed above).
+                if row is None or how not in ("exact", *ALIAS_JOINS):
+                    continue
+                if str(row.get("position")) != str(b.at[i, "position"]):
+                    continue
+                b.at[i, "adp"] = row["adp"]
+                for c in extra:
+                    b.at[i, c] = row[c]
+                b.at[i, "adp_match"] = "alias" if how == "exact" else how
         label = "espn" if "source" in adp.columns and (adp["source"] == "espn_adp").any() \
             else "consensus"
         b["adp_source"] = np.where(b["adp"].notna(), label, "modelled")
     else:
         b["adp"] = np.nan
         b["adp_source"] = "modelled"
+        b["adp_match"] = "none"
 
     if "last_season" in b.columns:
         freshest = b["last_season"].max()

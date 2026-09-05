@@ -309,6 +309,52 @@ class TestEspnAdp:
         assert out["espn_injury"].iloc[0] == "QUESTIONABLE"
 
 
+class TestMarketJoin:
+    def _adp(self):
+        adp = pd.DataFrame({
+            "name": ["Joshua Palmer", "Audric Estime", "Josh Allen", "Josh Allen", "Trey Palmer"],
+            "position": ["WR", "RB", "QB", "LB", "WR"],
+            "adp": [150.0, 169.99, 20.0, 400.0, 300.0],
+            "espn_rank": [140, 1392, 15, 900, 500], "espn_proj": [120.0, None, 380.0, 5.0, 40.0],
+            "espn_injury": ["ACTIVE"] * 5, "source": ["espn_adp"] * 5})
+        adp["_key"] = adp["name"].map(board.norm_name)
+        return adp
+
+    def test_alias_and_accent_rows_join_at_the_same_position(self):
+        b = pd.DataFrame({"name": ["Josh Palmer", "Audric Estimé", "Josh Allen", "Josh Palmr",
+                                   "Tyler Palmer"],
+                          "position": ["WR", "RB", "QB", "WR", "TE"],
+                          "pos_rank": [50, 36, 1, 60, 30], "overall_rank": [200, 125, 10, 260, 250],
+                          "proj_points": [110.0, 151.5, 400.0, 90.0, 60.0]})
+        out = board.attach_adp(b, self._adp()).set_index("name")
+        assert out.loc["Josh Palmer", "adp"] == 150.0
+        assert out.loc["Josh Palmer", "adp_match"] == "alias"
+        assert out.loc["Josh Palmer", "espn_rank"] == 140
+        assert out.loc["Audric Estimé", "adp"] == 169.99
+        assert out.loc["Audric Estimé", "adp_match"] == "exact"
+        assert out.loc["Josh Allen", "adp"] == 20.0
+        # A typo would only match fuzzily: never joined, stays synthetic.
+        assert out.loc["Josh Palmr", "adp_source"] == "modelled"
+        assert out.loc["Josh Palmr", "adp_match"] == "none"
+        # Last name plus initial at another position ("T. Palmer" TE vs Trey
+        # Palmer WR): not joined.
+        assert out.loc["Tyler Palmer", "adp_source"] == "modelled"
+        assert list(out["adp_source"]) == ["espn", "espn", "espn", "modelled", "modelled"]
+
+    def test_report_lists_unjoined_by_projection_and_alias_joins(self):
+        b = pd.DataFrame({"name": ["Josh Palmer", "Deep Bench", "Star Guy"],
+                          "position": ["WR", "WR", "RB"], "team": ["LAC", "X", "Y"],
+                          "pos_rank": [50, 90, 1], "overall_rank": [200, 400, 1],
+                          "proj_points": [110.0, 30.0, 300.0]})
+        out = board.attach_adp(b, self._adp())
+        rep = board.market_join_report(out)
+        assert [u["name"] for u in rep["unjoined"]] == ["Star Guy", "Deep Bench"]
+        assert rep["unjoined_total"] == 2
+        assert "synthetic_adp" in rep["unjoined"][0] and "adp" not in rep["unjoined"][0]
+        assert rep["alias_joined"] == [{"name": "Josh Palmer", "position": "WR",
+                                        "how": "alias", "adp": 150.0}]
+
+
 class TestRoleMultiplier:
     def test_scales_only_large_disagreements(self):
         from ffdraft import model

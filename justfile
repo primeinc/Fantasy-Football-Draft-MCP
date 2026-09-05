@@ -158,6 +158,34 @@ replay $picks='0':
               f"role {r['role_mult']!s:>4} model {r['model_pick']!s:<22} regret {r['pick_regret']!s:>6} "
               f"z {r['market_z']!s:>5}")
 
+# The draft_audit tool without a server: invariants between board, picks and
+# recommendation, plus the market-join report (rows priced synthetically, rows
+# priced through an alias).
+[script]
+audit:
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import server
+
+    out = json.loads(server.draft_audit())
+    print(f"ok {out['ok']}  picks {out['picks']}  mine {out['mine']}  unresolved {out['unresolved']}")
+    for f in out["failures"]:
+        print("FAIL", f)
+    for w in out["warnings"]:
+        print("warn", w)
+    mj = out["market_join"]
+    print(f"market join: {mj['unjoined_total']} rows priced synthetically; strongest projections:")
+    for u in mj["unjoined"]:
+        print(f"  {u['name']:<26} {u['position']:<3} {u.get('team', '')!s:<4} proj {u['proj_points']:>6} synthetic adp {u['synthetic_adp']:>6}")
+    print(f"priced through an alias: {len(mj['alias_joined'])}")
+    for a in mj["alias_joined"]:
+        print(f"  {a['name']:<26} {a['position']:<3} {a['how']:<17} adp {a['adp']:>6}")
+
 # What the team on the clock (or $slot) should take, what ESPN's list says, how
 # that team has been choosing, and the prediction. Same as the predict_pick tool.
 [script]
