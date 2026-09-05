@@ -108,6 +108,42 @@ class TestPickHazards:
         assert sum(1 for h in both if h > 1 / 125) == 3, both
         assert sum(1 for h in alone if h > 1 / 125) == 0, alone
 
+    def test_the_first_compelled_pick_is_the_per_team_one_not_the_aggregate(self):
+        # The boundary is a documented number, so it is pinned rather than left
+        # to prose. Slot 1 picks at 192, 193 and 224; from 193 it holds two picks
+        # against two unfilled slots and is compelled, so 193 is the first.
+        #
+        # An aggregate would say 194: 30 unfilled slots across 16 teams is 1.88
+        # each, and 224 - 194 = 30. That number is one pick later and describes
+        # every team crossing together, which is exactly what the per-team form
+        # exists not to do. Asserting 193 fails if the aggregate is ever
+        # substituted back.
+        league = _league()
+        hz = model.pick_hazards(league, {}, 180, 224, "DST", 1 / 125)
+        first = next(p for p, h in zip(range(181, 224), hz, strict=True)
+                     if h > 1 / 125)
+        assert first == 193, first
+        assert model.slot_for_pick(league, first) == 1
+        assert model.picks_remaining(league, 1, first) == 2
+        # The pick before it belongs to the same team and is not compelled.
+        assert model.slot_for_pick(league, 192) == 1
+        assert hz[192 - 181] == 1 / 125, hz[192 - 181]
+
+    def test_the_teams_holding_one_already_cross_later_than_their_neighbours(self):
+        # The live shape: slot 10 holds Denver, slot 11 holds Aubrey. Every
+        # other team is compelled for all 24 picks before 221; these two supply
+        # the only unforced ones, and that difference is the whole gap between
+        # an aggregate taker count and the shipped one.
+        league, held = _league(), {10: {"DST": 1}, 11: {"K": 1}}
+        hz = model.pick_hazards(league, held, 196, 221, "DST", 1 / 125)
+        free = [p for p, h in zip(range(197, 221), hz, strict=True) if h <= 1 / 125]
+        assert [model.slot_for_pick(league, p) for p in free] == [10, 11, 10], free
+        assert len(hz) - len(free) == 21, (len(hz), len(free))
+        # An empty room has no such teams and forces every pick.
+        empty = model.pick_hazards(league, {}, 196, 221, "DST", 1 / 125)
+        assert all(h > 1 / 125 for h in empty)
+        assert sum(empty) > sum(hz)
+
     def test_a_team_that_holds_the_position_already_cannot_take_another(self):
         # Slot 10 took the Broncos at 119. At its last pick it is compelled --
         # it still owes a kicker -- but its hazard for a second defense is 0.

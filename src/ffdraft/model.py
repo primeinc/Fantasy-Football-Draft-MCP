@@ -614,11 +614,19 @@ def pick_hazards(league: LeagueSettings, held: Mapping[int, Mapping[str, int]],
     priced at the rate the room has actually taken the position.
 
     The cliff falls out of this rather than being drawn: in the live room the
-    compelled regime begins at pick 194, two picks later than "two slots per
-    team" would say, because Aubrey at 86 and Denver at 119 are already filled.
-    Reading the forced count once at the start of the horizon misses a horizon
-    that straddles that boundary -- at 189 to 196 two of the picks are compelled
-    and five are not -- so the walk is per pick and the hazards are summed.
+    first compelled pick is 193, slot 1's own, because from there it holds only
+    193 and 224 against the two slots it must still fill. Reading the forced
+    count once at the start of the horizon misses a horizon that straddles that
+    boundary -- at 189 to 196 three of the six intervening picks are compelled
+    and three are not -- so the walk is per pick and the hazards are summed.
+
+    193 is not the number an aggregate gives. Dividing the 30 unfilled slots
+    across 16 teams is 1.88 each and puts the boundary at 194, and that is the
+    answer this function does not use: it asks each team about its own picks
+    and its own slots, so the teams holding Aubrey at 86 and Denver at 119 cross
+    later than their neighbours rather than everyone crossing together. The two
+    forms agree to within a pick here and diverge where it matters -- at 196
+    those two teams supply the only three unforced picks of twenty-four.
     """
     hazards: list[float] = []
     for pick in range(current_pick + 1, next_pick):

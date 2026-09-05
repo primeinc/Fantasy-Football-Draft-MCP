@@ -635,11 +635,16 @@ All notable changes to this project. Format follows
   fifteen kickers do not fit in 28, and three of those six picks belong to teams
   down to two picks and two open slots. Reverting to a per-position count fails
   seven of the tests here, at 0.95 survival where the joint count gives 0.12.
-- **Per team and per pick, both load-bearing.** In this room the compelled
-  regime begins at pick 194 — 30 unfilled slots across 16 teams is 1.88 each,
-  two picks later than "two per team" because Aubrey at 86 and Denver at 119 are
-  already filled — so it must be computed from the live count. And reading the
-  forced count once at the start of a horizon misses one that straddles the
+- **Per team and per pick, both load-bearing.** In this room the first compelled
+  pick is **193** — slot 1's own, since from there it holds only 193 and 224
+  against two unfilled slots. Dividing 30 slots across 16 teams gives 1.88 each
+  and puts the boundary at 194; that aggregate is not what ships, because it
+  makes every team cross together and so cannot see that the teams holding
+  Aubrey at 86 and Denver at 119 cross later than their neighbours. The two
+  agree to within a pick at the boundary and diverge where it counts: at 196
+  those two teams supply the only three unforced picks of twenty-four, which is
+  the whole gap between a taker count of 12.5 and the shipped 11.02. And reading
+  the forced count once at the start of a horizon misses one that straddles the
   boundary: at 189 to 196 three of the six intervening picks are compelled and
   three are not.
 - The distribution is the exact Poisson binomial of the hazards, truncated at
