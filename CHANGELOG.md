@@ -1324,6 +1324,39 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+- **A roster player the board cannot price still occupies his slot (#40).**
+  `DraftState.my_rows` was a straight board filter, so a player with no board
+  row simply vanished from the roster the lineup model is scored against. On the
+  live record MarShawn Lloyd at pick 93 has no row: the roster held eight men and
+  `my_rows` returned seven, two running backs where the roster holds three. It
+  now appends a stand-in priced at the board's own replacement level for the
+  position (`board.replacement_points`), marked `unpriced`, with `vor` 0 and no
+  `bye_week` — the least the roster can be assumed to hold, rather than a guess
+  at what he is really worth.
+  - This reconciles two halves of the model that disagreed about one roster:
+    `need_mult` reads `my_roster`, which already counted him from the recorded
+    position, while `roles.bench_values` read `my_rows`, which did not. Found
+    independently by otto while measuring #39, from the same live roster.
+  - Measured at 132 on the live record: `my_rows` 7 rows → 8, and Alvin Kamara's
+    `starts_in_a_given_week` 0.36 → 0.05, because he projects below the man the
+    model had been ignoring.
+  - **It does not move the Woody Marks headline, and could not have.** Marks
+    projects 176.7 against the roster's RB2 at 155.7, so exactly one back is
+    ahead of him against two starting slots and `start_probability` returns 1.0
+    by construction — correct, not a symptom. `who_should_i_pick` also passes no
+    `role_weights`, so `START_PROB_WEIGHT` is 0 and `starts_in_a_given_week` is
+    reported rather than priced: it is not in the ranking at all. The fix
+    corrects what the user is told about bench value, not what is recommended.
+  - `draft_status` reported `position: null` for him beside a `roster_counts`
+    that already counted him — two fields in one response disagreeing about
+    whether the man is on the team. It now falls back to the recorded position
+    and says so outright, with `priced_by_the_board` and `counted_at`.
+  - Still dropped, and deliberately: a pick with no position on the board *or*
+    on the record cannot be placed at all, which is what `my_roster` already
+    does with one. `record_pick` files `position=None` when the board has no
+    row, so a hand-logged pick of an unpriced player remains invisible to both.
+    ESPN's `mRoster` view carries the position and is fetched by `espn_dump` but
+    parsed nowhere; wiring it is the fix for that case and is not in this change.
 - `attach_adp` joins through the alias index after the exact key ("Josh
   Palmer" / "Joshua Palmer"), alias and last-name-plus-initial hits at the
   same position only; `adp_match` records how each row joined. `draft_audit`

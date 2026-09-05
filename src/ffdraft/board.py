@@ -617,6 +617,29 @@ def convert_adp_format(board: pd.DataFrame, scoring_label: str) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- draft state
 
+# Marks a roster row the board could not price, so a caller can say so rather
+# than report a projection of null beside a roster count that includes him.
+UNPRICED = "unpriced"
+
+
+def replacement_points(board: pd.DataFrame, position: str) -> float:
+    """The board's own replacement level for a position, in projected points.
+
+    `replacement_points` is the projection of the last player at the position
+    anyone in the league would start, and `model.project` writes it per position,
+    so it is constant within a position on a built board and any row carries it.
+    Reading it back beats recomputing it: a second derivation of the same number
+    is a second thing to keep in step.
+
+    0 for a position the board does not carry at all, which is the same thing
+    `vor` already means -- no value over a freely available alternative.
+    """
+    if "replacement_points" not in board.columns or "position" not in board.columns:
+        return 0.0
+    chunk = board.loc[board["position"] == position, "replacement_points"].dropna()
+    return float(chunk.iloc[0]) if len(chunk) else 0.0
+
+
 class DraftState:
     """Who's been taken, by whom, and whose turn it is.
 
@@ -704,11 +727,66 @@ class DraftState:
         return {norm_name(p["name"]) for p in self.picks}
 
     def my_rows(self, board: pd.DataFrame) -> pd.DataFrame:
-        """Board rows for the players you have drafted, in pick order."""
-        keys = [norm_name(p["name"]) for p in self.picks if p["slot"] == self.my_slot]
-        if "_key" not in board.columns or not keys:
+        """The roster the lineup model sees: your board rows, plus a stand-in for
+        any player you hold that the board does not price.
+
+        A player the board cannot price still occupies his roster slot. Dropping
+        him told the lineup model the roster was a man short at his position, and
+        `roles.start_probabilities` counts exactly that -- the men ahead of a
+        candidate at his position -- so a candidate who should have queued behind
+        him came back as a certain starter. In the live record MarShawn Lloyd at
+        pick 93 has no board row, and the model saw two running backs where the
+        roster holds three.
+
+        The stand-in is priced at the board's own replacement level for his
+        position, which is the least the roster can be assumed to hold: he is by
+        definition someone you would not start over a replacement-level
+        alternative, and `vor` of 0 says so. It is deliberately not a guess at
+        what he is really worth -- the board has no opinion, and inventing one
+        here would put a number in front of the user that nothing supports.
+
+        `bye_week` is left missing rather than filled, so he stays out of the bye
+        term instead of contributing a fabricated conflict. `unpriced` marks him
+        for anything that needs to say so.
+
+        A player with no position on the board *or* on the pick record cannot be
+        placed at all and is still dropped, the same as `my_roster` drops him.
+        """
+        mine = [p for p in self.picks if p["slot"] == self.my_slot]
+        if "_key" not in board.columns or not mine:
             return board.iloc[0:0]
-        return board[board["_key"].isin(keys)]
+        rows = board[board["_key"].isin([norm_name(p["name"]) for p in mine])].copy()
+        rows[UNPRICED] = False
+        priced = set(rows["_key"])
+        missing = [p for p in mine
+                   if norm_name(p["name"]) not in priced and p.get("position")]
+        if not missing:
+            return rows
+        stand_ins = pd.DataFrame([{
+            "_key": norm_name(p["name"]),
+            "name": p["name"],
+            "position": str(p["position"]),
+            "proj_points": replacement_points(board, str(p["position"])),
+            "replacement_points": replacement_points(board, str(p["position"])),
+            "vor": 0.0,
+            "draft_score": 0.0,
+            "off_roster": False,
+            "is_rookie": False,
+            UNPRICED: True,
+        } for p in missing]).reindex(columns=rows.columns)
+        # reindex fills the columns the stand-in has no opinion about with NaN,
+        # which turns a bool column into object and breaks every `frame[col]`
+        # mask downstream -- the mistake the K/DST rows already made once.
+        #
+        # Taken from the frame's own dtypes rather than a list of column names.
+        # A hardcoded list is a claim about which columns a board carries, and
+        # the boards in this repo differ: the live one has `off_roster` and
+        # `is_rookie`, a test fixture may have neither, and naming them raised
+        # KeyError on the fixture that had neither. False is the neutral value
+        # for a flag the stand-in cannot have an opinion about.
+        for col in rows.select_dtypes(include="bool").columns:
+            stand_ins[col] = stand_ins[col].fillna(False).astype(bool)
+        return pd.concat([rows, stand_ins], ignore_index=True)
 
     def picks_by_position(self, board: pd.DataFrame) -> dict[str, int]:
         """Every pick the room has made, counted by position.

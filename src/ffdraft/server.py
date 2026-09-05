@@ -764,10 +764,23 @@ def draft_status() -> str:
     for p in mine:
         k = bd.norm_name(p["name"])
         r = idx.loc[k] if k in idx.index else None
+        # A player the board cannot price used to report a null position beside
+        # a roster_counts that already counted him, from the recorded position
+        # this now falls back to. Two fields in one response disagreeing about
+        # whether the man is on the team reads as a bug in whichever the user
+        # happens to check second.
+        pos = r["position"] if r is not None else p.get("position")
+        priced = r is not None
         detail.append({
             "pick": p["overall"], "player": p["name"],
-            "position": (r["position"] if r is not None else None),
-            "proj_points": (round(float(r["proj_points"]), 1) if r is not None else None),
+            "position": str(pos) if pos else None,
+            "proj_points": (round(float(r["proj_points"]), 1) if priced else None),
+            # Said rather than implied by the null: he holds his slot, and the
+            # lineup model counts him at replacement level for the position.
+            "priced_by_the_board": priced,
+            "counted_at": (None if priced else
+                           round(bd.replacement_points(b, str(pos)), 1) if pos
+                           else None),
         })
     return _emit({**state.summary(), "my_team": detail,
                        "roster_counts": state.my_roster(b)}, indent=2)
