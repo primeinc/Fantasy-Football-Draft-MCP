@@ -102,6 +102,60 @@ All notable changes to this project. Format follows
 - `draft_strength`: every team's draft ranked by projected starter points
   (`board.team_strength`), with bench projection and open starter slots.
 
+**The survival model's right tail**
+
+- `survival_probability` treated a player's realised draft slot as normal around
+  his ADP. A Gaussian right tail says a player three and a half standard
+  deviations past his ADP is certainly gone, and real boards are full of players
+  who are not: the live record had the second-best defense undrafted at pick 123
+  with an ADP of 93, in a room that had taken one defense in 122 picks, and the
+  model put his survival at 0.00. That is worse than an over-urgent single
+  number. When a whole position reads 0.00,
+  `expected_best_at_next_pick` accumulates nothing, so waiting at that position
+  is valued at its *worst* remaining player — and `marginal_value`, which 80% of
+  `pick_value` is built from, is computed against that.
+- The distribution is now logistic with the same spread (`model.SURVIVAL_TAIL`),
+  so only the tail changes. Conditional survival well past the ADP tends to a
+  constant hazard per pick instead of a cliff: "he has slid this far already, so
+  the chance he goes in the next seven picks is about what it was for the last
+  seven" is the right statement about a player the market has stopped pricing at
+  his ADP. Computed in logs (`np.logaddexp`), so the far tail no longer needs the
+  `p_gone_now >= 0.999` hard zero that used to stand in for it.
+- Two numerical repairs found on the way, both in the normal path: `1 - Phi(z)`
+  is catastrophic cancellation that underflows to exactly 0 past about z = 8,
+  which made the numerator and denominator of the conditional probability equal
+  and returned a survival of 1.0 for a hopelessly gone player. It uses `erfc`
+  now. And a row with no ADP no longer reaches the tail functions at all.
+- Decided on evidence, three arms over the recorded draft at 122 picks, same
+  board and same picks, only the distribution varying. `shipped` is the exact
+  pre-change implementation, `normal` is the repaired normal without the hard
+  zero, `logistic` is what ships:
+  shipped and normal are identical on every reported figure (Brier 0.129, log
+  loss 0.416, and the same per-round and per-position tables), so the numerical
+  repairs change nothing measurable on this record and the whole difference
+  below is the tail shape.
+  logistic: Brier 0.129 -> 0.127, log loss 0.416 -> 0.401, against a base rate
+  of 0.250. The clearest number is the lowest-probability bucket, which is what
+  the change is about: on forecasts between 0 and 0.2 the normal predicted 0.040
+  against 0.080 observed, the logistic predicts 0.050 against 0.070 — half the
+  calibration error, on 329 and 334 forecasts. Log loss improves in five of
+  seven rounds, and for QB (0.836 -> 0.760), WR (0.289 -> 0.275) and K
+  (0.187 -> 0.170); RB (0.473) and TE (0.361) are unchanged; DST is worse
+  (0.568 -> 0.618) on 17 forecasts. The `espn_list` (3.358) and `adp` (3.333)
+  predictors are bit-identical, which is the control.
+  Read the per-position rows with care: the replay re-derives its
+  recommendations from the survival numbers, so the two runs do not score
+  identical forecast sets (DST n 17 vs 18, K 9 vs 11) and the small positions
+  are not paired samples.
+- The K/DST pricing below was re-measured on the fixed tail, because the two
+  interacted: the thin tail was inflating D/ST marginal value at the same time
+  the carve-out was deflating its raw-value share. It still earns its keep. With
+  the 0.20 raw share kept, the top defense is the second-best pick at 125 —
+  round 8 of 14 — and three defenses crowd the top six; priced on marginal value
+  alone it is fifth at 125 and 189, third at 164 and 196. The top defense's
+  survival to the next pick now reads 0.54 at pick 157 and 0.54 at 189, against
+  0.30 and 0.18 before.
+
 **Kickers and defenses are priced, not guessed**
 
 - K and D/ST are on the board. nflverse box scores carry no kicking and no team

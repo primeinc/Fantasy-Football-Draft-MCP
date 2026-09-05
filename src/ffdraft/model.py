@@ -24,10 +24,6 @@ from .config import (
 )
 
 
-def _norm_cdf(x: float) -> float:
-    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-
-
 def touchdown_luck_multiplier(rz_touches: pd.Series, rz_td: pd.Series,
                               baseline_rate: pd.Series, weight: float,
                               min_touches: int = 8) -> pd.Series:
@@ -495,23 +491,84 @@ ADP_SD_FLOOR = 5.0
 ADP_SD_RATE = 0.22
 
 
-def survival_probability(adp: float, current_pick: int, next_pick: int,
-                         sd_floor: float = ADP_SD_FLOOR) -> float:
-    """Chance a player is still on the board at your next pick.
+_erfc_vec = np.vectorize(math.erfc, otypes=[float])
 
-    ADP is treated as the centre of a normal distribution whose spread widens later
-    in the draft, which matches how real draft variance behaves: pick 3 goes where
-    pick 3 goes, pick 90 is a coin flip across twenty names.
+# Shape of the distribution of a player's realised draft slot around his ADP.
+# "normal" was the original; "logistic" keeps the same spread but replaces the
+# Gaussian right tail with an exponential one. See survival_probability.
+SURVIVAL_TAIL = "logistic"
+# Logistic scale that matches a normal of standard deviation 1.
+_LOGISTIC_SCALE = math.sqrt(3.0) / math.pi
+
+
+def _log_sf(z: np.ndarray, tail: str) -> np.ndarray:
+    """log P(the realised slot lands more than z standard deviations past ADP).
+
+    Computed in logs because the useful range is the far tail, where the
+    survival function underflows to zero in linear space and the conditional
+    probability below would come out 0/0.
+    """
+    if tail == "normal":
+        # erfc, not 1 - cdf: the complementary error function keeps its accuracy
+        # into the far tail, where `1 - Phi(z)` is catastrophic cancellation and
+        # underflows to exactly 0 past about z = 8. That underflow made the
+        # numerator and the denominator of the conditional probability below
+        # equal, and the survival of a hopelessly gone player came out as 1.0.
+        with np.errstate(divide="ignore"):
+            return np.log(np.clip(0.5 * _erfc_vec(z / math.sqrt(2)), 1e-300, 1.0))
+    # Logistic: P(X > m + z*sd) = 1 / (1 + exp(z / _LOGISTIC_SCALE)), so the log
+    # survival is -logaddexp(0, z / scale) -- stable for any z.
+    return -np.logaddexp(0.0, z / _LOGISTIC_SCALE)
+
+
+def _conditional_survival(adp: np.ndarray, current_pick: float, next_pick: float,
+                          sd_floor: float, tail: str) -> np.ndarray:
+    """P(still available at next_pick | still available now). NaN where no ADP."""
+    adp = np.asarray(adp, dtype=float)
+    # A row with no ADP is carried through as NaN rather than pushed into the
+    # tail functions, which would warn on every board that has one.
+    known = np.isfinite(adp)
+    safe = np.where(known, adp, 1.0)
+    sd = np.maximum(sd_floor, ADP_SD_RATE * safe)
+    log_p = (_log_sf((next_pick - safe) / sd, tail)
+             - _log_sf((current_pick - safe) / sd, tail))
+    out = np.clip(np.exp(np.minimum(log_p, 0.0)), 0.0, 1.0)
+    return np.where(known, out, np.nan)
+
+
+def survival_probability(adp: float, current_pick: int, next_pick: int,
+                         sd_floor: float = ADP_SD_FLOOR,
+                         tail: str | None = None) -> float:
+    """Chance a player is still on the board at your next pick, given that he is
+    on it now.
+
+    ADP is the centre of a distribution whose spread widens later in the draft,
+    which matches how real draft variance behaves: pick 3 goes where pick 3
+    goes, pick 90 is a coin flip across twenty names.
+
+    The shape of that distribution is the part that matters most, and it is not
+    normal. A Gaussian right tail says a player 3.5 standard deviations past his
+    ADP is certainly gone -- and the board is full of players who are not. The
+    live 2026 record had the second-best defense sitting undrafted at pick 123
+    with an ADP of 93, in a room that had taken one defense in 122 picks; the
+    normal tail put his survival at 0.00 and did the same for every other
+    defense, which then told `expected_best_at_next_pick` that waiting at the
+    position was worth its *worst* player. A whole position's marginal value was
+    computed off that.
+
+    A logistic of matching spread keeps the middle of the distribution and gives
+    the tail an exponential decay instead, so the conditional survival of a
+    player well past his ADP tends to exp(-(next - current) / scale): a constant
+    hazard per pick rather than a cliff. "He has slid this far already, so the
+    chance he goes in the next seven picks is roughly what it was for the last
+    seven" is the right statement about a player the market has stopped pricing
+    at his ADP.
     """
     if not np.isfinite(adp):
         return 0.5
-    sd = max(sd_floor, ADP_SD_RATE * adp)
-    # P(this player's realised draft slot lands after our next pick)
-    p_survive = 1 - _norm_cdf((next_pick - adp) / sd)
-    p_gone_now = _norm_cdf((current_pick - adp) / sd)
-    if p_gone_now >= 0.999:
-        return 0.0
-    return float(np.clip(p_survive / max(1e-6, 1 - p_gone_now), 0.0, 1.0))
+    out = _conditional_survival(np.asarray([adp], dtype=float), current_pick, next_pick,
+                                sd_floor, tail or SURVIVAL_TAIL)
+    return float(out[0])
 
 
 _erf_vec = np.vectorize(math.erf, otypes=[float])
@@ -522,15 +579,13 @@ def _norm_cdf_vec(z: np.ndarray) -> np.ndarray:
 
 
 def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
-                             sd_floor: float = ADP_SD_FLOOR) -> np.ndarray:
+                             sd_floor: float = ADP_SD_FLOOR,
+                             tail: str | None = None) -> np.ndarray:
     """Vectorised form of survival_probability. plan_my_draft evaluates the whole
     board once per round, so the scalar version ran thousands of times per call."""
     adp = np.asarray(adp, dtype=float)
-    sd = np.maximum(sd_floor, ADP_SD_RATE * adp)
-    p_survive = 1 - _norm_cdf_vec((next_pick - adp) / sd)
-    p_gone_now = _norm_cdf_vec((current_pick - adp) / sd)
-    out = np.where(p_gone_now >= 0.999, 0.0,
-                   p_survive / np.maximum(1e-6, 1 - p_gone_now))
+    out = _conditional_survival(adp, current_pick, next_pick, sd_floor,
+                                tail or SURVIVAL_TAIL)
     return np.clip(np.nan_to_num(out, nan=0.5), 0.0, 1.0)
 
 

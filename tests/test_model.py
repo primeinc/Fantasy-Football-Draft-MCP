@@ -95,6 +95,52 @@ class TestSurvival:
         out = survival_probability_vec(np.array([np.nan, 30.0]), 10, 20)
         assert not np.isnan(out).any()
 
+    def test_a_player_far_past_his_adp_is_not_written_off(self):
+        # The live case: a defense with an ADP of 93 still on the board at pick
+        # 157. A Gaussian tail calls that certain to end, which then told
+        # expected_best_at_next_pick that waiting at the position was worth its
+        # worst player.
+        normal = survival_probability(adp=93, current_pick=157, next_pick=164,
+                                      tail="normal")
+        logistic = survival_probability(adp=93, current_pick=157, next_pick=164,
+                                        tail="logistic")
+        assert normal < 0.35
+        assert logistic > 0.45
+        assert logistic > normal
+
+    def test_the_tail_hazard_is_roughly_constant_once_well_past_adp(self):
+        # An exponential tail means "he has slid this far, so the next seven
+        # picks look like the last seven" -- the same wait costs about the same
+        # whether he is 60 or 100 picks past his ADP.
+        far = survival_probability(adp=40, current_pick=160, next_pick=167,
+                                   tail="logistic")
+        further = survival_probability(adp=40, current_pick=200, next_pick=207,
+                                       tail="logistic")
+        assert abs(far - further) < 0.02
+        # The normal tail has no such limit: it keeps collapsing.
+        n_far = survival_probability(adp=40, current_pick=160, next_pick=167,
+                                     tail="normal")
+        n_further = survival_probability(adp=40, current_pick=200, next_pick=207,
+                                         tail="normal")
+        assert n_further < n_far
+
+    def test_the_middle_of_the_distribution_is_preserved(self):
+        # Only the tail is meant to change; near the ADP the two shapes should
+        # give nearly the same answer.
+        for adp, current, nxt in ((60, 55, 62), (100, 95, 108), (30, 28, 34)):
+            a = survival_probability(adp, current, nxt, tail="normal")
+            b = survival_probability(adp, current, nxt, tail="logistic")
+            assert abs(a - b) < 0.10
+
+    def test_both_tails_stay_probabilities_and_stay_monotone(self):
+        for tail in ("normal", "logistic"):
+            previous = 1.1
+            for nxt in (21, 30, 45, 70, 120, 250):
+                p = survival_probability(40, 20, nxt, tail=tail)
+                assert 0.0 <= p <= 1.0
+                assert p <= previous
+                previous = p
+
 
 class TestPositionalNeed:
     def test_empty_starting_slot_is_a_premium(self):
