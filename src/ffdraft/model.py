@@ -712,7 +712,9 @@ def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
     over an aggregate.
 
     Every multiplier in `recommend` goes through here, so they cannot drift
-    apart on this.
+    apart on this. The same defect was found independently in `role_mult`,
+    `need_mult` and `roles_mult`; it is one missing invariant, not three bugs,
+    and `roles_mult` is routed through here for that reason.
     """
     v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
     m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
@@ -724,7 +726,8 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
               bye_weight: float = 0.0,
-              adp_shift: float | Mapping[str, float] = 0.0) -> pd.DataFrame:
+              adp_shift: float | Mapping[str, float] = 0.0,
+              role_weights: Mapping[str, float] | None = None) -> pd.DataFrame:
     """Rank available players for the pick that's on the clock.
 
     Two ideas drive the ordering beyond raw value:
@@ -740,6 +743,12 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     `adp_shift` is how many picks earlier than ADP this room has been taking
     players (replay.room_drift), one number or one per position; survival odds
     are computed against ADP minus it.
+
+    `role_weights` opens the two `roles.py` terms — `start_prob` (what a bench
+    player is worth once you price the weeks he actually starts) and `handcuff`
+    (what a backup is worth conditional on the man ahead of him). Both default
+    to 0, and at 0 the result is bit-identical to one computed without them; see
+    CHANGELOG.md for the evidence behind any non-zero value.
     """
     avail = board[~board["drafted"]].copy() if "drafted" in board.columns else board.copy()
     if avail.empty:
@@ -788,6 +797,17 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
 
     avail["role_mult"] = role_multiplier(avail)
     avail["pick_value"] = _discount(avail["pick_value"], avail["role_mult"])
+
+    if role_weights:
+        from . import roles
+
+        avail["roles_mult"] = roles.pick_value_multiplier(
+            avail, league, mine,
+            start_prob_weight=float(role_weights.get("start_prob", 0.0)))
+        avail["roles_bonus"] = roles.pick_value_bonus(
+            avail, league, mine, handcuff_weight=float(role_weights.get("handcuff", 0.0)))
+        avail["pick_value"] = (_discount(avail["pick_value"], avail["roles_mult"])
+                               + avail["roles_bonus"])
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -960,4 +980,34 @@ def explain(row: pd.Series) -> str:
     if bye is not None and pd.notna(bye):
         conflicts = row.get("bye_conflicts") or ""
         bits.append(f"bye week {int(bye)}" + (f" stacks with {conflicts}" if conflicts else ""))
+    ent = row.get("role_entropy")
+    if ent is not None and pd.notna(ent):
+        # Uncertainty is not automatically bad: late in a draft an unresolved
+        # ceiling is often underpriced. What it must not do is read the same as
+        # a player who barely has a job, so the direction is named.
+        from . import roles
+
+        # NaN is truthy, so a missing label would print as "nan" — the same trap
+        # that had `explain` announcing "ESPN status nan" on every defense.
+        kind = row.get("entropy_kind")
+        churn = row.get("role_churn")
+        why = []
+        if kind is not None and pd.notna(kind) and str(kind):
+            why.append(str(kind))
+        if churn is not None and pd.notna(churn) and churn > roles.ENTROPY_CHURN_SCALE / 2:
+            why.append("snap share moved week to week")
+        # Say which half the score rests on when it rests on only one: the two
+        # do not have the same evidential standing.
+        basis = row.get("entropy_basis")
+        if basis is not None and pd.notna(basis) and str(basis) \
+                and str(basis) != roles.ENTROPY_BASIS_BOTH:
+            why.append(str(basis))
+        bits.append(f"role uncertainty {float(ent):.2f}"
+                    + (f" ({'; '.join(why)})" if why else ""))
+    shares = [(label, row.get(key)) for label, key in
+              (("targets", "target_share"), ("carries", "carry_share"),
+               ("red zone", "redzone_share"), ("snaps", "snap_share"))]
+    named = [f"{label} {float(v):.0%}" for label, v in shares if v is not None and pd.notna(v)]
+    if named:
+        bits.append("share of team: " + ", ".join(named))
     return "; ".join(bits)

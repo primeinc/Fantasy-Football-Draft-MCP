@@ -34,6 +34,131 @@ All notable changes to this project. Format follows
   `sync_draft` refuses while a watch is connected; `just watch <league_id>` runs
   the watch standalone with a log file.
 
+**Roles: start probability, handcuffs, opportunity, role entropy**
+- New `roles.py`, built from the strategy brief's objective
+  (`VORP + VONA + Expected Starting Utility + Contingent Upside + Roster
+  Optionality - ...`). `recommend` already priced the first two; this adds the
+  next two behind weights that default to 0, and scores the role-risk term.
+  `model.py` gains one kwarg, one block in the `pick_value` chain and two
+  trailing lines in `explain`; everything else is in the new module.
+  `just roles [what] [seasons] [trials] [seed]` runs the evidence.
+- **Start probability** (`roles.start_probability`, weight `start_prob`,
+  default 0). With no FLEX slot an RB3 does not compete with a WR3 for a
+  starting job: he is in the lineup in a week only when fewer than two of the
+  running backs ahead of him *on your roster* are available. Availability per
+  week is `exp_games / 17` — the same injury mapping `project` already uses, so
+  the two cannot drift — and a man on his bye is not available. The count is an
+  exact Poisson-binomial over the men ahead, averaged over the 14 fantasy weeks.
+  Bench value is that probability times his projection. Exact with no FLEX; a
+  lower bound with one, since a flex start is not counted.
+- **Contingent handcuff value** (`roles.handcuff_table`, weight `handcuff`,
+  default 0). The brief's `EV = P(role change) x delta value + standalone`, with
+  the two numbers kept apart rather than collapsed into "he is a good handcuff".
+  The direct backup — depth rank 2 at his own NFL team and position, by the
+  model's own projection — inherits the games the starter is expected to miss at
+  the per-game upgrade between them; holding the starter doubles it, because the
+  contingency then covers a slot the roster depends on. Added to `pick_value`,
+  not multiplied: a deep bench player's `pick_value` is negative, so scaling it
+  by his handcuff case pushed him further down. Restricted to depth rank 2 for
+  the same class of reason: the gap to the starter is widest for the man least
+  likely to inherit anything, so an unrestricted version put fourth-string backs
+  and a practice-squad quarterback at the top of the list.
+- **Opportunity, decomposed and named** (`roles.opportunity_shares`):
+  `target_share`, `carry_share`, `redzone_share`, `snap_share`, each of the
+  player's own team's total, recency-weighted the same way production is, in
+  `player_report` and in `explain()`. Red zone share comes from the play rows,
+  which name the team he took each touch for. A player traded mid-season is
+  collapsed to one row per season against a denominator weighted by the weeks he
+  spent at each club, so the trade neither double-counts the season nor discards
+  the half of his production at the other one. Coverage on the live 2026 board
+  (632 rows): target 552, carry 552, red zone 516, snap 526; medians 0.043,
+  0.005, 0.045, 0.481. Informational only — `recommend` returns bit-identical
+  names and `pick_value`s with the four columns dropped.
+- **Role entropy** (`roles.role_entropy`), in `player_report` and `explain()`.
+  `proj_disagreement` is |ln(ESPN / model)|, full at a factor of two (ln 2);
+  `role_churn` is the week-to-week coefficient of variation of the player's
+  share of his team's offensive snaps in his last season, full when its standard
+  deviation equals its own mean; the score is their mean. Both scales are policy
+  and quotable as a sentence about the world, not fitted — an earlier pair at 0.5
+  put the median at 0.79 and separated nobody; these put it at 0.52.
+  `entropy_kind` splits the brief's two uncertainties: ESPN above a model built
+  from past production is `unresolved upside` (50 rows), below it is
+  `role in doubt` (208), inside a quarter either way it is unnamed (374).
+  Evidence: entropy binned against real projection error on a leak-free board,
+  three bins, both seasons monotonic. 2024 (n 356): 0.381 / 0.529 / 0.707 mean
+  absolute percentage error, spread +0.326. 2025 (n 347): 0.366 / 0.510 / 0.704,
+  spread +0.338. Past seasons have no ESPN projection, so that scores the churn
+  half only; the disagreement half is the same signal `role_multiplier` already
+  ships evidence for. Entropy changes no number in `pick_value`.
+- **Both weights ship at 0.** `roles.weight_backtest` runs the paired Monte
+  Carlo `bye_backtest` already uses — same season, same seed, same bots, same
+  noise, scored on real box scores as the best legal lineup each regular-season
+  week, so the pair differs in exactly the weight. `just roles weights` runs it.
+  It also reports `trials_improved_of_changed`: about half the trials draft the
+  identical roster, and counting a tie as a loss is how a term that wins most of
+  the drafts it touches reads as a coin flip.
+  `start_prob` at 1.0, 12 paired drafts per season: 2024 -10.6 weekly points
+  (4 of the 9 trials it changed improved), 2025 +20.6 (8 of 11), overall +5.0
+  over 37 changed picks. Opposite signs by season is not evidence, so the weight
+  stays 0 and start probability is reported rather than priced —
+  `who_should_i_pick` carries `starts_in_a_given_week` and `bench_value` per
+  candidate whatever the weight is. On the live board at pick 125 that puts
+  Dalton Schultz at 0.17 and a bench value of 27.7 against a 163-point
+  projection, because the roster already holds a tight end and the league has no
+  FLEX slot.
+  `handcuff` at 1.0, gated, 20 paired drafts per season across two seed blocks:
+  2024 +17.5 (7 of 12 changed trials improved), 2025 +20.2 (9 of 11), overall
+  +18.9 over 74 changed picks. All four block-seasons are positive (+37.9 and
+  +3.9 in 2024, +22.1 and +18.9 in 2025), which is the only consistent sign
+  either weight produced. It still stays 0, and the reason is the next entry.
+- **What this backtest can and cannot resolve.** Running both weights together
+  gave 2024 +18.4 on seeds 0-11 and 2024 -21.3 on seeds 8-19: the same
+  configuration, the same season, two mostly-disjoint seed blocks, and a
+  40-point spread with opposite signs. The gated handcuff term did the same
+  thing more mildly in 2024 (+37.9 against +3.9). So the seed-to-seed spread of
+  this machinery at 8-12 paired drafts is about the size of every effect
+  reported above, and none of the four weight numbers is separable from noise at
+  this sample size — including the handcuff term, whose consistent sign is
+  suggestive and whose magnitude is not pinned down at all.
+  That is a fact about the measurement, not about the features, and it is the
+  reason both weights ship at 0 rather than an argument for either of them.
+  What would settle the handcuff term is a run long enough for the blocks to
+  agree with each other — `just roles handcuff 2024,2025 40 20` extends the
+  sample rather than repeating it — and a season outside 2024-2025.
+  `bye_backtest`'s -2.1 over 12 paired drafts per season was read against the
+  same machinery and deserves the same caution.
+- The handcuff term was **redesigned twice under its own evidence**, which is
+  the reason to run it before shipping it rather than after. Version one made
+  the bonus a multiplier on `pick_value` and gave contingent value to everyone
+  behind the starter. Sorting the live board by the new column put Gus Edwards,
+  a practice-squad quarterback and Odell Beckham at the top: the gap to the
+  starter is widest for the man least likely to inherit anything. It also
+  multiplied a deep bench player's negative `pick_value`, making a strong
+  handcuff case push him *down*. Version two — add the points, and only for
+  depth rank 2 — drafted backup quarterbacks instead, because a QB2's starter
+  has the best per-game output on the board and the bonus landed after
+  `need_mult` had already discounted him, walking straight past the rule that
+  stops the model rostering a second quarterback. Measured over 8 paired drafts
+  per season: 2024 -103.5 weekly points (2/8 trials improved, 53 players
+  swapped, empty starter slots 7.5 -> 13.4), 2025 -49.5 (3/8, 44 swapped, 5.25
+  -> 8.25), overall -76.5. The picks it swapped in were Cooper Rush, Gardner
+  Minshew, Michael Pratt, Tyler Huntley, Clayton Tune, Trey Lance and Mitchell
+  Trubisky. Version three gates the bonus by the chance the player would be in
+  *my* lineup when the promotion comes: contingent points a roster can never
+  start are not points. Gated, the same 8 paired drafts per season give 2024
+  +37.9 and 2025 +22.1, overall +30.0 — the gate alone is worth +141 weekly
+  points in 2024.
+- `model.recommend` applies `roles_mult` as `pv * m` above zero and `pv / m`
+  below it, so below 1 always means further down the list. `pick_value` goes
+  negative deep in the board, and multiplying a negative by a start probability
+  of 0.3 moves it *toward* zero — promoting exactly the bench players the
+  discount exists to bury. Found by reading marge's identical fix for
+  `role_mult` on the K/DST branch, after a first `start_prob` measurement had
+  already been taken against the broken form and had to be thrown away. Otto
+  measured the same defect a third time in `need_mult`, so it is one missing
+  invariant at three sites rather than three bugs; a shared `_discount` helper
+  is being proposed and this site should join it.
+
 **Draft room presence**
 - `draft_room_stats` and `just roomstats [dump_dir]` (`roomstats.py`): who was
   in the ESPN draft room, for how long, and who talked, per member by team and

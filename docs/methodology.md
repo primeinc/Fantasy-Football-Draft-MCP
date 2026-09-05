@@ -171,6 +171,64 @@ positions. Hard caps shut a position off entirely past the point it can help.
 In superflex the second quarterback is a starter rather than a bench body, so those
 rules invert.
 
+### Start probability and contingent upside (both off by default)
+
+`roles.py` prices the same idea properly rather than by decay, for a league with no
+FLEX slot. An RB3 does not compete with a WR3 for a starting job: he is in the lineup
+in a week only when fewer than two of the running backs ahead of him *on your roster*
+are available, which follows from their expected games and their byes. The count is an
+exact Poisson-binomial over the men ahead, averaged over the fourteen fantasy weeks;
+per-week availability is `exp_games / 17`, the same injury mapping `project` already
+uses, so the two cannot drift apart. Exact with no FLEX slot, a lower bound with one.
+
+A backup's contingent value is `P(role change) x delta value`: the direct backup at an
+NFL team and position inherits the games the starter is expected to miss at the
+per-game upgrade between them, doubled when you hold that starter, because the
+contingency then covers a slot the roster already depends on.
+
+Both are informational. `roles.weight_backtest` ran the paired mock drafts (the same
+machinery as `bye_backtest`: same seed, same bots, same noise, scored on real weekly box
+scores) and neither weight earned a place in `pick_value`. Start probability came out
+-10.6 weekly points in 2024 and +20.6 in 2025 across 12 paired drafts each; opposite
+signs by season is not evidence. The handcuff term came out +17.5 and +20.2 across 20
+paired drafts each, positive in all four block-seasons, which is the only consistent
+sign either weight produced. Those numbers and the two redesigns the handcuff term
+needed before it was worth measuring at all are in [CHANGELOG.md](../CHANGELOG.md).
+`who_should_i_pick` reports `starts_in_a_given_week`, `bench_value`, `handcuff_for` and
+`contingent_points` per candidate without pricing any of them.
+
+**What this backtest can resolve.** Running both weights together gave +18.4 on seeds
+0-11 and -21.3 on seeds 8-19 — same configuration, same season, opposite signs, a
+40-point spread. The seed-to-seed spread at 8-12 paired drafts is therefore about the
+size of every effect anyone has measured with this machinery, so a single run of this
+length can reject a term that is badly wrong (the ungated handcuff term at -103.5) but
+cannot confirm one that is mildly right. Read any number from it against a second seed
+block before believing its magnitude; `just roles ... [seed]` exists for that.
+
+One reporting detail that changes the reading: about half the paired trials draft the
+identical roster, because the weight changes nothing at that seed. `weight_backtest`
+counts those as ties rather than losses (`trials_improved_of_changed`), which is the
+difference between "4 of 12 trials improved" and "4 of the 6 it changed".
+
+### Role entropy (informational)
+
+An uncertainty score in [0, 1]: the mean of |ln(ESPN projection / model projection)|,
+full at a factor of two, and the week-to-week coefficient of variation of the player's
+share of his team's offensive snaps, full when its standard deviation equals its own
+mean. Both scales are policy, chosen to be quotable as a statement about the world
+rather than fitted to a distribution.
+
+Unlike most informational signals here, this one has a direct test: does entropy mark
+the projections that actually miss? On leak-free boards, binning by entropy and
+measuring mean absolute percentage error against real season points gives 0.381 /
+0.529 / 0.707 across three bins in 2024 (n 356) and 0.366 / 0.510 / 0.704 in 2025
+(n 347) — monotonic in both. Past seasons carry no ESPN projection, so that scores the
+snap-churn half; the disagreement half is the same signal `role_multiplier` already
+prices. `entropy_kind` splits the two uncertainties that human rankings mash together:
+ESPN above a model built from past production is unresolved upside, ESPN below it is a
+role in doubt. They are not the same bet, and late in a draft the first one is often
+underpriced.
+
 ## Scoring-format conversion
 
 FantasyPros publishes only full PPR for overall redraft — no half-PPR or standard board

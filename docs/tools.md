@@ -53,6 +53,52 @@ replace, the roster-need discount that already stops the model wanting a second
 QB once you have one — a boost makes QB1 more competitive, it doesn't undo the
 one-starting-slot logic.
 
+**Role weights.** `model.recommend` takes `role_weights`, a mapping opening the
+two `roles.py` terms that can move a `pick_value`. Both default to 0, and at 0
+the recommendation is bit-identical to one computed without them.
+
+`start_prob` prices what a bench player is actually worth in a league with no
+FLEX slot. An RB3 does not compete with a WR3 for a starting job; he starts only
+in the weeks when fewer than two of the running backs ahead of him on *your*
+roster are available, which the model knows from their expected games and their
+byes. At weight 1 a candidate's `pick_value` is scaled by that probability; at 0
+nothing changes. It is whether the lineup has room for him, not whether he
+plays: his own bye and injury risk are already in `proj_points`. With a FLEX
+slot the probability is a lower bound, since a player can also start through the
+flex, which it does not count. `who_should_i_pick` reports it as
+`starts_in_a_given_week` with `bench_value` beside it whatever the weight is.
+
+`handcuff` prices contingent upside. The direct backup at an NFL team and
+position — depth rank 2 by the model's own projection — inherits the games the
+starter is expected to miss at the per-game upgrade between them, and that many
+points are *added* to his `pick_value`, doubled when you already hold the
+starter and gated by the chance he would be in your lineup when the promotion
+comes. Each of those is a correction the evidence forced. Added rather than
+multiplied because a deep bench player's `pick_value` is negative, so scaling it
+by his handcuff case pushes him further down; only depth rank 2, because giving
+it to everyone behind the starter rewards whoever is worst (the gap to the
+starter is widest for the man least likely to inherit anything); and gated,
+because contingent points a roster can never start are not points — a QB2's
+starter has the best per-game output on the board and the bonus lands after
+`need_mult` has already discounted him.
+
+The gate does **not** apply when the starter is yours. His absence is both what
+pays the contingency and what opens the lineup slot — one event, not two — so
+gating there squares a probability `contingent_points` has already applied.
+Left in, it made holding the starter *lower* his handcuff's value than not
+holding him, the exact reverse of the intent.
+
+Every multiplier in `recommend` goes through `model._discount`, so below 1
+always means further down the list in both halves of the board.
+
+`just roles [what] [seasons] [trials] [seed]` is the evidence. `what`: `shares`
+prints opportunity-share coverage on the live board and checks `pick_value` does
+not move; `entropy` bins projection error by role entropy on a leak-free board
+per season; `weights` runs the paired mock drafts behind both weights, and
+`start_prob` or `handcuff` runs one of them. `seed` shifts the trial seeds, so a
+second run extends a sample rather than repeating it. Numbers in
+[CHANGELOG.md](../CHANGELOG.md).
+
 ## During the draft
 
 ### `on_the_clock`
@@ -361,7 +407,26 @@ and seed, one mock draft with `bye_weight` 0 and one with the given weight, same
 bots and noise, scored as the best legal lineup each regular-season week on real
 box scores. Season totals cannot see a bye; weekly lineups can. `improvement` is
 weekly points gained per season; `empty_slots` counts starter slots nothing could
-fill. Run it before trusting a nonzero `bye_weight` in a league.
+fill. `just bye [seasons] [trials] [weight] [seed]` prints the same without a
+server.
+
+**Read `improvement` against `block_spread`, never on its own.** Every paired
+backtest here runs `blocks` disjoint blocks of `n_trials` (default
+`adp.DEFAULT_BLOCKS`, seeds `seed + block * n_trials + trial`) and reports each
+block's own improvement in `blocks`, their range in `block_spread`, and whether
+they point the same way in `blocks_agree`. The spread between two blocks of the
+*same* configuration is the harness's own noise, and it is the size of the
+effects this harness is used to measure: running both `roles.py` weights
+together over 2024 gave +18.4 weekly points on seeds 0-11 and -21.3 on seeds
+8-19. So a run of this length can reject a term that is badly wrong and cannot
+confirm one that is mildly right. When `blocks_agree` is false the improvement
+is inside that noise and supports nothing, whatever its sign.
+
+`trials_improved_of_changed` is the win count over the trials the weight
+actually changed, beside `trials_changed`. About half the paired trials draft
+the identical roster, and counting an abstention as a loss drives any
+conservative term toward a 50% win rate — the difference between "4 of 12
+trials improved" and "4 of the 6 it changed".
 
 ### `draft_queue` / `set_draft_queue`
 Your ESPN pick queue, the list autopick draws from if you miss the clock.
@@ -427,8 +492,42 @@ Simulate every remaining pick from your slot. `strategy`: `balanced`, `zero_rb`,
 Every modelled factor for one player: production, role, environment multipliers, injury
 components, separation, draft capital for rookies. Includes red zone role
 (`rz_touches`, `rz_td`, `rz_td_rate`) against the position's baseline conversion rate
+(`rz_touches`, `rz_td`, `rz_td_rate`) against the position's baseline conversion rate
 (`rz_baseline_rate`) and the resulting `m_td_luck` multiplier — surfaced in the plain-
 language `summary` as "touchdown regression" whenever it moves the projection.
+
+**Opportunity, named** (`roles.py`): `target_share`, `carry_share`, `redzone_share`
+and `snap_share`, each of the player's own team's total that season and
+recency-weighted the same way production is, so "800 yards on 105 targets" and
+"800 yards on 60 targets" stop reading alike. Red zone share is his share of his
+team's plays inside the 20, taken from the play rows, so a player who changed
+teams is measured against whoever he was playing for at the time. The `summary`
+prints them as "share of team: targets 21%, carries 0%, red zone 11%, snaps 85%".
+
+**Role entropy** (`roles.py`): `role_entropy` in [0, 1], with the two parts it is
+made of. `proj_disagreement` is |ln(ESPN projection / model projection)| — zero
+when they agree, symmetric, full at a factor of two. `role_churn` is the
+week-to-week coefficient of variation of the player's share of his team's
+offensive snaps in his most recent season, full when its standard deviation
+equals its own mean; under six appearances it is left blank rather than guessed
+from three games. The score is their mean. `entropy_kind` names the direction,
+because uncertainty is not one thing: ESPN projecting *above* a model built from
+past production is `unresolved upside`, ESPN projecting *below* it is
+`role in doubt`.
+
+`entropy_basis` names which halves a row's score rests on — `disagreement+churn`,
+`disagreement only` or `churn only` — because the two do not have the same
+evidential standing. The churn half is monotonic against real projection error in
+two seasons across 700 players; the disagreement half has no test of its own
+here. Both components are reported beside the blend in `player_report` and
+`who_should_i_pick` so a consumer can use the evidenced half alone, and
+`explain()` names a one-sided basis. Two projections that are bit-identical are
+one number rather than two that agree, so a kicker or defense priced from ESPN's
+own projection scores no disagreement at all rather than reading as the most
+certain role on the board.
+
+Nothing in `pick_value` depends on any of it — they are read-only columns; see
+**Role weights** under `model_settings`.
 
 ### `compare_players`
 Two to four players head to head, with a verdict.

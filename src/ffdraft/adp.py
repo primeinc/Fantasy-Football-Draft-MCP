@@ -790,9 +790,14 @@ def _sim_rounds(league) -> int:
 
 
 def _draft_trial(board: pd.DataFrame, league, rng, top_n: int = 5,
-                 bye_weight: float = 0.0) -> list[tuple[int, str]]:
+                 bye_weight: float = 0.0,
+                 role_weights: dict[str, float] | None = None) -> list[tuple[int, str]]:
     """One simulated draft: recommend() at the user's slot, ADP bots with
-    reach/fall noise everywhere else. Returns the user's picks as (round, name)."""
+    reach/fall noise everywhere else. Returns the user's picks as (round, name).
+
+    `role_weights` is passed straight through to `model.recommend`, so a paired
+    run with and without a `roles.py` weight differs in exactly that one thing.
+    """
     from . import board as bd
     from . import model
 
@@ -826,7 +831,7 @@ def _draft_trial(board: pd.DataFrame, league, rng, top_n: int = 5,
             after = state.pick_after_next() if nxt == current else nxt
             recs = model.recommend(pool, league, current_pick=current, next_pick=after,
                                    roster=roster, top_n=top_n, mine=state.my_rows(b),
-                                   bye_weight=bye_weight)
+                                   bye_weight=bye_weight, role_weights=role_weights)
             if recs.empty:
                 break
             chosen = recs.iloc[0]["name"]
@@ -901,17 +906,105 @@ def weekly_lineup_points(names: list[str], season: int, league, weeks: int = 14)
     return {"points": round(total, 1), "empty_slots": empty}
 
 
+# Every paired backtest here runs this many disjoint blocks of trials and
+# reports each one, never their mean alone.
+#
+# The spread between two blocks of the *same* configuration is this harness's
+# own noise, and it is the size of the effects it is used to measure: running
+# both `roles.py` weights together over 2024 gave +18.4 weekly points on seeds
+# 0-11 and -21.3 on seeds 8-19. A run of this length can therefore reject a term
+# that is badly wrong (the ungated handcuff term stayed at -103.5 in every
+# block) and cannot confirm one that is mildly right unless the blocks agree in
+# sign. Reporting one mean hides exactly that distinction, which is how a
+# 40-point disagreement got averaged into a finding.
+DEFAULT_BLOCKS = 2
+
+
+def _paired_blocks(draft_pair, score, n_trials: int, blocks: int, seed: int,
+                   say, label: str) -> dict:
+    """Run `blocks` disjoint blocks of `n_trials` paired drafts and report each.
+
+    `draft_pair(trial_seed)` returns the two rosters — off and on — drafted from
+    the same seed; `score(names)` returns that roster's weekly-lineup dict. The
+    blocks use `seed + block * n_trials + trial`, so a second block extends the
+    sample rather than repeating it.
+
+    A trial that drafts the identical roster is a tie, not a loss:
+    `trials_improved_of_changed` counts only the drafts the change touched,
+    because about half of them it does not, and counting an abstention as a
+    failure drives any conservative term toward a 50% win rate.
+    """
+    rows = []
+    for block in range(blocks):
+        block_seed = seed + block * n_trials
+        base: list[dict] = []
+        tuned: list[dict] = []
+        changed: list[bool] = []
+        swaps = 0
+        for trial in range(n_trials):
+            names_a, names_b = draft_pair(block_seed + trial)
+            swapped = sorted(set(names_b) - set(names_a))
+            swaps += len(swapped)
+            changed.append(bool(swapped))
+            base.append(score(names_a))
+            tuned.append(score(names_b))
+            say(f"{label} block {block + 1}/{blocks} trial {trial + 1}/{n_trials}: "
+                f"off {base[-1]['points']:.1f} vs on {tuned[-1]['points']:.1f}"
+                + (f"; swapped in {swapped}" if swapped else "; identical rosters"))
+        pa = np.array([x["points"] for x in base])
+        pb = np.array([x["points"] for x in tuned])
+        moved = np.array(changed)
+        rows.append({
+            "block": block, "seed_from": block_seed, "n_trials": n_trials,
+            "weekly_points_off": round(float(pa.mean()), 1),
+            "weekly_points_on": round(float(pb.mean()), 1),
+            "improvement": round(float((pb - pa).mean()), 1),
+            "trials_improved": int((pb > pa).sum()),
+            "trials_changed": int(moved.sum()),
+            "trials_improved_of_changed": int(((pb > pa) & moved).sum()),
+            "players_swapped": swaps,
+            "empty_slots_off": round(float(np.mean([x["empty_slots"] for x in base])), 2),
+            "empty_slots_on": round(float(np.mean([x["empty_slots"] for x in tuned])), 2),
+        })
+        say(f"{label} block {block + 1}/{blocks} done: improvement "
+            f"{rows[-1]['improvement']:+.1f} weekly pts, "
+            f"{rows[-1]['trials_improved_of_changed']}/{rows[-1]['trials_changed']} of the "
+            f"trials it changed, {swaps} players swapped")
+    return _block_summary(rows)
+
+
+def _block_summary(rows: list[dict]) -> dict:
+    """Pool a set of block rows, keeping the spread and the agreement visible."""
+    gains = [r["improvement"] for r in rows]
+    return {
+        "blocks": rows,
+        "improvement": round(float(np.mean(gains)), 1) if gains else None,
+        "block_improvements": gains,
+        # The distance between blocks of the same configuration: the harness's
+        # own noise, and the number to read the improvement against.
+        "block_spread": round(float(max(gains) - min(gains)), 1) if gains else None,
+        # No agreement, no finding. A block at exactly 0 agrees with nothing.
+        "blocks_agree": bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains)),
+        "trials_improved_of_changed": sum(r["trials_improved_of_changed"] for r in rows),
+        "trials_changed": sum(r["trials_changed"] for r in rows),
+        "players_swapped": sum(r["players_swapped"] for r in rows),
+    }
+
+
 def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
                  bye_weight: float = 0.08, top_n: int = 5, seed: int = 0,
-                 progress=None) -> dict:
+                 blocks: int = DEFAULT_BLOCKS, progress=None) -> dict:
     """Does penalising bye-week stacks win more weekly lineup points?
 
     Paired Monte Carlo: for each season and seed, one mock draft with
     bye_weight=0 and one with `bye_weight`, identical bots and noise, scored on
     real weekly box scores as the best legal lineup each regular-season week.
-    Season totals cannot see a bye; weekly lineups can. Improvement > 0 means
-    the penalty earns its keep; empty_slots shows how often a starter slot went
-    unfilled.
+    Season totals cannot see a bye; weekly lineups can.
+
+    Run in `blocks` disjoint blocks of `n_trials`, and every block's own
+    improvement is reported beside `block_spread` and `blocks_agree`. An
+    improvement whose blocks disagree in sign is a measurement of the harness,
+    not of the penalty — see `DEFAULT_BLOCKS`.
     """
     from . import board as bd
     from . import features, model
@@ -937,43 +1030,41 @@ def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
             per_season.append({"season": season, "error": "no box scores for this season"})
             continue
 
-        base, tuned = [], []
-        for trial in range(n_trials):
-            names_a = [n for _, n in _draft_trial(board, league, np.random.default_rng(seed + trial),
-                                                  top_n, bye_weight=0.0)]
-            names_b = [n for _, n in _draft_trial(board, league, np.random.default_rng(seed + trial),
-                                                  top_n, bye_weight=bye_weight)]
-            base.append(weekly_lineup_points(names_a, season, league))
-            tuned.append(weekly_lineup_points(names_b, season, league))
-            pa_run = np.mean([x["points"] for x in base])
-            pb_run = np.mean([x["points"] for x in tuned])
-            changed = sorted(set(names_b) - set(names_a))
-            say(f"{season} trial {trial + 1}/{n_trials}: no-penalty {base[-1]['points']:.1f} "
-                f"vs penalty {tuned[-1]['points']:.1f}; running means {pa_run:.1f} vs {pb_run:.1f}"
-                + (f"; penalty swapped in {changed}" if changed else "; identical rosters"))
-        pa = np.array([x["points"] for x in base])
-        pb = np.array([x["points"] for x in tuned])
-        say(f"{season} done: improvement {float((pb - pa).mean()):+.1f} weekly pts, "
-            f"{int((pb > pa).sum())}/{n_trials} trials improved")
-        per_season.append({
-            "season": season, "n_trials": n_trials,
-            "weekly_points_no_penalty": round(float(pa.mean()), 1),
-            "weekly_points_with_penalty": round(float(pb.mean()), 1),
-            "improvement": round(float((pb - pa).mean()), 1),
-            "trials_improved": int((pb > pa).sum()),
-            "empty_slots_no_penalty": round(float(np.mean([x["empty_slots"] for x in base])), 2),
-            "empty_slots_with_penalty": round(float(np.mean([x["empty_slots"] for x in tuned])), 2),
-        })
+        def pair(trial_seed: int, board=board) -> tuple[list[str], list[str]]:
+            a = [n for _, n in _draft_trial(board, league,
+                                            np.random.default_rng(trial_seed), top_n,
+                                            bye_weight=0.0)]
+            b = [n for _, n in _draft_trial(board, league,
+                                            np.random.default_rng(trial_seed), top_n,
+                                            bye_weight=bye_weight)]
+            return a, b
+
+        def score(names: list[str], season=season) -> dict:
+            return weekly_lineup_points(names, season, league)
+
+        summary = _paired_blocks(pair, score, n_trials, blocks, seed, say, str(season))
+        per_season.append({"season": season, **summary})
+        say(f"{season} done: improvement {summary['improvement']:+.1f} weekly pts across "
+            f"{blocks} blocks {summary['block_improvements']}, spread "
+            f"{summary['block_spread']}, blocks agree {summary['blocks_agree']}")
 
     valid = [s for s in per_season if "error" not in s]
+    gains: list[float] = [float(s["improvement"]) for s in valid]
+    spreads: list[float] = [float(s["block_spread"]) for s in valid]
     return {
-        "bye_weight": bye_weight,
+        "bye_weight": bye_weight, "n_trials": n_trials, "n_blocks": blocks,
         "seasons": per_season,
-        "overall_improvement": (round(float(np.mean([s["improvement"] for s in valid])), 1)
-                                if valid else None),
+        "overall_improvement": round(float(np.mean(gains)), 1) if gains else None,
+        # Every season's blocks pointing the same way is the whole claim; one
+        # season whose blocks disagree means the number below is noise.
+        "blocks_agree": bool(valid) and all(s["blocks_agree"] for s in valid),
+        "worst_block_spread": round(max(spreads), 1) if spreads else None,
         "interpretation": ("improvement is mean weekly-lineup points gained per season by "
                            "the penalty over identical drafts without it; positive means "
-                           "the penalty earns its keep"),
+                           "the penalty earns its keep. Read it against block_spread, the "
+                           "distance between two disjoint seed blocks of the same "
+                           "configuration: when blocks_agree is false the improvement is "
+                           "inside the harness's own noise and supports nothing."),
     }
 
 
