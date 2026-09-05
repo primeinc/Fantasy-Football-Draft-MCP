@@ -516,6 +516,28 @@ def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
     return np.clip(np.nan_to_num(out, nan=0.5), 0.0, 1.0)
 
 
+# ESPN's projection reads the current depth chart; the model's reads last
+# season's box scores. Below this share of the model's number the player's role
+# has changed (a backup now, a new team, an injury the model cannot see).
+ROLE_DISAGREEMENT = 0.70
+ROLE_FLOOR = 0.20
+
+
+def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
+    """Scale for pick_value from the ESPN/model projection ratio: 1 while ESPN
+    projects at least ROLE_DISAGREEMENT of the model, else the ratio itself
+    (floored at ROLE_FLOOR). Players ESPN does not project keep 1."""
+    ones = pd.Series(1.0, index=tbl.index)
+    if "espn_proj" not in tbl.columns or "proj_points" not in tbl.columns:
+        return ones
+    espn = pd.to_numeric(tbl["espn_proj"], errors="coerce")
+    ours = pd.to_numeric(tbl["proj_points"], errors="coerce")
+    ratio = espn / ours
+    known = espn.notna() & ours.notna() & (ours > 0)
+    low = known & (ratio < ROLE_DISAGREEMENT)
+    return ones.where(~low, ratio.clip(lower=ROLE_FLOOR, upper=1.0))
+
+
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
@@ -561,6 +583,9 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     avail["pick_value"] = (
         0.80 * avail["marginal_value"] + 0.20 * avail["draft_score"]
     ) * avail["need_mult"]
+
+    avail["role_mult"] = role_multiplier(avail)
+    avail["pick_value"] = avail["pick_value"] * avail["role_mult"]
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -691,6 +716,15 @@ def explain(row: pd.Series) -> str:
     ir = row.get("injury_risk")
     if ir is not None and np.isfinite(ir):
         bits.append(f"injury risk {ir:.0%} (~{row.get('exp_games', 17):.0f} games)")
+    ep = row.get("espn_proj")
+    if ep is not None and pd.notna(ep):
+        rm = row.get("role_mult")
+        bits.append(f"ESPN projects {ep:.0f}"
+                    + (f" ({ep / row['proj_points']:.0%} of model: role changed, value scaled)"
+                       if rm is not None and pd.notna(rm) and rm < 1 else ""))
+    inj = row.get("espn_injury")
+    if inj and inj != "ACTIVE":
+        bits.append(f"ESPN status {inj}")
     p = row.get("p_available_next")
     if p is not None and np.isfinite(p):
         bits.append(f"{p:.0%} chance he lasts to your next pick")

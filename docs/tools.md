@@ -70,6 +70,15 @@ you're on the clock and want the full picture at once.
 The main one. Returns ranked recommendations with reasoning, the pick being evaluated,
 your roster, and each player's odds of surviving to your next pick.
 
+Each row carries `espn_proj`, ESPN's full-season projection under the league's
+scoring, and `espn_injury`, when ESPN ADP is configured. ESPN's projection reads
+the current depth chart; the model's reads last season's box scores. When ESPN
+projects under 70% of the model's number the player's role has changed (a
+backup now, a new team, an injury the model cannot see) and `pick_value` is
+scaled by the ratio (`model.role_multiplier`, floor 0.2); `why` says so.
+`draft_audit` warns on every recommended player in that state and on players
+ESPN does not project at all.
+
 ### `best_available`
 Next best on the board. `sort_by`: `draft_score` (balanced), `vor`, `consistency`,
 `proj_points`, or `value` (biggest ADP-to-model gap). Filter with `position`.
@@ -110,7 +119,11 @@ type, rounds and clock, starting slots, bench and IR, position limits, every
 scoring value (named for the stats the model scores, by ESPN statId for the
 rest), regular-season length, playoff weeks, seeding and reseed, waiver mode,
 timing and budget, trade limits, review window, veto count and deadline, lineup
-lock mode, matchup and playoff tiebreakers. The `byes` block adds the season's
+lock mode, matchup and playoff tiebreakers. Kicker and D/ST items are named
+from the espn-api stat map (`refs/cwendt94/espn-api`); `slot_overrides` holds
+the values that apply only in one lineup slot, which is where ESPN keeps the
+D/ST points-allowed and yards-allowed bands with `points` 0 at the top level.
+The `byes` block adds the season's
 bye topology from the nfldata schedule: teams on bye per week, the last bye
 week, and any bye week that falls inside the playoffs. Nothing in it is a
 default assumption.

@@ -51,6 +51,19 @@ All notable changes to this project. Format follows
   (`espn` / `consensus` / `modelled`); a board cached under consensus is
   repriced in place on the next load (`server._price_board`).
 
+**ESPN projections as a role check**
+- `load_espn_adp` also carries `espn_proj` (ESPN's season projection under the
+  league's scoring: stats entry statSourceId 1, scoringPeriodId 0) and
+  `espn_injury`; `attach_adp` puts both on the board. `model.role_multiplier`
+  scales `pick_value` by ESPN/model when ESPN projects under 70% of the model
+  (floor 0.2); `explain` reports the ESPN number and the scaling; `audit_state`
+  warns on recommended players in that state or with no ESPN projection.
+  Found live: the model had Tyrone Tracy Jr. RB22 at 185 points from 2025
+  box scores while ESPN projected 41, a backup on the 2026 depth chart.
+- `league_rules` reads `pointsOverrides`: the D/ST points-allowed and
+  yards-allowed bands carry `points` 0 and their real values per slot 16.
+  Kicker and D/ST statIds are named from the espn-api map.
+
 **Draft dump**
 - `dump_draft` tool and `just dump <league_id> [out_dir]` (`espn_dump.py`):
   every read-API view as its own JSON file, the full player pool, league

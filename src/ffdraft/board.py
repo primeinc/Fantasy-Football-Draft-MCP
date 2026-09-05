@@ -111,11 +111,24 @@ def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
             continue
         rows.append({"name": p["fullName"], "adp": float(adp), "espn_id": str(p.get("id")),
                      "espn_rank": ((p.get("draftRanksByRankType") or {}).get("PPR") or {}).get("rank"),
-                     "percent_owned": (p.get("ownership") or {}).get("percentOwned")})
-    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "espn_rank", "percent_owned"])
+                     "percent_owned": (p.get("ownership") or {}).get("percentOwned"),
+                     "espn_proj": espn_season_projection(p, season),
+                     "espn_injury": p.get("injuryStatus")})
+    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "espn_rank", "percent_owned",
+                                      "espn_proj", "espn_injury"])
     out["_key"] = out["name"].map(norm_name)
     out["source"] = "espn_adp"
     return out.dropna(subset=["adp"]).drop_duplicates("_key").reset_index(drop=True)
+
+
+def espn_season_projection(player: dict, season: int) -> float | None:
+    """ESPN's full-season projection under the league's scoring: the stats entry
+    with statSourceId 1 (projected), scoringPeriodId 0 (season), this season."""
+    for st in player.get("stats") or []:
+        if (st.get("seasonId") == season and st.get("statSourceId") == 1
+                and st.get("scoringPeriodId") == 0 and st.get("appliedTotal") is not None):
+            return float(st["appliedTotal"])
+    return None
 
 
 def espn_adp_configured() -> bool:
@@ -125,7 +138,8 @@ def espn_adp_configured() -> bool:
 
 def strip_adp(board: pd.DataFrame) -> pd.DataFrame:
     """The board without its market columns, ready for attach_adp again."""
-    return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format")
+    return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format",
+                                           "espn_proj", "espn_injury")
                                if c in board.columns])
 
 
@@ -301,6 +315,19 @@ def audit_state(board: pd.DataFrame, state: DraftState,
         leaked = [n for n, k in zip(recommendations["name"], recommendations["_key"]) if k in taken]
         if leaked:
             failures.append(f"drafted players in recommendations: {leaked}")
+        if "espn_proj" in recommendations.columns:
+            from .model import ROLE_DISAGREEMENT
+
+            r = recommendations
+            ratio = pd.to_numeric(r["espn_proj"], errors="coerce") / r["proj_points"]
+            low = r[ratio.notna() & (ratio < ROLE_DISAGREEMENT)]
+            if not low.empty:
+                warnings.append("ESPN projects far below the model (role changed?): "
+                                + "; ".join(f"{n} {e:.0f} vs {p:.0f}" for n, e, p in
+                                            zip(low["name"], low["espn_proj"], low["proj_points"])))
+            unknown = r[pd.to_numeric(r["espn_proj"], errors="coerce").isna()]
+            if not unknown.empty:
+                warnings.append(f"no ESPN projection for: {unknown['name'].tolist()}")
 
     return {"ok": not failures, "failures": failures, "warnings": warnings,
             "picks": len(picks), "mine": len(mine), "unresolved": len(unresolved)}
@@ -321,7 +348,9 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     b = board.copy()
     b["_key"] = b["name"].map(norm_name)
     if adp is not None and not adp.empty:
-        b = b.merge(adp[["_key", "adp"]].drop_duplicates("_key"), on="_key", how="left")
+        extra = [c for c in ("espn_proj", "espn_injury") if c in adp.columns]
+        b = b.drop(columns=[c for c in extra if c in b.columns])
+        b = b.merge(adp[["_key", "adp", *extra]].drop_duplicates("_key"), on="_key", how="left")
         label = "espn" if "source" in adp.columns and (adp["source"] == "espn_adp").any() \
             else "consensus"
         b["adp_source"] = np.where(b["adp"].notna(), label, "modelled")
@@ -776,6 +805,21 @@ _ESPN_STAT_NAMES = {
     24: "rushing_yards", 25: "rushing_tds", 26: "rushing_2pt", 42: "receiving_yards",
     43: "receiving_tds", 44: "receiving_2pt", 53: "receptions", 72: "fumbles_lost",
 }
+# Kicker and D/ST statIds, per espn-api (refs/cwendt94/espn-api football/constant.py).
+_ESPN_KDST_NAMES = {
+    74: "fg_made_50_plus", 77: "fg_made_40_49", 80: "fg_made_under_40", 85: "fg_missed",
+    86: "pat_made", 88: "pat_missed", 201: "fg_made_60_plus",
+    89: "points_allowed_0", 90: "points_allowed_1_6", 91: "points_allowed_7_13",
+    92: "points_allowed_14_17", 121: "points_allowed_18_21", 122: "points_allowed_22_27",
+    123: "points_allowed_28_34", 124: "points_allowed_35_45", 125: "points_allowed_46_plus",
+    128: "yards_allowed_under_100", 129: "yards_allowed_100_199", 130: "yards_allowed_200_299",
+    131: "yards_allowed_300_349", 132: "yards_allowed_350_399", 133: "yards_allowed_400_449",
+    134: "yards_allowed_450_499", 135: "yards_allowed_500_549", 136: "yards_allowed_550_plus",
+    93: "blocked_kick_td", 94: "defensive_td", 95: "interception", 96: "fumble_recovery",
+    97: "blocked_kick", 98: "safety", 99: "sack", 101: "kick_return_td", 102: "punt_return_td",
+    103: "int_return_td", 104: "fumble_return_td", 106: "forced_fumble",
+    198: "fg_made_50_59", 205: "two_pt_return", 206: "two_pt_return", 209: "pat_return",
+}
 _ESPN_SLOT_NAMES = {"0": "QB", "2": "RB", "4": "WR", "6": "TE", "16": "DST", "17": "K",
                     "20": "BENCH", "21": "IR", "23": "FLEX", "7": "OP", "3": "RB/WR",
                     "5": "WR/TE"}
@@ -813,12 +857,21 @@ def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
               for k, v in (roster.get("positionLimits") or {}).items() if v and v > 0}
     items = {}
     other = {}
+    by_slot: dict[str, dict[str, float]] = {}
     for it in scoring.get("scoringItems") or []:
-        name = _ESPN_STAT_NAMES.get(it.get("statId"))
+        sid = it.get("statId")
+        name = _ESPN_STAT_NAMES.get(sid)
         if name:
             items[name] = it.get("points")
         elif it.get("points"):
-            other[str(it.get("statId"))] = it.get("points")
+            other[_ESPN_KDST_NAMES.get(sid, str(sid))] = it.get("points")
+        # pointsOverrides: values that apply only when the stat is scored in one
+        # lineup slot (16 = D/ST). Yards-allowed and points-allowed bands live here
+        # with points 0 at the top level, so reading `points` alone hides them.
+        for slot, pts in (it.get("pointsOverrides") or {}).items():
+            if pts:
+                by_slot.setdefault(_ESPN_SLOT_NAMES.get(slot, f"slot_{slot}"), {})[
+                    _ESPN_KDST_NAMES.get(sid, str(sid))] = pts
     periods = sched.get("matchupPeriods") or {}
     reg = int(sched.get("matchupPeriodCount") or 0)
     playoff_periods = sorted(int(k) for k in periods if int(k) > reg)
@@ -839,7 +892,7 @@ def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
                    "lineup_lock": roster.get("lineupLocktimeType"),
                    "move_limit": roster.get("moveLimit")},
         "scoring": {"type": scoring.get("scoringType"), "items": items,
-                    "other_items_by_stat_id": other,
+                    "kicker_and_dst_items": other, "slot_overrides": by_slot,
                     "matchup_tie": scoring.get("matchupTieRule"),
                     "playoff_tie": scoring.get("playoffMatchupTieRule"),
                     "home_bonus": scoring.get("homeTeamBonus")},

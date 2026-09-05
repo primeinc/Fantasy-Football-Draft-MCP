@@ -1,5 +1,6 @@
 """ESPN id crosswalk: tested offline with synthetic weekly_rosters data."""
 import pandas as pd
+import pytest
 
 import ffdraft
 from ffdraft import board, sources
@@ -148,7 +149,14 @@ class TestLeagueRules:
                                 "scoringItems": [{"statId": 53, "points": 1.0},
                                                  {"statId": 4, "points": 4.0},
                                                  {"statId": 198, "points": 5.0},
-                                                 {"statId": 99, "points": 0.0}]},
+                                                 {"statId": 99, "points": 0.0,
+                                                  "pointsOverrides": {"16": 1.0}},
+                                                 {"statId": 128, "points": 0.0,
+                                                  "pointsOverrides": {"16": 5.0}},
+                                                 {"statId": 136, "points": 0.0,
+                                                  "pointsOverrides": {"16": -7.0}},
+                                                 {"statId": 131, "points": 0.0,
+                                                  "pointsOverrides": {"16": 0.0}}]},
             "scheduleSettings": {"matchupPeriodCount": 14, "playoffTeamCount": 6,
                                  "playoffMatchupPeriodLength": 1, "playoffReseed": False,
                                  "playoffSeedingRule": "TOTAL_POINTS_SCORED",
@@ -179,7 +187,9 @@ class TestLeagueRules:
         assert r["roster"]["bench"] == 6 and r["roster"]["ir"] == 1
         assert r["roster"]["position_limits"]["QB"] == 4
         assert r["scoring"]["items"] == {"receptions": 1.0, "passing_tds": 4.0}
-        assert r["scoring"]["other_items_by_stat_id"] == {"198": 5.0}
+        assert r["scoring"]["kicker_and_dst_items"] == {"fg_made_50_59": 5.0}
+        assert r["scoring"]["slot_overrides"] == {"DST": {
+            "sack": 1.0, "yards_allowed_under_100": 5.0, "yards_allowed_550_plus": -7.0}}
         assert r["schedule"]["playoff_weeks"] == [15, 16, 17]
         assert r["waivers"]["type"] == "WAIVERS_TRADITIONAL" and r["waivers"]["budget"] is None
         assert r["byes"]["teams_on_bye_by_week"] == {6: 2, 7: 1, 11: 2, 14: 1}
@@ -191,10 +201,18 @@ class TestEspnAdp:
         payload = {"players": [
             {"player": {"id": 4429795, "fullName": "Jahmyr Gibbs",
                         "ownership": {"averageDraftPosition": 1.32, "percentOwned": 99.9},
-                        "draftRanksByRankType": {"PPR": {"rank": 1}}}},
+                        "draftRanksByRankType": {"PPR": {"rank": 1}},
+                        "injuryStatus": "ACTIVE",
+                        "stats": [{"seasonId": 2025, "statSourceId": 0, "scoringPeriodId": 0,
+                                   "appliedTotal": 350.0},
+                                  {"seasonId": 2026, "statSourceId": 1, "scoringPeriodId": 1,
+                                   "appliedTotal": 20.0},
+                                  {"seasonId": 2026, "statSourceId": 1, "scoringPeriodId": 0,
+                                   "appliedTotal": 301.5}]}},
             {"player": {"id": 3916433, "fullName": "Jakobi Meyers",
                         "ownership": {"averageDraftPosition": 118.4, "percentOwned": 80.0},
-                        "draftRanksByRankType": {"PPR": {"rank": 101}}}},
+                        "draftRanksByRankType": {"PPR": {"rank": 101}},
+                        "injuryStatus": "QUESTIONABLE"}},
             {"player": {"id": 1, "fullName": "No Adp", "ownership": {}}},
         ]}
 
@@ -211,15 +229,54 @@ class TestEspnAdp:
         assert list(out["adp"]) == [1.32, 118.4]
         assert list(out["espn_rank"]) == [1, 101]
         assert set(out["source"]) == {"espn_adp"}
+        assert out["espn_proj"].iloc[0] == 301.5 and pd.isna(out["espn_proj"].iloc[1])
+        assert list(out["espn_injury"]) == ["ACTIVE", "QUESTIONABLE"]
 
     def test_attach_labels_espn_source(self):
         b = pd.DataFrame({"name": ["Jakobi Meyers", "Nobody"], "position": ["WR", "WR"],
-                          "pos_rank": [20, 90], "overall_rank": [60, 300]})
-        adp = pd.DataFrame({"name": ["Jakobi Meyers"], "adp": [118.4], "source": ["espn_adp"]})
+                          "pos_rank": [20, 90], "overall_rank": [60, 300],
+                          "espn_proj": [1.0, 1.0]})
+        adp = pd.DataFrame({"name": ["Jakobi Meyers"], "adp": [118.4], "source": ["espn_adp"],
+                            "espn_proj": [181.9], "espn_injury": ["QUESTIONABLE"]})
         adp["_key"] = adp["name"].map(board.norm_name)
         out = board.attach_adp(b, adp)
         assert list(out["adp_source"]) == ["espn", "modelled"]
         assert out["adp"].iloc[0] == 118.4
+        assert out["espn_proj"].iloc[0] == 181.9 and pd.isna(out["espn_proj"].iloc[1])
+        assert out["espn_injury"].iloc[0] == "QUESTIONABLE"
+
+
+class TestRoleMultiplier:
+    def test_scales_only_large_disagreements(self):
+        from ffdraft import model
+
+        tbl = pd.DataFrame({"proj_points": [185.0, 204.7, 200.0, 100.0, 0.0],
+                            "espn_proj": [40.9, 181.9, None, 10.0, 50.0]})
+        m = model.role_multiplier(tbl)
+        assert m.tolist() == pytest.approx([40.9 / 185.0, 1.0, 1.0, 0.2, 1.0])
+
+    def test_no_espn_column_is_neutral(self):
+        from ffdraft import model
+
+        assert model.role_multiplier(pd.DataFrame({"proj_points": [1.0]})).tolist() == [1.0]
+
+    def test_recommend_demotes_a_lost_role(self):
+        from ffdraft import model
+        from ffdraft.config import LeagueSettings
+
+        league = LeagueSettings(name="t", teams=16)
+        b = pd.DataFrame({
+            "name": ["Tyrone Tracy Jr.", "Woody Marks"], "position": ["RB", "RB"],
+            "team": ["NYG", "HOU"], "proj_points": [185.0, 176.7], "draft_score": [185.0, 176.7],
+            "adp": [170.4, 151.9], "pos_rank": [22, 26], "overall_rank": [75, 84],
+            "consistency": [0.5, 0.5], "espn_proj": [40.9, 131.8], "drafted": [False, False],
+            "adj_ppg": [12.3, 11.7],
+        })
+        b["_key"] = b["name"].map(board.norm_name)
+        out = model.recommend(b, league, current_pick=125, next_pick=132, roster={"RB": 3})
+        assert out["name"].tolist() == ["Woody Marks", "Tyrone Tracy Jr."]
+        assert out.set_index("name")["role_mult"]["Tyrone Tracy Jr."] == pytest.approx(40.9 / 185.0)
+        assert "role changed" in model.explain(out.iloc[1])
 
 
 class TestSyncEspnLive:

@@ -371,6 +371,9 @@ def who_should_i_pick(limit: int = 6) -> str:
             "player": r["name"], "position": r["position"], "team": r.get("team"),
             "adp": round(float(r["adp"]), 1),
             "proj_points": round(float(r["proj_points"]), 1),
+            "espn_proj": (round(float(r["espn_proj"]), 1)
+                          if pd.notna(r.get("espn_proj")) else None),
+            "espn_injury": r.get("espn_injury"),
             "consistency": round(float(r["consistency"]), 3),
             "survives_to_next_pick": round(float(r["p_available_next"]), 2),
             "bye_week": int(bye) if bye is not None and pd.notna(bye) else None,
