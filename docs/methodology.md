@@ -203,16 +203,20 @@ needed before it was worth measuring at all are in [CHANGELOG.md](../CHANGELOG.m
 ungated handcuff term at -103.5) but cannot confirm one that is mildly right, so every
 paired backtest here now runs two disjoint blocks and reports both.
 
-Re-running the bye weight under that rule changed what it supports. 2024 came out
--17.0 on one block and +3.0 on the other — the earlier single-block figure of -19.2 for
-that season was one half of a disagreeing pair, and it was the season the original
-conclusion rested on. The conclusion (weight 0) survives; the evidence for it did not,
-and the entry in [CHANGELOG.md](../CHANGELOG.md) now says which.
+Re-running the bye weight under that rule changed what it supports. Three of the four
+seasons come out with their two blocks pointing opposite ways, by 8.0, 10.5 and 31.8
+weekly points; the earlier single-block figures could not have shown that. The
+conclusion (weight 0) survives; the evidence for it did not, and the entry in
+[CHANGELOG.md](../CHANGELOG.md) now says which.
 
-Every number from this harness carries the model it was measured against. Anything that
-changes `recommend` changes `_draft_trial`, which is the harness, so a figure quoted
-across such a change is quoting a different baseline — the bye rows above predate the
-`expected_best_at_next_pick` change and say so where they are recorded.
+Every number from this harness carries the model it was measured against, and that is
+not a formality. Anything that changes `recommend` changes `_draft_trial`, which is the
+harness. When `expected_best_at_next_pick` changed, the same four bye seasons were
+re-run and two of them flipped from agreeing to disagreeing — the count of seasons
+inside the noise went from one to three, and the overall figure from -3.7 to -9.4. The
+prediction that a change "far inside the spread" would leave the table alone was wrong,
+and it was a prediction about a distribution nobody had measured across that change.
+Re-run a quoted figure when its model moves; do not reason about whether it mattered.
 
 Two things that follow, and neither is optional when quoting a number from it. The
 spread belongs to the term as much as to the harness — the bye penalty over 2022 gave

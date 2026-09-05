@@ -434,16 +434,16 @@ position; fuzzy and ambiguous hits are never joined.
 hold who share that bye. `model_settings(bye_weight=0.08)` makes the recommender
 cut a candidate's pick value by 8% per same-position player on the same bye and
 4% per other player. Default 0, and `bye_backtest` (2022-2025, 12 paired drafts
-per block, two blocks per season, weight 0.08) found why. Per season, the two
-blocks: 2022 +8.1 / +6.3, 2023 +3.8 / +7.9, 2024 **-17.0 / +3.0**, 2025 -5.8 /
--35.4; overall -3.7, `blocks_agree` false. 2024's blocks disagree in sign by 20
-points, so the season that drove the original conclusion is inside the harness's
-own noise — the earlier single-block figure of -19.2 for 2024 was one half of
-that pair. The penalty is close to inert in any case, changing 5, 6, 15 and 10
-rosters out of 24 per season, so it stays informational like `matchup_z`.
-Those numbers were measured before `expected_best_at_next_pick` changed and will
-not reproduce exactly on a head that has that change; see CHANGELOG.md.
-Kickers and defenses are not modelled, so their byes are yours to check.
+per block, two blocks per season, weight 0.08, measured at 854b5da) found why.
+Per season, the two blocks: 2022 **-3.3 / +4.7**, 2023 **+5.9 / -4.6**, 2024
+**-27.7 / +4.1**, 2025 -19.3 / -35.1; overall -9.4, `blocks_agree` false. Three
+of the four seasons have two blocks of the same configuration pointing opposite
+ways, by 8.0, 10.5 and 31.8 weekly points, so no magnitude here is supported by
+anything. Only 2025 agrees, and one season agreeing is one coin flip
+(`blocks_agree_p_null` 0.5). The penalty is close to inert in any case, changing
+8, 7, 11 and 11 rosters out of 24 per season, so it stays informational like
+`matchup_z`. Kickers and defenses are not modelled, so their byes are yours to
+check.
 
 ### `bye_backtest`
 Does the bye-week stacking penalty win more weekly lineup points? For each season
