@@ -1799,7 +1799,7 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
         w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
                              league, board_df, notify, directory=directory,
                              bye_weight=weights.bye,
-                             refresh=lambda: (_build_board(), _settings()[1].bye))
+                             refresh=_watch_refresh)
     except Exception as exc:
         # The MCP SDK hides tool tracebacks behind "Error executing tool".
         return _emit({"error": f"{type(exc).__name__}: {exc}",
@@ -2644,6 +2644,18 @@ def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
             "reloaded": sorted(fresh_names & live_names)}
 
 
+def _watch_refresh() -> tuple:
+    """The board and bye weight as they are NOW, for a running watch.
+
+    A module-level function rather than a lambda built at the call site, and
+    named in `watch.REBOUND_CODE`, so a reload can put the current one onto a
+    watch that predates it. Two call sites built the identical lambda before,
+    which is the duplication rule's own example: two copies agree until one is
+    changed.
+    """
+    return (_build_board(), _settings()[1].bye)
+
+
 def _migrate_watches(errors: dict[str, str]) -> dict[str, Any]:
     """Bring every live watch onto the reloaded class.
 
@@ -2663,16 +2675,55 @@ def _migrate_watches(errors: dict[str, str]) -> dict[str, Any]:
     for league_id, entry in list(_WATCHES.items()):
         try:
             w, _task = entry
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            # Not skipped quietly. This function's whole job is to say what it
+            # could not do, and an entry it cannot even unpack is the loudest
+            # version of that.
+            out["failed"][league_id] = f"unusable registry entry: {exc}"
+            errors[f"watch:{league_id}"] = f"unusable registry entry: {exc}"
             continue
         try:
-            out["migrated"][league_id] = watch_mod.migrate_instance(
-                w, watch_mod.DraftWatch)
+            # `_channel` and `_watch_refresh` are looked up here, in the module
+            # that has just been reloaded, so they are the current bodies. A
+            # callable held in an attribute is not touched by rebinding
+            # `__class__`, so without this the watch keeps running the old ones.
+            report = watch_mod.migrate_instance(
+                w, watch_mod.DraftWatch,
+                code={"notify": _channel, "refresh": _watch_refresh})
+            report["record"] = _ensure_watch_record(w, league_id)
+            out["migrated"][league_id] = report
         except Exception as exc:
             _log.exception("could not migrate the watch for league %s", league_id)
             out["failed"][league_id] = f"{type(exc).__name__}: {exc}"
             errors[f"watch:{league_id}"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+def _ensure_watch_record(w: Any, league_id: str) -> str:
+    """Give a live watch a resume record if it has none.
+
+    A watch started before the record existed -- or by any path that does not
+    write one -- runs perfectly and would not come back after a restart, and
+    nothing said so: `update_queue` and `mark_stopped` both answer None when
+    there is no record, so the silence looked like success.
+
+    An existing record is left alone, which is what makes `stop_watch` win: it
+    clears the flag rather than deleting the file, so a stopped watch is
+    `present` here and is not resurrected by the next reload.
+    """
+    try:
+        if watchstore.load(league_id) is not None:
+            return "present"
+        watchstore.save(watchstore.WatchRecord(
+            league_id=league_id,
+            team_id=int(getattr(w, "team_id", 0) or 0),
+            season=int(getattr(w, "season", CURRENT_SEASON) or CURRENT_SEASON),
+            queue=list(getattr(w, "queue", None) or []),
+        ))
+        return "written"
+    except Exception as exc:
+        _log.exception("could not write a resume record for league %s", league_id)
+        return f"failed: {type(exc).__name__}: {exc}"
 
 
 def reload_package() -> dict[str, Any]:
@@ -2740,12 +2791,18 @@ async def reload_code(ctx: Context = None) -> str:
     and `notifications/tools/list_changed` is sent so Claude Code refreshes
     it. A module that fails to import keeps its previous code and is reported.
 
-    The running draft watch, its socket and your ESPN queue survive, and the
-    watch is moved onto the reloaded class: its own methods become the new code
-    and any state the new `__init__` sets is added to it. Everything the draft
-    built -- picks, queue, lines, snapshots -- is left exactly as it was.
-    `watches` in the result says what was added per league, and names anything
-    that could not be rebuilt rather than guessing at it."""
+    The running draft watch, its socket and your ESPN queue survive. The watch is
+    moved onto the reloaded class, so its own methods become the new code; the
+    state the new `__init__` sets is added; and the two callables it holds -- the
+    channel notifier and the board refresh -- are rebound to this module's
+    current ones, since rebinding a class does not touch a function stored in an
+    attribute. Everything the draft built (picks, queue, lines, snapshots) is
+    left exactly as it was. A live watch with no resume record on disk is given
+    one, so a later restart brings it back.
+
+    `watches` in the result says per league what was added, what was rebound,
+    whether a record was written or already present, and names anything that
+    could not be rebuilt rather than guessing at it."""
     import traceback
 
     try:
@@ -2797,7 +2854,7 @@ async def resume_watch(record: watchstore.WatchRecord) -> dict:
             record.league_id, record.season, record.team_id, swid, espn_s2,
             league, _build_board(), _channel, directory=directory,
             bye_weight=weights.bye,
-            refresh=lambda: (_build_board(), _settings()[1].bye))
+            refresh=_watch_refresh)
         task = asyncio.create_task(w.run(), name=f"draft-watch-{record.league_id}")
         _WATCHES[record.league_id] = (w, task)
         ready = asyncio.ensure_future(w.ready.wait())

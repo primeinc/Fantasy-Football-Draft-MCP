@@ -10,11 +10,12 @@ import ast
 import asyncio
 import inspect
 import json
+import sys
 
 import pandas as pd
 import pytest
 
-from ffdraft import board, server, watch
+from ffdraft import board, server, watch, watchstore
 from ffdraft.config import LeagueSettings
 
 
@@ -54,26 +55,34 @@ class TestTheStateTablesCoverEveryField:
                 names.append(node.target.attr)
         return names
 
+    def _tables(self) -> list[set]:
+        return [set(watch.REBUILDABLE_STATE), set(watch.CONSTRUCTED_STATE),
+                set(watch.REBOUND_CODE)]
+
     def test_every_attribute_init_sets_is_classified(self):
         assigned = set(self._assigned_in_init())
-        classified = set(watch.REBUILDABLE_STATE) | set(watch.CONSTRUCTED_STATE)
+        classified = set().union(*self._tables())
 
         missing = sorted(assigned - classified)
         assert missing == [], (
-            f"__init__ sets {missing} and neither table names them. Decide: can a "
-            "reload rebuild it from nothing (REBUILDABLE_STATE) or did it come from "
-            "the constructor (CONSTRUCTED_STATE)?")
+            f"__init__ sets {missing} and no table names them. Decide: can a reload "
+            "rebuild it from nothing (REBUILDABLE_STATE), did it come from the "
+            "constructor (CONSTRUCTED_STATE), or is it code the reload must replace "
+            "(REBOUND_CODE)?")
 
-    def test_neither_table_names_a_field_that_no_longer_exists(self):
+    def test_no_table_names_a_field_that_no_longer_exists(self):
         assigned = set(self._assigned_in_init())
-        classified = set(watch.REBUILDABLE_STATE) | set(watch.CONSTRUCTED_STATE)
+        classified = set().union(*self._tables())
 
         stale = sorted(classified - assigned)
         assert stale == [], f"the tables still name {stale}, which __init__ no longer sets"
 
-    def test_the_two_tables_do_not_overlap(self):
-        both = set(watch.REBUILDABLE_STATE) & set(watch.CONSTRUCTED_STATE)
-        assert both == set(), f"{sorted(both)} is in both tables; it is one or the other"
+    def test_the_tables_do_not_overlap(self):
+        tables = self._tables()
+        for i, first in enumerate(tables):
+            for second in tables[i + 1:]:
+                both = first & second
+                assert both == set(), f"{sorted(both)} is in two tables; it is one"
 
     def test_every_rebuildable_factory_makes_a_fresh_value(self):
         """Mutable state must not be shared between instances, which is exactly
@@ -110,7 +119,9 @@ class TestMigratingAnOldInstance:
         w = _watch(tmp_path, monkeypatch)
         del w.swid
 
-        result = watch.migrate_instance(w)
+        result = watch.migrate_instance(
+            w, watch.DraftWatch,
+            code={"notify": server._channel, "refresh": server._watch_refresh})
 
         # It cannot be rebuilt from nothing, so the migration says so rather than
         # putting an empty string where a credential belongs.
@@ -131,6 +142,125 @@ class TestMigratingAnOldInstance:
 
         assert result["class_rebound"] is True
         assert type(w) is watch.DraftWatch
+
+
+class TestTheCallablesTheClassRebindDoesNotTouch:
+    """`__class__` rebinding moves the METHODS. A function held in an attribute
+    is untouched, so a watch that predates a reload keeps running the old body.
+
+    Measured while building this: the old callables' `__globals__` is still the
+    server module's dict, because server.py reloads in place, so the NAMES they
+    look up resolve to the new functions. What is stale is the body itself.
+    """
+
+    def test_notify_and_refresh_are_rebound_to_the_current_module(
+            self, tmp_path, monkeypatch):
+        w = _watch(tmp_path, monkeypatch)
+
+        async def old_notify(content, meta):
+            return None
+
+        w.notify = old_notify
+        w.refresh = lambda: "OLD BODY"
+
+        report = watch.migrate_instance(
+            w, watch.DraftWatch,
+            code={"notify": server._channel, "refresh": server._watch_refresh})
+
+        assert sorted(report["rebound"]) == ["notify", "refresh"]
+        assert w.notify is server._channel
+        assert w.refresh is server._watch_refresh
+
+    def test_a_callable_already_current_is_not_reported_as_rebound(
+            self, tmp_path, monkeypatch):
+        w = _watch(tmp_path, monkeypatch)
+        w.notify = server._channel
+        w.refresh = server._watch_refresh
+
+        report = watch.migrate_instance(
+            w, watch.DraftWatch,
+            code={"notify": server._channel, "refresh": server._watch_refresh})
+
+        assert report["rebound"] == []
+
+    def test_a_replacement_nobody_supplied_is_named_not_skipped(
+            self, tmp_path, monkeypatch):
+        w = _watch(tmp_path, monkeypatch)
+
+        report = watch.migrate_instance(w, watch.DraftWatch, code={})
+
+        assert sorted(report["cannot_rebuild"]) == [
+            "notify: no replacement supplied", "refresh: no replacement supplied"]
+
+    def test_after_a_reload_the_watch_sees_the_reloaded_board(
+            self, tmp_path, monkeypatch):
+        """The end the task is about: a recommendation computed after a reload
+        must go through the module that was just loaded."""
+        w = _watch(tmp_path, monkeypatch)
+        w.refresh = lambda: ("OLD BOARD", 0.0)
+        monkeypatch.setitem(server._WATCHES, "L", (w, None))
+
+        server.reload_package()
+        live = sys.modules["ffdraft.server"]
+        monkeypatch.setattr(live, "_build_board", lambda force=False: "NEW BOARD")
+        monkeypatch.setattr(live, "_settings",
+                            lambda: (None, type("W", (), {"bye": 9.0})()))
+
+        board_now, bye_now = w.refresh()
+
+        assert board_now == "NEW BOARD" and bye_now == 9.0
+        server._WATCHES.pop("L", None)
+
+
+class TestALiveWatchGetsAResumeRecord:
+    """A watch started before the record existed runs perfectly and would not
+    come back after a restart, and nothing said so: `update_queue` and
+    `mark_stopped` both answer None when there is no record."""
+
+    def test_a_watch_with_no_record_gets_one(self, tmp_path, monkeypatch):
+        w = _watch(tmp_path, monkeypatch)
+        w.queue = [11, 22]
+        monkeypatch.setitem(server._WATCHES, "L", (w, None))
+        assert watchstore.load("L") is None
+
+        result = server.reload_package()
+
+        assert result["watches"]["migrated"]["L"]["record"] == "written"
+        record = watchstore.load("L")
+        assert record is not None
+        assert (record.league_id, record.team_id, record.season) == ("L", 3, 2026)
+        assert record.queue == [11, 22] and record.resume is True
+        # The thing the silence was hiding: the queue can now be recorded at all.
+        assert watchstore.update_queue("L", [33]) is not None
+        server._WATCHES.pop("L", None)
+
+    def test_an_existing_record_is_left_alone(self, tmp_path, monkeypatch):
+        watchstore.save(watchstore.WatchRecord(
+            league_id="L", team_id=3, season=2026, queue=[99]))
+        w = _watch(tmp_path, monkeypatch)
+        monkeypatch.setitem(server._WATCHES, "L", (w, None))
+
+        result = server.reload_package()
+
+        assert result["watches"]["migrated"]["L"]["record"] == "present"
+        record = watchstore.load("L")
+        assert record is not None and record.queue == [99]
+        server._WATCHES.pop("L", None)
+
+    def test_a_stopped_record_is_not_resurrected(self, tmp_path, monkeypatch):
+        """`stop_watch` clears the flag and keeps the file, which is what makes
+        it win here: a stopped watch reads as `present`, not as absent."""
+        watchstore.save(watchstore.WatchRecord(league_id="L", team_id=3, season=2026))
+        watchstore.mark_stopped("L")
+        w = _watch(tmp_path, monkeypatch)
+        monkeypatch.setitem(server._WATCHES, "L", (w, None))
+
+        result = server.reload_package()
+
+        assert result["watches"]["migrated"]["L"]["record"] == "present"
+        record = watchstore.load("L")
+        assert record is not None and record.resume is False
+        server._WATCHES.pop("L", None)
 
 
 class TestTheLiveFailure:

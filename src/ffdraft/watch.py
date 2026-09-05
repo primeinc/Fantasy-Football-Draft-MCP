@@ -181,26 +181,45 @@ REBUILDABLE_STATE: dict[str, Callable[[], object]] = {
 # has -- and if one is ever missing it cannot be invented here, so the migration
 # reports it rather than guessing.
 CONSTRUCTED_STATE = frozenset({
-    "league_id", "bye_weight", "refresh", "directory", "season", "team_id",
-    "swid", "espn_s2", "league", "board", "notify", "state",
+    "league_id", "bye_weight", "directory", "season", "team_id",
+    "swid", "espn_s2", "league", "board", "state",
 })
 
+# Code, not data. Rebinding `__class__` moves the instance's METHODS to the new
+# module and does nothing for a callable held in an attribute: these two are
+# function objects the old module built, so a watch that predates a reload keeps
+# running their old bodies. They are their own table because the distinction is
+# the point -- `CONSTRUCTED_STATE` means "cannot be rebuilt", and these can, by
+# taking them from the module doing the reloading.
+#
+# The caller supplies the replacements, because it is the server that knows what
+# a notification path and a board refresh are. `migrate_instance` only knows
+# which attributes are code.
+REBOUND_CODE = frozenset({"notify", "refresh"})
 
-def migrate_instance(instance: object, cls: type | None = None) -> dict:
+
+def migrate_instance(instance: object, cls: type | None = None,
+                     code: dict | None = None) -> dict:
     """Bring a watch built by older code up to the current class.
 
-    Two things, in this order. The class is rebound first, because after
+    Three things, in this order. The class is rebound first, because after
     `importlib.reload` the instance still points at the OLD class object and so
     runs the OLD methods -- `reload_code` would report success while the watch's
     own reader loop was unchanged. Then the attributes the new code expects are
-    added, since the new methods are what need them.
+    added, since the new methods are what need them. Then any callable in `code`
+    replaces the old module's function object of the same name.
 
-    Returns what it did. Nothing is overwritten: an attribute already present is
-    left exactly as the running draft left it, which is the whole reason the
-    object is being kept rather than rebuilt.
+    `code` is passed in rather than built here: these are the server's notions --
+    a notification path, a board refresh -- and this module only knows which
+    attributes hold code rather than data.
+
+    Returns what it did. Nothing else is overwritten: an attribute already
+    present is left exactly as the running draft left it, which is the whole
+    reason the object is being kept rather than rebuilt.
     """
     target = cls or DraftWatch
-    result: dict = {"class_rebound": False, "added": [], "cannot_rebuild": []}
+    result: dict = {"class_rebound": False, "added": [], "rebound": [],
+                    "cannot_rebuild": []}
     if type(instance) is not target:
         try:
             instance.__class__ = target
@@ -215,6 +234,16 @@ def migrate_instance(instance: object, cls: type | None = None) -> dict:
     for name in sorted(CONSTRUCTED_STATE):
         if not hasattr(instance, name):
             result["cannot_rebuild"].append(name)
+    for name in sorted(REBOUND_CODE):
+        replacement = (code or {}).get(name)
+        if replacement is None:
+            # Nothing to put there. Said rather than skipped: the watch keeps
+            # running the old body and the caller is the only one who can know
+            # that matters.
+            result["cannot_rebuild"].append(f"{name}: no replacement supplied")
+        elif getattr(instance, name, None) is not replacement:
+            setattr(instance, name, replacement)
+            result["rebound"].append(name)
     return result
 
 
