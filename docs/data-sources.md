@@ -77,10 +77,24 @@ at pick 189.
 value follows ESPN's default draft length: the most-repeated ADP, accepted only when more
 than `UNDRAFTED_MIN_TIES` (20) players share it, plus a `UNDRAFTED_ADP_TOLERANCE` (1.0
 pick) run either side to catch the smear the averaging leaves across neighbouring
-hundredths. That width is policy, not fitted: it takes the spike (794 of 999 rows) and
-leaves the nearest genuinely-drafted players outside it — Dalton Schultz at 168.87 and
-18.4% owned, Calvin Ridley at 168.94 and 25.1%. A market frame with continuous ADPs (a
-pasted CSV, consensus ECR) trips neither condition and is never touched.
+hundredths. That width is load-bearing, not decorative: 468 rows sit exactly on 169.99 or 170.00
+and another 326 are caught only by the tolerance. Those 326 are the ones worth
+checking, and the check is whether their ADP carries any signal. It does not. Among
+the 205 rows outside the band, ADP and ESPN's own rank correlate at rho = +0.95, and
+mean ADP rises 47.7 -> 127.8 -> 159.3 -> 168.6 across rank buckets. Inside the band
+rho = +0.09, the whole spread is 0.18 picks against 53.7 outside, and mean ADP across
+rank buckets 199-400, 400-900, 900-1500 and 1500-2500 is 170.18, 169.93, 169.98,
+169.99 — not even monotone. In the tolerance-only subset rho = -0.29: a better-ranked
+player has a *later* ADP there, which is the opposite of a draft position. Shrinking
+the tolerance to absorb float noise alone would leave those 326 rows carrying a number
+that runs backwards against rank.
+
+Ownership is a separate matter and is not touched. Some of the 326 are real players
+rostered in 15-34% of leagues (Cairo Santos, Tre Tucker, Pat Freiermuth), against a
+maximum of 0.51% among the rows sitting exactly on the placeholder. What is claimed
+about them is only that ESPN's ADP does not price them, which the correlations above
+show is true of every row in the band. A market frame with continuous ADPs (a pasted
+CSV, consensus ECR) trips neither condition and is never touched.
 
 Those rows keep their `espn_proj` and `espn_rank` and are priced by the same synthetic
 fallback that covers a row the market join missed, under `adp_source: undrafted` so the

@@ -121,10 +121,24 @@ All notable changes to this project. Format follows
   because its value follows ESPN's default draft length: the most-repeated ADP,
   accepted only when more than `UNDRAFTED_MIN_TIES` (20) players share it, plus
   a `UNDRAFTED_ADP_TOLERANCE` (1.0 pick) run either side for the smear the
-  averaging leaves across neighbouring hundredths. That width is policy, not
-  fitted, and is stated as such: it takes the spike (794 of 999 rows, median
-  0.03% rostered) and leaves the nearest genuinely-drafted players outside it —
-  Dalton Schultz at 168.87 and 18.4% owned, Calvin Ridley at 168.94 and 25.1%.
+  averaging leaves across neighbouring hundredths.
+  That tolerance is load-bearing, not decorative, and otto was right to ask:
+  468 rows sit exactly on 169.99 or 170.00 and another 326 are caught only by
+  the run. Whether those 326 belong turns on whether their ADP carries signal,
+  and it does not. Outside the band, ADP and ESPN's own rank correlate at
+  rho = +0.95 and mean ADP rises 47.7 -> 127.8 -> 159.3 -> 168.6 across rank
+  buckets. Inside it rho = +0.09, the whole spread is 0.18 picks against 53.7
+  outside, and mean ADP across rank buckets 199-400, 400-900, 900-1500 and
+  1500-2500 is 170.18, 169.93, 169.98, 169.99 — not even monotone. In the
+  tolerance-only subset rho = **-0.29**: a better-ranked player has a *later*
+  ADP, which is the opposite of a draft position. Shrinking the tolerance to
+  absorb float noise alone would leave 326 rows carrying a number that runs
+  backwards against rank.
+  Ownership is untouched and is a separate question: some of the 326 are real
+  players rostered in 15-34% of leagues (Cairo Santos, Tre Tucker, Pat
+  Freiermuth) against a maximum of 0.51% among rows sitting exactly on the
+  placeholder. The only claim made about them is that ESPN's ADP does not price
+  them, which the correlations show of every row in the band.
   A market frame with continuous ADPs (a pasted CSV, consensus ECR) trips
   neither condition and is untouched.
 - Those rows go to the same synthetic fallback that already covers a row the
@@ -187,7 +201,14 @@ All notable changes to this project. Format follows
   shipped and normal are identical on every reported figure (Brier 0.129, log
   loss 0.416, and the same per-round and per-position tables), so the numerical
   repairs change nothing measurable on this record and the whole difference
-  below is the tail shape.
+  below is the tail shape. That is now counted rather than inferred, at otto's
+  suggestion: of 78,159 survival evaluations in the replay, the shipped
+  `p_gone_now >= 0.999` hard zero fires 27 times (0.03%) and `z > 8`, where
+  `1 - Phi(z)` underflows, fires **zero** times. So the `erfc` repair is
+  unexercised on this record — proven, not assumed — and the hard zero fires
+  too rarely to move an aggregate. Both would be reached far more often on a
+  full 224-pick draft or a deeper board, which is the case for repairing them
+  regardless of what this record shows.
   logistic: Brier 0.129 -> 0.127, log loss 0.416 -> 0.401, against a base rate
   of 0.250. Log loss improves in five of seven rounds, and for QB
   (0.836 -> 0.760), WR (0.289 -> 0.275) and K (0.187 -> 0.170); RB (0.473) and
