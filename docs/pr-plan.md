@@ -124,6 +124,16 @@ suite is not loading your code, and both are worth knowing. Anyone who has run
 one has proved their import path; a green run that has never been perturbed has
 proved nothing about which tree it read.
 
+That proof is per owner and per change, not a property of the repository. A
+revert check says the files it perturbed were loaded from the tree it perturbed
+them in, and says nothing about a test file nobody has broken on purpose. It is
+the cheap check, and it expires. `tests/test_import_path.py` is the standing
+one: it asserts the imported package sits under the checkout the tests were
+collected from, and that no already-imported submodule comes from a different
+root, so the silent configuration — both paths importable, the wrong one
+winning, everything green — fails loudly instead. Do not read "we have the
+revert check" as covering what that test exists for.
+
 Keeping this document current is part of the merge, not a pass at the end. It
 went stale once by 46 commits, and the worst of it was a note telling the reader
 to work around a defect that had since been fixed.
