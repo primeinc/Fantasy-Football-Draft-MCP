@@ -750,12 +750,25 @@ number. Since ESPN sends the whole list rather than a change, comparing
 consecutive echoes is the only way to answer "when did this player leave my
 queue". Those rows are **not** annotated: they record what ESPN said at the time,
 and marking them with what has happened since would make a log of the past
-disagree with itself.
+disagree with itself. The key is **absent** on them, not `null` — a null on a row
+nobody checked is a claim that the player is available.
 
-`removed` and `kept_from_the_users_queue` are both computed from what ESPN
-echoed back, never from what was sent. ESPN drops ids it rejects — an
-already-drafted player is the ordinary case — so a merge that intended to remove
-nothing can still lose one of the user's players, and the report says so.
+`pick_log` says whether the log behind the annotation could be read, **on success
+as well as failure**. A field that appears only when something went wrong makes
+its own absence the signal, which is the thing stating `drafted_at` on every row
+exists to avoid. When the log cannot be read — no INIT on this connection, or a
+decode that failed — `drafted_at` is absent, and `effective` and
+`drafted_since_the_echo` are `null` rather than a guess. Repeating the echo there
+would restate the claim that every queued player is available, and `[]` would say
+the queue is empty.
+
+`set_draft_queue` annotates its lists the same way, `removed` above all. `removed`
+and `kept_from_the_users_queue` are computed from what ESPN echoed back, never
+from what was sent: ESPN drops ids it rejects, and an already-drafted player is
+the ordinary reason, so a merge that intended to remove nothing can still lose one
+of the user's players. `drafted_at` on those rows is the reason the list needs.
+`would_send`, on the refusal path, likewise says which of the queue the caller
+meant to send is already gone.
 
 **An observation, deliberately unconsumed.** On the 2026-09-05 join, in a snake
 draft, `INIT.draft_list` was empty but `INIT.nomination_list` held this team's

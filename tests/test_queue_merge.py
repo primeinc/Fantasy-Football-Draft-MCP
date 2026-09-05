@@ -294,27 +294,74 @@ class TestAQueuedPlayerWhoHasBeenDrafted:
         assert _ids(out["effective"]) == self.QUEUE
         assert out["drafted_since_the_echo"] == 0
 
-    def test_the_echo_history_is_not_annotated(self, live):
+    def test_the_echo_history_carries_no_annotation_at_all(self, live):
         """It records what ESPN said at the time. Marking those rows with what
-        happened afterwards would make a log of the past disagree with itself."""
+        happened afterwards would make a log of the past disagree with itself.
+
+        The key is absent, not null. A null on a row nobody checked is a claim
+        that the player is available, which is the claim this key exists to make
+        honest.
+        """
         self._joined(live)
         live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
         live.echo(f"SELECTED 7 {self.QUEUE[1]} 4 {{A}}")
 
         out = json.loads(asyncio.run(server.draft_queue(league_id="L")))
 
-        assert all(r["drafted_at"] is None for r in out["echoes"][0]["queue"])
+        assert all("drafted_at" not in r for r in out["echoes"][0]["queue"])
+        # The row is otherwise whole, so this is a decision and not a dropped field.
+        assert _ids(out["echoes"][0]["queue"]) == self.QUEUE
 
-    def test_a_watch_with_no_snapshot_still_reports_the_queue(self, live):
-        """The annotation needs the INIT payload. Without it the queue is still
-        worth showing, so nothing is marked rather than nothing returned."""
+    def test_a_watch_with_no_snapshot_says_it_could_not_check(self, live):
+        """The annotation needs the INIT payload. Without it, three different
+        things used to arrive as `drafted_at: null` -- checked and still there,
+        not checked by design, and could not be checked -- and the last reads as
+        a clean bill of health.
+
+        Nothing is claimed here instead. The queue is still returned, because a
+        queue that cannot be annotated is still worth showing.
+        """
         live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
 
         out = json.loads(asyncio.run(server.draft_queue(league_id="L")))
 
         assert _ids(out["as_echoed"]) == self.QUEUE
-        assert _ids(out["effective"]) == self.QUEUE
-        assert all(r["drafted_at"] is None for r in out["as_echoed"])
+        assert all("drafted_at" not in r for r in out["as_echoed"])
+        # Not the queue, which would repeat the false claim, and not [], which
+        # would say the queue is empty.
+        assert out["effective"] is None
+        assert out["drafted_since_the_echo"] is None
+        assert "no INIT" in out["pick_log"]
+
+    def test_the_reason_is_reported_when_the_log_was_read_too(self, live):
+        """A field that appears only on failure makes its own absence the signal,
+        which is the thing stating `drafted_at` on every row exists to avoid."""
+        self._joined(live)
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+
+        out = json.loads(asyncio.run(server.draft_queue(league_id="L")))
+
+        assert out["pick_log"].startswith("read:")
+
+    def test_the_send_says_which_of_its_rows_are_already_gone(self, live):
+        """`removed` is the ids ESPN dropped, and an already-drafted player is the
+        ordinary reason it drops one. The tool exists to report the outcome rather
+        than the intent, so the reason belongs on the row."""
+        joined = self._joined(live)
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+        live.echo(f"SELECTED 7 {self.QUEUE[1]} 4 {{A}}")
+
+        async def go():
+            w, _task = server._WATCHES["L"]
+            return await server.merge_queue_ids(w, [self.QUEUE[0]], league_id="L")
+
+        out = asyncio.run(go())
+
+        assert out["pick_log"].startswith("read:")
+        before = {r["espn_id"]: r["drafted_at"] for r in out["queue_before"]}
+        assert before[self.QUEUE[1]] == joined + 1, (
+            "the player ESPN will drop is marked with the pick that took him")
+        assert before[self.QUEUE[0]] is None
 
 
 class TestTheInitQueueIsObservedNotUsed:

@@ -2114,35 +2114,59 @@ async def _await_first_echo(w, timeout: float | None = None) -> list[int] | None
     return w.queue
 
 
-def _drafted_by_pick(w) -> dict[int, int]:
-    """ESPN player id -> the overall pick that took him, from the watch's own log.
+def _drafted_by_pick(w) -> tuple[dict[int, int] | None, str]:
+    """ESPN player id -> the overall pick that took him, from the watch's own log,
+    and what happened when it was read.
 
     ESPN sends no `DRAFT_LIST` when a pick removes someone from your queue, so
     the last echo keeps naming players who are gone. The watch already holds
     what is needed to say which: the INIT snapshot's picks plus every SELECTED
     line since, which is exactly `espn_live.replay_picks`.
 
-    Returns an empty map rather than raising. This annotates a report; a queue
-    that cannot be annotated is still a queue worth showing.
+    `None` for the map means the log could not be read, which is NOT the same as
+    a log that named nobody. Returning an empty map for both put three meanings
+    under one `drafted_at: null` -- checked and still queued, not checked by
+    design, and could not be checked -- and the third is the one that reads as a
+    clean bill of health.
+
+    The reason is returned on success too. A field that appears only on failure
+    makes its own absence the signal, which is precisely what stating
+    `drafted_at` on every row exists to avoid.
+
+    Never raises. This annotates a report; a queue that cannot be annotated is
+    still a queue worth showing.
     """
     if not getattr(w, "init_b64", None):
-        return {}
+        return None, "not read: ESPN has sent no INIT on this connection"
     try:
         init = espn_live.decode_init(w.init_b64)
         picks = espn_live.replay_picks(init, [line for _ts, line in w.lines])
-    except Exception:
+    except Exception as exc:
         _log.exception("could not read the pick log for league %s", w.league_id)
-        return {}
-    return {p["player_id"]: p["overall"] for p in picks if p.get("player_id") is not None}
+        return None, f"not read: {type(exc).__name__}: {exc}"
+    taken = {p["player_id"]: p["overall"] for p in picks
+             if p.get("player_id") is not None}
+    return taken, f"read: {len(picks)} picks from INIT plus this connection's lines"
 
 
-def _queue_rows(w, ids: list[int], drafted: dict[int, int] | None = None) -> list[dict]:
-    taken = drafted or {}
+def _queue_rows(w, ids: list[int], drafted: dict[int, int] | None) -> list[dict]:
+    """Queue rows, annotated with the pick that took each player when that is
+    known.
+
+    `drafted` is required, so a caller with nothing to say has to say so here
+    rather than inherit a default. `None` leaves `drafted_at` off the rows
+    entirely: a null on a row nobody checked claims the player is available, and
+    that is the claim this key was added to make honest.
+    """
+    if drafted is None:
+        return [{"rank": i + 1, "espn_id": pid,
+                 "name": bd._espn_player_name(pid, w.espn_map)}
+                for i, pid in enumerate(ids)]
     return [{"rank": i + 1, "espn_id": pid, "name": bd._espn_player_name(pid, w.espn_map),
              # None when he is still available. Present on every row rather than
              # only the drafted ones, so "not drafted" is a stated fact and not
              # an absent key a reader has to interpret.
-             "drafted_at": taken.get(pid)}
+             "drafted_at": drafted.get(pid)}
             for i, pid in enumerate(ids)]
 
 
@@ -2158,20 +2182,23 @@ async def draft_queue(league_id: str) -> str:
 
     `as_echoed` is what ESPN last said, verbatim, with `drafted_at` on every row
     naming the pick that took him or null if he is still there. `effective` is
-    what autopick would actually draw from. `source` says where the list came
-    from."""
+    what autopick would actually draw from. `pick_log` says whether the log
+    behind those two could be read; when it could not, both `effective` and
+    `drafted_at` are absent rather than guessed. `source` says where the list
+    came from."""
     w, err = _watch_or_error(league_id)
     if err:
         return err
-    drafted = _drafted_by_pick(w)
+    drafted, pick_log = _drafted_by_pick(w)
     # The echo history is deliberately NOT annotated: it records what ESPN said
     # at the time, and marking those rows with what has happened since would make
-    # a log of the past disagree with itself.
+    # a log of the past disagree with itself. `None`, not the map, so the rows
+    # carry no `drafted_at` at all -- a null there would be a claim nobody made.
     history = [{"at_ms": ts, "connection": conn, "size": len(ids),
-                "queue": _queue_rows(w, ids)} for ts, conn, ids in w.queue_echoes]
+                "queue": _queue_rows(w, ids, None)} for ts, conn, ids in w.queue_echoes]
     if w.queue is None:
         return _emit({"source": "none", "as_echoed": [], "effective": [],
-                      "echoes": history,
+                      "echoes": history, "pick_log": pick_log,
                       "connection": w.connection,
                       "note": "ESPN has not sent a DRAFT_LIST on this connection, so "
                               "the queue it holds is unknown; set_draft_queue will "
@@ -2181,18 +2208,28 @@ async def draft_queue(league_id: str) -> str:
     # change, so the only way to answer "when did X leave my queue" is to compare
     # consecutive echoes. Each row carries its connection, because a list that
     # shrank across a reconnect was not necessarily edited by anyone.
-    still_there = [pid for pid in w.queue if pid not in drafted]
-    return _emit({
+    out: dict[str, Any] = {
         "source": "socket",
         "as_echoed": _queue_rows(w, w.queue, drafted),
+        "pick_log": pick_log,
+        "connection": w.connection, "echoes": history,
+        # Observation, not a source. See watch._check_init_queue.
+        "init_queue_checks": w.init_queue_checks}
+    if drafted is not None:
+        still_there = [pid for pid in w.queue if pid not in drafted]
         # The queue autopick would actually draw from. Ranks renumber, because a
         # rank is a position in the list that will be used, not in the one ESPN
         # last happened to send.
-        "effective": _queue_rows(w, still_there, drafted),
-        "drafted_since_the_echo": len(w.queue) - len(still_there),
-        "connection": w.connection, "echoes": history,
-        # Observation, not a source. See watch._check_init_queue.
-        "init_queue_checks": w.init_queue_checks}, indent=2)
+        out["effective"] = _queue_rows(w, still_there, drafted)
+        out["drafted_since_the_echo"] = len(w.queue) - len(still_there)
+    else:
+        # Not `as_echoed` and not `[]`. Both are answers, and there is no answer:
+        # the first would repeat the claim that every queued player is available,
+        # which is the defect this tool was fixed for, and the second would say
+        # the queue is empty. `pick_log` carries the reason.
+        out["effective"] = None
+        out["drafted_since_the_echo"] = None
+    return _emit(out, indent=2)
 
 
 @mcp.tool()
@@ -2248,7 +2285,14 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
 
     What this contributes is the merge itself: wait for ESPN's echo, union with
     what is live, report against what ESPN accepted rather than what was sent.
+
+    Every list it returns is annotated with who is already drafted. `removed` is
+    the ids ESPN dropped, and an already-drafted player is the ordinary reason it
+    drops one, so `drafted_at` on those rows is the answer to the question the
+    list raises. `would_send` on the refusal path says which of the queue the
+    caller meant to send is already gone.
     """
+    drafted, pick_log = _drafted_by_pick(w)
     if not replace and w.queue is None:
         # ESPN sends the first echo unprompted a few seconds after joining, so a
         # fresh connection is a brief window rather than a state to refuse from.
@@ -2267,7 +2311,8 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
             "do": (f"waited {QUEUE_ECHO_WAIT_SECONDS:.0f}s for ESPN's own echo, which "
                    "normally arrives within seconds of joining, and none came; the "
                    "user can touch the queue in the app to force one"),
-            "would_send": _queue_rows(w, ids)}
+            "pick_log": pick_log,
+            "would_send": _queue_rows(w, ids, drafted)}
 
     if replace:
         send = ids
@@ -2279,7 +2324,8 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
         accepted = await w.set_queue(send)
     except TimeoutError:
         return {"error": "ESPN did not echo the queue within 10s",
-                "sent": _queue_rows(w, send)}
+                "pick_log": pick_log,
+                "sent": _queue_rows(w, send, drafted)}
     # Both of these read ESPN's echo, not what we meant to send. A merge intends
     # to remove nothing, but ESPN drops ids it rejects -- an already-drafted
     # player is the ordinary case -- and reporting the intent would say
@@ -2295,12 +2341,15 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
         watchstore.update_queue(league_id, accepted, from_user=len(kept))
     return {
         "mode": "replace" if replace else "merge",
-        "sent": _queue_rows(w, send),
-        "accepted": _queue_rows(w, accepted),
-        "added": _queue_rows(w, ids),
-        "kept_from_the_users_queue": _queue_rows(w, kept),
-        "removed": _queue_rows(w, removed),
-        "queue_before": _queue_rows(w, existing or []),
+        "pick_log": pick_log,
+        "sent": _queue_rows(w, send, drafted),
+        "accepted": _queue_rows(w, accepted, drafted),
+        "added": _queue_rows(w, ids, drafted),
+        "kept_from_the_users_queue": _queue_rows(w, kept, drafted),
+        # ESPN drops ids it rejects and an already-drafted player is the ordinary
+        # case, so this is where `drafted_at` answers the question the list asks.
+        "removed": _queue_rows(w, removed, drafted),
+        "queue_before": _queue_rows(w, existing or [], drafted),
         "echoes_seen": len(w.queue_echoes),
         "accepted_ids": list(accepted),
     }

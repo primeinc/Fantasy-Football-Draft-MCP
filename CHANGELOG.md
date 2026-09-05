@@ -8,6 +8,27 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**One `drafted_at: null` carried three different meanings (#66)**
+- `_queue_rows` took the annotation as an optional argument. Two call sites passed
+  it and **seven** did not, so every row from those seven said `drafted_at: null`
+  — a claim the caller had never checked. Three meanings shipped under it: checked
+  and still queued, not checked by design, and could not be checked. The third
+  reads as a clean bill of health, which is the one it must never read as.
+- The argument is now required. `None` means *do not annotate* and leaves the key
+  **off** the row, so a site with nothing to say has to say so at the call.
+- The echo history passes `None`, which is what it always meant. The six
+  `set_draft_queue` lists pass the map instead: `removed` is the ids ESPN dropped
+  and an already-drafted player is the ordinary reason it drops one, so
+  `drafted_at` there is the answer to the question the list raises. The live
+  control that closed #60 had shown a drafted player carrying a false null in the
+  `sent` and `accepted` rows.
+- `pick_log` reports whether the log could be read, **on success as well as
+  failure**. Present only on failure would make its absence the signal, which is
+  the thing stating `drafted_at` on every row exists to avoid.
+- When the log cannot be read, `effective` and `drafted_since_the_echo` are `null`
+  rather than a guess. Repeating the echo would restate the claim #60 removed, and
+  `[]` would say the queue is empty.
+
 **The resume restored the watch but not the queue, on every restart (#65)**
 - First live use of the resume: the watch came back, and the message said `the
   queue was NOT re-sent (no queue echo on this connection yet)`. `draft_queue`
