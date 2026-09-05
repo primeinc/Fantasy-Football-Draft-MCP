@@ -2085,6 +2085,15 @@ def reload_package() -> dict[str, Any]:
     # would have left behind. Reload then renames the module to that name as
     # well (`_init_module_attrs` runs before the body), so a second reload finds
     # it by the ordinary route and this branch does not fire again.
+    #
+    # One thing in the package reads `__name__` after startup and so changes
+    # with it: `logging.getLogger(__name__)` in bye_backtest's progress
+    # callback, whose records move from a logger named `__main__` to one named
+    # `ffdraft.server`. Nothing configures logging by name anywhere -- no
+    # basicConfig, dictConfig, setLevel or handler bound to a name -- so both
+    # propagate to the root identically and only the record's `name` field
+    # differs. The other reads are this line, the entry-point guard below, and
+    # watch.py's own module logger, which is unaffected.
     spec = getattr(me, "__spec__", None)
     if spec is not None and sys.modules.get(spec.name) is not me:
         sys.modules[spec.name] = me
