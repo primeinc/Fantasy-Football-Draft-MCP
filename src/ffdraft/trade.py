@@ -359,18 +359,21 @@ def _spread_note(roster: list[Player]) -> str | None:
     delta, so it is said beside the number rather than left for a reader to
     deduce from the basis column.
     """
-    names = [p.name for p in roster if p.basis == BASIS_STAND_IN]
-    if not names:
+    stand_ins = [p for p in roster if p.basis == BASIS_STAND_IN]
+    if not stand_ins:
         return None
-    return ("block_spread excludes the week-to-week variance of "
-            + ", ".join(names)
-            + ": priced at replacement level with full expected games, so their "
-              "availability never varies and the spread is narrower than this "
-              "roster warrants. They are in the estimate as well as absent from "
-              "its spread -- freddy measured a pair of stand-ins moving an "
-              "improvement from +36.9 to -3.9 while the spread tightened from "
-              "4.3 to 0.7, so this side's verdict can turn on them and reads "
-              "more confident as it does. Their points are under stand_ins.")
+    points = sum(p.adj_ppg * p.weekly_availability * FANTASY_WEEKS
+                 for p in stand_ins)
+    return (f"block_spread is replication noise over the players the board could "
+            f"price, and {', '.join(p.name for p in stand_ins)} "
+            f"{'is' if len(stand_ins) == 1 else 'are'} not among them: "
+            f"{points:.0f} points of this side's total, held fully available, so "
+            f"their availability never varies and they contribute no variance at "
+            f"all. The spread is therefore narrower than this roster warrants, "
+            f"and the estimate rests on them -- a measured pair worth 214 points "
+            f"moved an improvement from +36.9 to -3.9 while the spread tightened "
+            f"from 4.3 to 0.7, so the output can read more confident exactly as "
+            f"it becomes more speculative. Per-player figures under stand_ins.")
 
 
 def _stand_ins_of(roster: list[Player], weeks: int) -> list[dict]:

@@ -445,6 +445,12 @@ class TestRefusals:
         assert note is not None and "Bystander" in note
         assert "block_spread" in note
         assert out["counterparty"]["spread_note"] is None
+        # The reader's OWN stand-in total, not a quoted anecdote: checkable
+        # against this payload's `stand_ins`, which carries the per-player
+        # figures. freddy's point that a bare "the spread is narrower" is the
+        # kind of caveat that gets skipped.
+        mine = out["stand_ins"]["yours"]
+        assert f"{sum(s['points'] for s in mine):.0f} points" in note
 
     def test_a_fully_priced_pair_of_rosters_says_nothing_about_the_spread(
             self, fixture_board, by_slot):
