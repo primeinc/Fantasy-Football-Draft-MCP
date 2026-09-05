@@ -640,6 +640,55 @@ def replacement_points(board: pd.DataFrame, position: str) -> float:
     return float(chunk.iloc[0]) if len(chunk) else 0.0
 
 
+def with_stand_ins(rows: pd.DataFrame, board: pd.DataFrame,
+                   missing: list[tuple[str, str]]) -> pd.DataFrame:
+    """Append a replacement-level stand-in for each (name, position) not priced.
+
+    One implementation for every caller that assembles a roster, because there
+    is more than one now: the draft record through `DraftState.my_rows`, and the
+    live ESPN roster through `rosters.roster_rows`. A second copy would be the
+    `_discount` fork again -- the same rule written twice and then corrected
+    once.
+
+    The stand-in is priced at the board's own replacement level for his
+    position, which is the least the roster can be assumed to hold: he is by
+    definition someone you would not start over a replacement-level alternative,
+    and `vor` of 0 says so. It is deliberately not a guess at what he is really
+    worth. `bye_week` is left missing rather than filled, so he stays out of the
+    bye term instead of contributing a fabricated conflict, and `exp_games` is
+    left missing so `roles.weekly_availability` applies its own documented
+    default rather than one invented here.
+
+    `rows` must already carry the UNPRICED column for the priced players, since
+    only the caller knows which of its rows were matched.
+    """
+    if not missing:
+        return rows
+    stand_ins = pd.DataFrame([{
+        "_key": norm_name(name),
+        "name": name,
+        "position": position,
+        "proj_points": replacement_points(board, position),
+        "replacement_points": replacement_points(board, position),
+        "vor": 0.0,
+        "draft_score": 0.0,
+        UNPRICED: True,
+    } for name, position in missing]).reindex(columns=rows.columns)
+    # reindex fills the columns the stand-in has no opinion about with NaN,
+    # which turns a bool column into object and breaks every `frame[col]` mask
+    # downstream -- the mistake the K/DST rows already made once.
+    #
+    # Taken from the frame's own dtypes rather than a list of column names. A
+    # hardcoded list is a claim about which columns a board carries, and the
+    # boards in this repo differ: the live one has `off_roster` and `is_rookie`,
+    # a test fixture may have neither, and naming them raised KeyError on the
+    # fixture that had neither. False is the neutral value for a flag the
+    # stand-in cannot have an opinion about.
+    for col in rows.select_dtypes(include="bool").columns:
+        stand_ins[col] = stand_ins[col].fillna(False).astype(bool)
+    return pd.concat([rows, stand_ins], ignore_index=True)
+
+
 class DraftState:
     """Who's been taken, by whom, and whose turn it is.
 
@@ -758,40 +807,16 @@ class DraftState:
         rows = board[board["_key"].isin([norm_name(p["name"]) for p in mine])].copy()
         rows[UNPRICED] = False
         priced = set(rows["_key"])
-        # Paired with the position it will be placed at, through the same read
-        # `_position_of` uses. Filtering on `p.get("position")` accepted a NaN,
-        # which is truthy, and `str()` then made a stand-in at a position called
-        # "nan" priced at that position's replacement level.
-        missing = [(p, pos) for p in mine
+        # `with_stand_ins` because the live ESPN roster needs the same rule and a
+        # second copy is the `_discount` fork again. `_recorded_position` because
+        # filtering on `p.get("position")` accepts a NaN, which is truthy, and
+        # `str()` then builds a stand-in at a position called "nan" priced at
+        # that position's replacement level. Both halves are load-bearing and
+        # each was written without the other.
+        missing = [(p["name"], pos) for p in mine
                    if norm_name(p["name"]) not in priced
                    and (pos := self._recorded_position(p))]
-        if not missing:
-            return rows
-        stand_ins = pd.DataFrame([{
-            "_key": norm_name(p["name"]),
-            "name": p["name"],
-            "position": pos,
-            "proj_points": replacement_points(board, pos),
-            "replacement_points": replacement_points(board, pos),
-            "vor": 0.0,
-            "draft_score": 0.0,
-            "off_roster": False,
-            "is_rookie": False,
-            UNPRICED: True,
-        } for p, pos in missing]).reindex(columns=rows.columns)
-        # reindex fills the columns the stand-in has no opinion about with NaN,
-        # which turns a bool column into object and breaks every `frame[col]`
-        # mask downstream -- the mistake the K/DST rows already made once.
-        #
-        # Taken from the frame's own dtypes rather than a list of column names.
-        # A hardcoded list is a claim about which columns a board carries, and
-        # the boards in this repo differ: the live one has `off_roster` and
-        # `is_rookie`, a test fixture may have neither, and naming them raised
-        # KeyError on the fixture that had neither. False is the neutral value
-        # for a flag the stand-in cannot have an opinion about.
-        for col in rows.select_dtypes(include="bool").columns:
-            stand_ins[col] = stand_ins[col].fillna(False).astype(bool)
-        return pd.concat([rows, stand_ins], ignore_index=True)
+        return with_stand_ins(rows, board, missing)
 
     @staticmethod
     def _board_positions(board: pd.DataFrame) -> dict:
