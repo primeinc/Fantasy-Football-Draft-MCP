@@ -146,6 +146,15 @@ to work around a defect that had since been fixed.
 - Say which of the two a change is when it lands, rather than leaving it to be
   inferred later from the file list.
 
+"Shared surface" means the inputs as well as the code. `waivers.py` reads
+`roles.bench_values`, so the change that could break it is not one that edits
+`roles` but one that alters what reaches it — `#40` changes what `my_rows`
+hands over without touching `roles` at all. "`roles` is unchanged" and "what
+reaches `roles` is unchanged" are different claims, and only the first is
+settled by a file list. When a merge changes what a shared function is fed, tell
+the owners who read that function, because their fixtures build their own frames
+and will not notice.
+
 ## PR 1 — Tooling: justfile and the CI matrix
 
 Cherry-pick `3c2ae0d`, `1f46494`, `c93a58f`. Verified clean on the base.
@@ -329,6 +338,45 @@ defect independently and git merged both definitions with no conflict, leaving
 the earlier unbounded form live and the fix dead above it. It happened twice.
 Upstream will hit the same shape the first time two contributors fix one bug in
 parallel.
+
+## PR 10 — Waiver targets from role change
+
+Stack, and incomplete on purpose. Sources: `805c4f5`, `1fc0acf`, `0bbd699`,
+`8f328a7`, `a7b0a0e`, as landed.
+
+A new `waivers.py` scores a free-agent claim on the role moving rather than on
+the points scored, with `roles.handcuff_table` and `roles.bench_values` behind
+it. Nothing user-facing yet: no MCP tool, and `server.py` gains one line adding
+the module to `RELOAD_ORDER`. The claim list says which kind of empty it is when
+it is empty, the contingency is resolved before the cut rather than after it —
+a handcuff's `role_change` is 0 by construction, so cutting first dropped him
+before his contingency was read — and a drop says when it rests on a
+replacement-level stand-in rather than on a projection.
+
+Tests: `tests/test_waivers.py`. Surfaces in `docs/data-sources.md`.
+
+Two settings traps belong in the description, both measured off a real dump
+rather than assumed: `isUsingAcquisitionBudget` is false while
+`acquisitionBudget` and `minimumBid` are populated and inert, so a tool that
+reads the budget first recommends bids to a league that does not take them; and
+`isBenchUnlimited` is true while six bench slots exist, so every claim names a
+drop. Undroppable players come from `player.droppable` in a view already
+captured, 19 of 1036 rows on that dump.
+
+Three of the four scores carry `unmeasured` in every row and the free-agent pool
+carries `unverified-shape`, because the capture was taken mid-draft and reports
+every player as a free agent, so the split the tool selects on has never been
+exercised. Those labels ship; they are not placeholders to quietly drop.
+
+Open before the tool is wired, found on review and reproduced here:
+`drop_candidate` reads `bool(worst.get("unpriced", False))`, and NaN is truthy.
+A bench assembled from two sources where only one carries the column concatenates
+to dtype object holding `[False, nan]`, and the row with no flag reports
+`unpriced` True — labelling a board-priced player a replacement-level stand-in
+and telling the user his number is not real when it is. Not reachable today,
+because every frame out of `my_rows` carries the column on every row. It becomes
+reachable the moment a bench is assembled from mixed sources, which is the
+wiring. The fix is `worst.get("unpriced") is True`.
 
 ## Open
 
