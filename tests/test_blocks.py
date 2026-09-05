@@ -217,6 +217,21 @@ class TestTheReplicationDoor:
         # rests on instead of inferring it from the module that produced it.
         assert out["harness"] == adp.HARNESS_REPLICATION
 
+    def test_the_spread_says_what_it_does_not_cover(self):
+        # freddy's caveat, in the output rather than a docstring. A replication's
+        # inputs may come out of something fitted, so its spread is replication
+        # noise and not the error bar on the answer. That distinction reads
+        # identically to the whole uncertainty unless something says otherwise.
+        out = adp.margin_unit(True, None, 2, adp.HARNESS_REPLICATION, adp.UNIT_POINTS)
+        assert out["spread_covers"] == adp.SPREAD_REPLICATION_ONLY
+        # Both halves, because the second is the one that stops the misreading:
+        # what the number is, and what it is not.
+        assert "replication noise only" in out["spread_covers"]
+        assert "not the projection's error" in out["spread_covers"]
+        # The fitted path makes no such claim, because there the held-out score
+        # is the generalisation evidence.
+        assert "spread_covers" not in adp.margin_unit(True, [True, True], 2)
+
     def test_the_declaration_is_what_opens_it(self):
         out = adp.margin_unit(True, None, 2, adp.HARNESS_REPLICATION)
         assert out["unit"] == adp.UNIT_ORDINAL

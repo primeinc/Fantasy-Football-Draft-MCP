@@ -283,14 +283,22 @@ def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
                 f"this harness's own noise rather than a result.")
     direction = "gains" if gain > 0 else "loses"
     p_null = summary.get("blocks_agree_p_null")
-    if summary.get("unit") != adp_mod.UNIT_POINTS:
-        return (f"{side} {direction}, blocks {summary['block_improvements']}, spread "
-                f"{spread}. Ordinal only, because {summary.get('unit_reason')}, so the "
-                f"direction is usable over {weeks} weeks and the size is not.")
-    return (f"{side} {direction} {abs(gain):.1f} points over {weeks} weeks, "
+    # The unit is read, never asserted. Hardcoding the word here is exactly what
+    # the rule exists to stop, and it is where a sentence and its own structured
+    # field come to disagree.
+    unit = summary.get("unit", adp_mod.UNIT_ORDINAL)
+    amount = (f"{abs(gain):.1f} points" if unit == adp_mod.UNIT_POINTS
+              else f"{abs(gain):.1f} ({unit})")
+    # On a pass this is the rider that says what the spread does not cover; on
+    # an ordinal answer it is the clause that failed. Either way the sentence
+    # carries the reason rather than leaving it in a field nobody reads.
+    tail = summary.get("spread_covers") if unit == adp_mod.UNIT_POINTS \
+        else summary.get("unit_reason")
+    tail = f" {str(tail)[:1].upper()}{str(tail)[1:]}." if tail else ""
+    return (f"{side} {direction} {amount} over {weeks} weeks, "
             f"blocks {summary['block_improvements']}, spread {spread}. Blocks of a "
             f"trade worth nothing agree in sign with probability {p_null}, so read "
-            f"the spread before the mean.")
+            f"the spread before the mean." + tail)
 
 
 def _roster_names(picks: list[dict]) -> list[str]:

@@ -64,9 +64,30 @@ All notable changes to this project. Format follows
   so neither buys a mean without its noise. `unit_reason` names the door on a
   pass as well as the clause on a failure, so a reader sees which argument the
   number rests on instead of inferring it from the module that produced it.
-- `trade.verdict` reads that verdict rather than choosing its own word, so the
-  sentence and the structured `unit` field cannot disagree about what the number
-  is. An ordinal verdict states the direction and withholds the magnitude.
+- **And the door is narrower than "the output is in points."** freddy's caveat,
+  which sharpens the path rather than changing it: a replication's inputs may
+  themselves come out of something fitted — `trade.py`'s `adj_ppg` comes from
+  `model.project` — so the points are only as real as that projection and no
+  number of replications moves its error. The verdict carries `spread_covers` —
+  **"spread is replication noise only, not the projection's error"** — and the
+  sentence prints it. The wording is deliberate about both halves: the first says
+  what the number is, the second what it is not, and the second is the one that
+  stops the misreading. A reader seeing a spread of 3.3 on a 34-point trade
+  otherwise concludes the estimate is tight to within a few points, which is
+  wrong by an unknown margin.
+- `trade.verdict` reads the unit rather than asserting it, so the sentence and
+  the structured field cannot disagree about what the number is. It reads:
+
+      you gains 34.5 points over 10 weeks, blocks [36.2, 32.9], spread 3.3.
+      Blocks of a trade worth nothing agree in sign with probability 0.5, so read
+      the spread before the mean. Spread is replication noise only, not the
+      projection's error.
+
+  and on an ordinal verdict, `34.5 (ordinal)` with the failed clause named in
+  place of the rider. The size is labelled rather than withheld, because for this
+  harness the number *is* the answer; `stream_kdst` withholds its margin instead,
+  because there the ranking already carries the order and the margin is the only
+  thing the units claim was about.
 - The per-block flags go through `adp._flag`, `bool(pd.notna(x) and x)`, which
   lena measured on #40: `x is True` fails on `np.True_` and plain truthiness
   passes `np.nan` and raises on `pd.NA`. `variance_explained > 0` on a numpy

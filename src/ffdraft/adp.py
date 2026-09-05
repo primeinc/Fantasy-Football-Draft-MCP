@@ -991,6 +991,10 @@ UNIT_ORDINAL = "ordinal"
 # the unit, so nothing was estimated and there is nothing to hold out.
 HARNESS_FITTED = "fitted"
 HARNESS_REPLICATION = "replication"
+# What a replication's block spread is, and what it is not. The second half is
+# the one that stops the misreading, so it is part of the sentence rather than
+# left to a docstring.
+SPREAD_REPLICATION_ONLY = "spread is replication noise only, not the projection's error"
 
 
 def _flag(value: object) -> bool:
@@ -1043,6 +1047,14 @@ def margin_unit(signs_agree: bool, beats_own_mean: Sequence[object] | None,
     be made rather than assumed. The block spread is reported beside every
     estimate on both paths, so neither buys a mean without its noise.
 
+    And it is narrower than "the output is in points". A replication's inputs
+    may themselves come out of something fitted -- `trade.py`'s `adj_ppg` comes
+    from `model.project` -- so the points are only as real as that projection,
+    and replicating the draws does not move its error by one bit. The verdict
+    therefore carries `spread_covers`, which a caller is expected to print
+    beside the estimate: "this is replication noise" and "this is the whole
+    uncertainty" read identically in an answer and are not the same thing.
+
     `unit_reason` names the clause that failed and, on a pass, the door that was
     used, so a reader can see which argument the number is resting on rather
     than inferring it from the module that produced it.
@@ -1070,7 +1082,17 @@ def margin_unit(signs_agree: bool, beats_own_mean: Sequence[object] | None,
                                f"{input_unit}, so there is no held-out set and the "
                                f"second clause does not apply",
                 "beats_own_mean": beats, "harness": harness,
-                "input_unit": input_unit}
+                "input_unit": input_unit,
+                # freddy's caveat, in the output rather than a docstring, and
+                # worded to say both halves. "Replication noise" says what the
+                # number is; "not the projection's error" says what it is not,
+                # and the second half is the one that stops the misreading. His
+                # inputs come from `model.project`, which does fit things, so
+                # the points inherit a fitted model's uncertainty and no number
+                # of replications moves it. A reader seeing a spread of 3.2 on a
+                # 34-point trade otherwise concludes the estimate is tight to
+                # within a few points, which is wrong by an unknown margin.
+                "spread_covers": SPREAD_REPLICATION_ONLY}
     if beats is None:
         return {"unit": UNIT_ORDINAL,
                 "unit_reason": "no out-of-sample scores were supplied, so the second "

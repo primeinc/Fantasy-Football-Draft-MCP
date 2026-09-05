@@ -318,17 +318,26 @@ class TestTheUnitIsNotThisModulesToChoose:
         assert yours["harness"] == adp.HARNESS_REPLICATION
         assert yours["unit"] == adp.UNIT_POINTS
         assert "points over" in yours["verdict"]
+        # And says what the spread beside it does not cover. `adj_ppg` comes out
+        # of `model.project`, which fits things; replicating the availability
+        # draws does not move that error, so a reader taking the spread as the
+        # error bar on the trade would be wrong.
+        assert yours["spread_covers"] == adp.SPREAD_REPLICATION_ONLY
+        assert "Spread is replication noise only, not the projection's error." \
+            in yours["verdict"]
 
-    def test_an_ordinal_verdict_takes_the_size_out_of_the_sentence(self):
+    def test_an_ordinal_verdict_takes_the_unit_off_the_number(self):
         # The gate from the caller's side. Same agreeing blocks, no declaration,
-        # so the rule answers ordinal and the sentence may state the direction
-        # and not the magnitude.
+        # so the rule answers ordinal and the sentence may not call the size
+        # points. It still states the size, labelled, because for this harness
+        # the number is the answer -- withholding it leaves nothing.
         summary = {"improvement": 34.5, "block_improvements": [36.2, 32.9],
                    "block_spread": 3.3, "blocks_agree": True, "blocks_agree_p_null": 0.5,
                    **adp.margin_unit(True, None, 2, adp.HARNESS_REPLICATION)}
         said = trade.verdict(summary, "you", weeks=10)
-        assert "Ordinal only" in said
-        assert "34.5" not in said
+        assert "34.5 (ordinal)" in said
+        assert "points" not in said
+        # And the sentence says which clause failed, not just that one did.
         assert "must declare the unit" in said
 
     def test_the_sentence_cannot_disagree_with_the_field(self):
