@@ -27,3 +27,6 @@ espn_cookies.json
 
 # Build artifacts
 *.bak
+
+# MCP registration carries ESPN cookies
+.mcp.json
