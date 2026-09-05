@@ -15,6 +15,28 @@ check:
     uvx ty check src tests
     {{ python }} -m pytest tests -q
 
+# Upstream CI locally: ruff and the test suite on every Python it tests, each
+# in a throwaway venv, then the distribution build.
+[script]
+ci-matrix:
+    import os
+    import subprocess
+    import tempfile
+
+    root = tempfile.mkdtemp(prefix="ffd-ci-")
+    for version in ("3.10", "3.11", "3.12"):
+        venv = os.path.join(root, version)
+        py = os.path.join(venv, "Scripts", "python.exe")
+        print(f"== python {version}", flush=True)
+        subprocess.run(["uv", "venv", venv, "--python", version, "-q"], check=True)
+        subprocess.run(["uv", "pip", "install", "--python", py, "-q", "-e", ".[dev]"], check=True)
+        subprocess.run([py, "-m", "ruff", "check", "src", "tests"], check=True)
+        subprocess.run([py, "-m", "pytest", "tests", "-q"], check=True)
+    here = os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
+    subprocess.run([here, "-m", "build", "--outdir", os.path.join(root, "dist")],
+                   check=True, capture_output=True)
+    print(f"build ok -> {os.path.join(root, 'dist')}")
+
 # One-time nflverse download and board build (cache in ~/.ffdraft)
 data:
     {{ python }} setup_data.py
