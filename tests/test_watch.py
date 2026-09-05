@@ -78,14 +78,14 @@ def test_duplicate_connection_pauses_instead_of_reconnecting(tmp_path, monkeypat
 
 
 def test_other_teams_leaving_does_not_pause(tmp_path, monkeypatch):
-    w, _ = _watch(tmp_path, monkeypatch)
+    w, _events = _watch(tmp_path, monkeypatch)
     asyncio.run(w.handle_line("LEFT 13 {C8E45485} 1"))
     asyncio.run(w.handle_line("LEFT 3 {ABC} 1"))
     assert w.bumped is False
 
 
 def test_select_sends_and_resolves_on_own_selected(tmp_path, monkeypatch):
-    w, events = _watch(tmp_path, monkeypatch)
+    w, _events = _watch(tmp_path, monkeypatch)
     asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
     sent = []
 
@@ -110,7 +110,7 @@ def test_select_surfaces_server_error(tmp_path, monkeypatch):
     asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
 
     class Ws:
-        async def send(self, text):
+        async def send(self, _text):
             await w.handle_line("ERROR 1 Not+your+turn")
 
     async def go():
@@ -125,6 +125,48 @@ def test_select_without_connection_raises(tmp_path, monkeypatch):
     w, _ = _watch(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="not connected"):
         asyncio.run(w.select(1))
+
+
+def test_session_pings_on_a_timer_despite_constant_inbound_traffic(tmp_path, monkeypatch):
+    # ESPN drops a client that never pings; CLOCK ticks every few seconds do not
+    # count. The first PING must go out ~1 s after connect, then every 15 s, even
+    # though recv() never times out.
+    w, _ = _watch(tmp_path, monkeypatch)
+    monkeypatch.setattr(watch.espn_live, "draft_security_token", lambda *_a: "tok")
+    sent, ticks = [], {"n": 0}
+
+    class Ws:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def recv(self):
+            ticks["n"] += 1
+            if ticks["n"] > 60:
+                raise ConnectionError("done")
+            return "CLOCK 6 1000 2\n"
+
+        async def send(self, text):
+            sent.append(text)
+
+    monkeypatch.setattr(watch, "connect", lambda *_a, **_k: Ws())
+    # Compress time: each recv advances the loop clock by 0.5 s.
+    base = [0.0]
+
+    class Loop:
+        def time(self):
+            base[0] += 0.5
+            return base[0]
+
+    monkeypatch.setattr(watch.asyncio, "get_running_loop", lambda: Loop())
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(w._session())
+    pings = [s for s in sent if s.startswith("PING ")]
+    # 60 ticks x 0.5 s = ~30 s of traffic: first ping at ~1 s, then at ~16 s.
+    assert len(pings) >= 2
 
 
 def test_error_line_raises(tmp_path, monkeypatch):

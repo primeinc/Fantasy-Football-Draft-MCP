@@ -21,7 +21,11 @@ log = logging.getLogger(__name__)
 
 Notify = Callable[[str, dict[str, str]], Awaitable[None]]
 
-PING_SECONDS = 30.0
+# ESPN's draft client pings every 15 s on a timer, first ping 1 s after connect
+# (draft.js: pingInterval=15e3, firstPing after Xe=1e3). The server drops clients
+# that stay quiet, and inbound CLOCK ticks do not count as activity.
+PING_SECONDS = 15.0
+FIRST_PING_SECONDS = 1.0
 # Consecutive failed sessions before the watch gives up. Each attempt is a real
 # connect bounded by open_timeout; a session that reaches INIT resets the count.
 MAX_FAILED_SESSIONS = 5
@@ -105,11 +109,17 @@ class DraftWatch:
                            open_timeout=15) as ws:
             self.connected = True
             self.ws = ws
+            loop = asyncio.get_running_loop()
+            next_ping = loop.time() + FIRST_PING_SECONDS
             while True:
+                wait = next_ping - loop.time()
+                if wait <= 0:
+                    await ws.send(f"PING {int(loop.time() * 1000)}\n")
+                    next_ping = loop.time() + PING_SECONDS
+                    continue
                 try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=PING_SECONDS)
+                    msg = await asyncio.wait_for(ws.recv(), timeout=wait)
                 except TimeoutError:
-                    await ws.send(f"PING {random.randint(0, 10**9)}\n")
                     continue
                 if isinstance(msg, (bytes, bytearray)):
                     msg = msg.decode("utf-8", "replace")
@@ -195,6 +205,8 @@ class DraftWatch:
         b = self.board.copy()
         b["drafted"] = b["_key"].isin(self.state.taken_keys())
         nxt = self.state.next_pick_for_me()
+        if nxt is None:
+            return "No recommendation: you have no picks left."
         after = self.state.pick_after_next()
         roster = self.state.my_roster(b)
         recs = model.recommend(b, self.league, current_pick=nxt, next_pick=after,
