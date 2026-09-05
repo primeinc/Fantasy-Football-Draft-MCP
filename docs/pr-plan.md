@@ -123,6 +123,28 @@ Three checks on every merge. Each exists because skipping it shipped something.
   Where a tool needs credentials or a live league, that call belongs to whoever
   merges, in the main checkout.
 
+**A fixture written from the shape you expect cannot contradict the belief it
+encodes.** That is why the rule above is not redundant with a good suite. One
+read-only run of the weekly lineup found three defects in a single pass, none of
+them visible to any test:
+
+    my_team_id returned None against an mRoster-only response — the tool was
+    broken end to end while every test passed, because the fixture carried the
+    ownership field in the shape its author expected rather than the shape ESPN
+    sends
+
+    the weekly pull omitted X-Fantasy-Filter and got 36 projections instead of
+    596, so nearly every player fell back to the board rate — silently, correctly
+    labelled, and for a reason having nothing to do with him
+
+    an empty roster returned a zero-point lineup, which a reader takes for an
+    answer rather than for a failure
+
+The remedy generalises: assert the outgoing request, not just the parsed
+response. A test over what was sent can be wrong about the wire in a way a test
+over what came back cannot detect, because the second is reading a document the
+first invented.
+
 A test count from a worktree only means what it says if that worktree imported
 its own code. The venv installs the package editable and the resulting path file
 names whichever checkout built the venv, so a worktree borrowing another's venv
