@@ -455,7 +455,10 @@ class TestRoleMultiplier:
         tbl = pd.DataFrame({"proj_points": [185.0, 204.7, 200.0, 100.0, 0.0, 102.5, 120.0,
                                             100.0, 100.0],
                             "espn_proj": [40.9, 181.9, None, 10.0, 50.0, 156.0, 150.0,
-                                          69.9, 70.1]})
+                                          69.9, 70.1],
+                            # The unprojected row is ranked well inside the cutoff,
+                            # so it is not role-unknown; it just has no projection.
+                            "espn_rank": [350, 20, 60, 90, 40, 30, 55, 80, 85]})
         m = model.role_multiplier(tbl)
         assert m.tolist() == pytest.approx([40.9 / 185.0 / 0.7, 1.0, 1.0, 0.2, 1.0,
                                             156.0 / 102.5 / 1.3, 1.0, 0.699 / 0.7, 1.0])
@@ -487,6 +490,87 @@ class TestRoleMultiplier:
         assert out["name"].tolist() == ["Woody Marks", "Tyrone Tracy Jr."]
         assert out.set_index("name")["role_mult"]["Tyrone Tracy Jr."] == pytest.approx(40.9 / 185.0 / 0.7)
         assert "role shrank" in model.explain(out.iloc[1])
+
+
+class TestRoleUnknown:
+    def test_no_projection_and_no_meaningful_rank_takes_the_floor(self):
+        from ffdraft import model
+
+        tbl = pd.DataFrame({
+            "proj_points": [178.8, 178.8, 178.8],
+            "espn_proj": [None, None, 170.0],
+            # deep in the list; ranked as a real asset; projected, so not unknown.
+            "espn_rank": [1401.0, 120.0, 1401.0]})
+        assert model.role_multiplier(tbl).tolist() == pytest.approx(
+            [model.ROLE_FLOOR, 1.0, 1.0])
+
+    def test_absent_rank_is_unknown_too(self):
+        from ffdraft import model
+
+        tbl = pd.DataFrame({"proj_points": [168.6], "espn_proj": [None],
+                            "espn_rank": [None]})
+        assert model.role_multiplier(tbl).tolist() == [model.ROLE_FLOOR]
+
+    def test_recommend_demotes_a_player_espn_has_no_opinion_on(self):
+        from ffdraft import model
+        from ffdraft.config import LeagueSettings
+
+        league = LeagueSettings(name="t", teams=12)
+        b = pd.DataFrame({
+            "name": ["Jared Wayne", "Woody Marks"], "position": ["WR", "RB"],
+            "team": ["HOU", "HOU"], "proj_points": [178.8, 176.7],
+            "draft_score": [38.9, 46.6], "adp": [170.0, 151.9],
+            "pos_rank": [60, 26], "overall_rank": [98, 84],
+            "consistency": [0.5, 0.5], "espn_proj": [None, 131.8],
+            "espn_rank": [1401.0, 165.0], "drafted": [False, False],
+            "adj_ppg": [12.3, 11.7],
+        })
+        b["_key"] = b["name"].map(board.norm_name)
+        out = model.recommend(b, league, current_pick=164, next_pick=189,
+                              roster={"WR": 2, "RB": 3, "TE": 1, "QB": 1})
+        assert out.set_index("name")["role_mult"]["Jared Wayne"] == model.ROLE_FLOOR
+        assert out["name"].tolist() == ["Woody Marks", "Jared Wayne"]
+        why = model.explain(out.set_index("name").loc["Jared Wayne"])
+        assert "role unknown" in why and "ranks him 1401" in why
+
+    def test_a_discount_never_promotes_a_negative_pick_value(self):
+        from ffdraft import model
+        from ffdraft.config import LeagueSettings
+
+        # Both candidates are worth less than waiting, so pick_value is negative
+        # for both. Multiplying the discounted one by 0.2 would move it toward
+        # zero and put it first; it has to stay last.
+        league = LeagueSettings(name="t", teams=12)
+        b = pd.DataFrame({
+            "name": ["Ghost Back", "Real Back"], "position": ["RB", "RB"],
+            "team": ["X", "Y"], "proj_points": [120.0, 118.0],
+            "draft_score": [-90.0, -95.0], "adp": [400.0, 380.0],
+            "pos_rank": [70, 72], "overall_rank": [500, 520],
+            "consistency": [0.4, 0.4], "espn_proj": [None, 110.0],
+            "espn_rank": [2100.0, 300.0], "drafted": [False, False],
+            "adj_ppg": [8.0, 7.9],
+        })
+        b["_key"] = b["name"].map(board.norm_name)
+        out = model.recommend(b, league, current_pick=210, next_pick=None,
+                              roster={"RB": 3}).set_index("name")
+        assert (out["pick_value"] < 0).all()
+        assert out.loc["Ghost Back", "pick_value"] < out.loc["Real Back", "pick_value"]
+
+    def test_audit_names_the_role_unknown_recommendations(self):
+        from ffdraft.config import LeagueSettings
+        from ffdraft.model import ROLE_UNKNOWN_RANK
+
+        league = LeagueSettings(name="t", teams=12)
+        state = board.DraftState(league)
+        recs = pd.DataFrame({
+            "name": ["Jared Wayne", "Anthony Richardson"], "proj_points": [178.8, 181.6],
+            "espn_proj": [None, None], "espn_rank": [1401.0, 300.0],
+            "_key": ["jared wayne", "anthony richardson"]})
+        out = board.audit_state(pd.DataFrame({"name": [], "position": []}), state, recs)
+        joined = " ".join(out["warnings"])
+        assert f"no ESPN rank inside {ROLE_UNKNOWN_RANK:.0f}" in joined
+        assert "Jared Wayne" in joined
+        assert "left unscaled" in joined and "Anthony Richardson" in joined
 
 
 class TestSyncEspnLive:

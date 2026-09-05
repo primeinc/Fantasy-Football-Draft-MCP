@@ -111,6 +111,45 @@ All notable changes to this project. Format follows
   warns on recommended players in that state or with no ESPN projection.
   Found live: the model had Tyrone Tracy Jr. RB22 at 185 points from 2025
   box scores while ESPN projected 41, a backup on the 2026 depth chart.
+- The role check now covers the players ESPN says nothing about. A row with no
+  `espn_proj` **and** no `espn_rank` inside `model.ROLE_UNKNOWN_RANK` (400) is
+  role-unknown rather than neutral and takes `ROLE_FLOOR` (0.2) — not a new
+  number, but what the continuous scale already gives a player ESPN projects at
+  zero, since a ratio of 0 clips to the floor. ESPN publishes a projection for
+  everyone it treats as rosterable, so no projection plus no meaningful rank is
+  the list saying the player has no 2026 role while the model still reads five
+  years of box scores for him. A row ESPN declines to project but still ranks
+  inside 400 keeps 1. `explain()` says "role unknown, value scaled to 20%" and
+  names the rank; `draft_audit` splits its old "no ESPN projection for" warning
+  into the scaled and the unscaled case.
+  Live board at 122 picks: 169 of 632 rows have no ESPN projection, and every
+  one of them is unranked (9) or ranked past 400 (160 — best is Jam Miller at
+  456, then Anthony Richardson at 478, and all the rest past 1300), so no row
+  is left in the middle. They include Tyreek Hill, Brandon Aiyuk, DeAndre
+  Hopkins, Joe Mixon and Nick Chubb, all still carrying three-figure
+  projections off old box scores. `who_should_i_pick`'s top five changes at
+  three of the seven remaining picks: Jared Wayne (WR, model 178.8, no ESPN
+  projection, ESPN rank 1401) was 5th at pick 164 (pick_value 4.00), 4th at 196
+  (7.41) and 4th at 221 (108.25); he is now scaled to 0.20 and out of all
+  three, replaced by Dalton Schultz (2.63), Jayden Reed (5.39) and Josh Downs
+  (105.42). Picks 125/132/157/189 are unchanged — no role-unknown player was in
+  those top fives. `plan_my_draft` changes at 164 (Jared Wayne -> Dalton
+  Schultz).
+- `recommend` divides by `role_mult` where `pick_value` is already negative
+  instead of multiplying. A candidate worth less than waiting has a negative
+  pick_value, and multiplying that by 0.2 moves it toward zero — so a discount
+  promoted exactly the players it exists to bury. Dividing is the same penalty
+  with the sign the other way round, and keeps a multiplier above 1 a promotion
+  in both halves. No live top-five order changes from this on its own (the
+  affected rows are far below zero either way); it is what makes the
+  role-unknown discount mean what it says.
+- Known limitation this exposed, not fixed here: `plan_my_draft`'s availability
+  filter drops the pool to 9 rows by pick 189, all of them role-unknown, so its
+  last three picks are forced rather than chosen and the scaling cannot change
+  them. 448 of the 515 undrafted board rows carry ESPN's undrafted-default ADP
+  of ~170, and `adp > pick - 1.1*sqrt(pick)` treats every one of them as
+  already gone once the pick number passes ~174. The sentinel ADP is the
+  problem, not the filter.
 - `league_rules` reads `pointsOverrides`: the D/ST points-allowed and
   yards-allowed bands carry `points` 0 and their real values per slot 16.
   Kicker and D/ST statIds are named from the espn-api map.

@@ -538,6 +538,13 @@ ROLE_DISAGREEMENT = 0.70
 ROLE_FLOOR = 0.20
 ROLE_GROWTH = 1.30
 ROLE_CEILING = 1.30
+# ESPN draft rank past which the list has stopped expressing an opinion. ESPN
+# ranks far more players than any room drafts (2394 on the live 2026 list, for a
+# 12-team 16-round draft that takes 192), so a rank this deep carries no
+# information beyond "not a fantasy asset". 400 is comfortably past the last
+# pick and comfortably inside the gap the live board shows: of the 169 rows ESPN
+# declines to project, the best-ranked sits at 456 and all but two are past 1300.
+ROLE_UNKNOWN_RANK = 400.0
 
 
 def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
@@ -545,19 +552,36 @@ def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
     in the ratio: 1 inside [ROLE_DISAGREEMENT, ROLE_GROWTH]; below it
     ratio / ROLE_DISAGREEMENT (so 1 at the edge, ROLE_FLOOR at worst); above
     it ratio / ROLE_GROWTH capped at ROLE_CEILING. No step at either edge: a
-    ratio of 0.699 and 0.701 land within a hair of each other. Players ESPN
-    does not project keep 1."""
+    ratio of 0.699 and 0.701 land within a hair of each other.
+
+    A player ESPN neither projects *nor* ranks inside ROLE_UNKNOWN_RANK is
+    role-unknown rather than neutral, and takes ROLE_FLOOR. ESPN publishes a
+    season projection for everyone it treats as rosterable, so no projection
+    plus no meaningful rank is the list saying the player has no 2026 role at
+    all -- while the model, reading five years of box scores, still has him at
+    whatever his last real season was. That is how a receiver ESPN has at rank
+    1401 with no projection reached the top five of a live recommendation. The
+    factor is not a new number: it is what the continuous scale above already
+    gives a player ESPN projects at zero, since a ratio of 0 clips to
+    ROLE_FLOOR.
+
+    A row ESPN declines to project but still ranks inside ROLE_UNKNOWN_RANK
+    keeps 1: the list does rate him, it just has no projection row for him."""
     ones = pd.Series(1.0, index=tbl.index)
     if "espn_proj" not in tbl.columns or "proj_points" not in tbl.columns:
         return ones
     espn = pd.to_numeric(tbl["espn_proj"], errors="coerce")
     ours = pd.to_numeric(tbl["proj_points"], errors="coerce")
+    rank = (pd.to_numeric(tbl["espn_rank"], errors="coerce") if "espn_rank" in tbl.columns
+            else pd.Series(np.nan, index=tbl.index))
     ratio = espn / ours
     known = espn.notna() & ours.notna() & (ours > 0)
+    unknown = espn.isna() & (rank.isna() | (rank > ROLE_UNKNOWN_RANK))
     low = known & (ratio < ROLE_DISAGREEMENT)
     high = known & (ratio > ROLE_GROWTH)
     out = ones.where(~low, (ratio / ROLE_DISAGREEMENT).clip(lower=ROLE_FLOOR, upper=1.0))
-    return out.where(~high, (ratio / ROLE_GROWTH).clip(lower=1.0, upper=ROLE_CEILING))
+    out = out.where(~high, (ratio / ROLE_GROWTH).clip(lower=1.0, upper=ROLE_CEILING))
+    return out.where(~unknown, ROLE_FLOOR)
 
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
@@ -616,7 +640,15 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     ) * avail["need_mult"]
 
     avail["role_mult"] = role_multiplier(avail)
-    avail["pick_value"] = avail["pick_value"] * avail["role_mult"]
+    # Applied so that below 1 always means "further down the list". pick_value
+    # goes negative deep in the board -- a candidate worth less than what waiting
+    # is expected to return -- and multiplying a negative number by 0.2 moves it
+    # *toward* zero, which would promote exactly the players the discount exists
+    # to bury. Dividing is the same penalty with the sign the other way round,
+    # and it keeps a multiplier above 1 a promotion in both halves.
+    pv = avail["pick_value"].to_numpy(dtype=float)
+    rm = avail["role_mult"].to_numpy(dtype=float)
+    avail["pick_value"] = np.where(pv >= 0, pv * rm, pv / rm)
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -748,14 +780,20 @@ def explain(row: pd.Series) -> str:
     if ir is not None and np.isfinite(ir):
         bits.append(f"injury risk {ir:.0%} (~{row.get('exp_games', 17):.0f} games)")
     ep = row.get("espn_proj")
+    rm = row.get("role_mult")
     if ep is not None and pd.notna(ep):
-        rm = row.get("role_mult")
         tag = ""
         if rm is not None and pd.notna(rm) and rm < 1:
             tag = f" ({ep / row['proj_points']:.0%} of model: role shrank, value scaled)"
         elif rm is not None and pd.notna(rm) and rm > 1:
             tag = f" ({ep / row['proj_points']:.0%} of model: role grew, value scaled)"
         bits.append(f"ESPN projects {ep:.0f}{tag}")
+    elif rm is not None and pd.notna(rm) and rm < 1:
+        er = row.get("espn_rank")
+        where = ("does not rank him" if er is None or pd.isna(er)
+                 else f"ranks him {int(er)}")
+        bits.append(f"ESPN does not project him and {where}: role unknown, "
+                    f"value scaled to {rm:.0%}")
     inj = row.get("espn_injury")
     if inj and inj != "ACTIVE":
         bits.append(f"ESPN status {inj}")

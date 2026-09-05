@@ -77,7 +77,17 @@ projects under 70% of the model's number the player's role has changed (a
 backup now, a new team, an injury the model cannot see) and `pick_value` is
 scaled by the ratio (`model.role_multiplier`, floor 0.2); above 130% the role
 has grown (a rookie or new starter the box scores lag) and it is scaled by
-1.3; `why` says which. Both scalings are continuous in the ratio. `room_drift`
+1.3; `why` says which. Both scalings are continuous in the ratio.
+
+A player ESPN neither projects **nor** ranks inside `model.ROLE_UNKNOWN_RANK`
+(400) is role-unknown, not neutral, and takes the same 0.2 floor: ESPN
+projects everyone it treats as rosterable, so no projection and no meaningful
+rank is the list saying the player has no role this season, while the model
+still reads five years of box scores for him. `why` says "role unknown, value
+scaled to 20%" and names the rank. A row ESPN declines to project but still
+ranks inside 400 keeps 1. The multiplier divides rather than multiplies where
+`pick_value` is already negative, so a discount always moves a candidate down.
+`room_drift`
 is the median number of picks before ADP this room has been taking players
 (`replay.room_drift`), room-wide and per position once a position has 8
 picks; survival odds are computed against ADP minus the per-position `shift`.

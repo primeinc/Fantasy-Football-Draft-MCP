@@ -318,7 +318,7 @@ def audit_state(board: pd.DataFrame, state: DraftState,
         if leaked:
             failures.append(f"drafted players in recommendations: {leaked}")
         if "espn_proj" in recommendations.columns:
-            from .model import ROLE_DISAGREEMENT
+            from .model import ROLE_DISAGREEMENT, ROLE_FLOOR, ROLE_UNKNOWN_RANK
 
             r = recommendations
             ratio = pd.to_numeric(r["espn_proj"], errors="coerce") / r["proj_points"]
@@ -329,7 +329,20 @@ def audit_state(board: pd.DataFrame, state: DraftState,
                                             zip(low["name"], low["espn_proj"], low["proj_points"])))
             unknown = r[pd.to_numeric(r["espn_proj"], errors="coerce").isna()]
             if not unknown.empty:
-                warnings.append(f"no ESPN projection for: {unknown['name'].tolist()}")
+                rank = (pd.to_numeric(unknown["espn_rank"], errors="coerce")
+                        if "espn_rank" in unknown.columns
+                        else pd.Series(np.nan, index=unknown.index))
+                deep = rank.isna() | (rank > ROLE_UNKNOWN_RANK)
+                if deep.any():
+                    warnings.append(
+                        f"no ESPN projection and no ESPN rank inside {ROLE_UNKNOWN_RANK:.0f} "
+                        f"(role unknown, pick_value scaled to {ROLE_FLOOR:.0%}): "
+                        + ", ".join(unknown.loc[deep, "name"].tolist()))
+                if (~deep).any():
+                    warnings.append(
+                        "no ESPN projection, but ESPN still ranks them inside "
+                        f"{ROLE_UNKNOWN_RANK:.0f} (left unscaled): "
+                        + ", ".join(unknown.loc[~deep, "name"].tolist()))
 
     return {"ok": not failures, "failures": failures, "warnings": warnings,
             "picks": len(picks), "mine": len(mine), "unresolved": len(unresolved)}
