@@ -157,13 +157,19 @@ machinery as `bye_backtest`: same seed, same bots, same noise, scored on real we
 scores) and neither weight earned a place in `pick_value`. Start probability came out
 -10.6 weekly points in 2024 and +20.6 in 2025 across 12 paired drafts each; opposite
 signs by season is not evidence. The handcuff term came out +17.5 and +20.2 across 20
-paired drafts each, the same sign in both of two independent seed blocks — the only one
-of the two that points one way, and still 40 simulated drafts against a 1.5% effect, so
-it stays 0 until a longer run and a season outside 2024-2025. Those numbers and the two
-redesigns the handcuff term needed before it was worth measuring at all are in
-[CHANGELOG.md](../CHANGELOG.md). `who_should_i_pick` reports `starts_in_a_given_week`,
-`bench_value`, `handcuff_for` and `contingent_points` per candidate without pricing
-any of them.
+paired drafts each, positive in all four block-seasons, which is the only consistent
+sign either weight produced. Those numbers and the two redesigns the handcuff term
+needed before it was worth measuring at all are in [CHANGELOG.md](../CHANGELOG.md).
+`who_should_i_pick` reports `starts_in_a_given_week`, `bench_value`, `handcuff_for` and
+`contingent_points` per candidate without pricing any of them.
+
+**What this backtest can resolve.** Running both weights together gave +18.4 on seeds
+0-11 and -21.3 on seeds 8-19 — same configuration, same season, opposite signs, a
+40-point spread. The seed-to-seed spread at 8-12 paired drafts is therefore about the
+size of every effect anyone has measured with this machinery, so a single run of this
+length can reject a term that is badly wrong (the ungated handcuff term at -103.5) but
+cannot confirm one that is mildly right. Read any number from it against a second seed
+block before believing its magnitude; `just roles ... [seed]` exists for that.
 
 One reporting detail that changes the reading: about half the paired trials draft the
 identical roster, because the weight changes nothing at that seed. `weight_backtest`

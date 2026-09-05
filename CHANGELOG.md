@@ -106,13 +106,27 @@ All notable changes to this project. Format follows
   Dalton Schultz at 0.17 and a bench value of 27.7 against a 163-point
   projection, because the roster already holds a tight end and the league has no
   FLEX slot.
-  `handcuff` at 1.0, gated, 20 paired drafts per season across two independent
-  seed blocks: 2024 +17.5 (7 of 12 changed trials improved), 2025 +20.2 (9 of
-  11), overall +18.9 over 74 changed picks, and the same sign in both blocks of
-  each season. That is the only one of the two that points one way, and it is
-  still 40 simulated drafts against a 1.5% effect. It stays 0 for now; what
-  would move it is a longer run (`just roles handcuff 2024,2025 40 20` extends
-  the sample rather than repeating it) and a season outside 2024-2025.
+  `handcuff` at 1.0, gated, 20 paired drafts per season across two seed blocks:
+  2024 +17.5 (7 of 12 changed trials improved), 2025 +20.2 (9 of 11), overall
+  +18.9 over 74 changed picks. All four block-seasons are positive (+37.9 and
+  +3.9 in 2024, +22.1 and +18.9 in 2025), which is the only consistent sign
+  either weight produced. It still stays 0, and the reason is the next entry.
+- **What this backtest can and cannot resolve.** Running both weights together
+  gave 2024 +18.4 on seeds 0-11 and 2024 -21.3 on seeds 8-19: the same
+  configuration, the same season, two mostly-disjoint seed blocks, and a
+  40-point spread with opposite signs. The gated handcuff term did the same
+  thing more mildly in 2024 (+37.9 against +3.9). So the seed-to-seed spread of
+  this machinery at 8-12 paired drafts is about the size of every effect
+  reported above, and none of the four weight numbers is separable from noise at
+  this sample size — including the handcuff term, whose consistent sign is
+  suggestive and whose magnitude is not pinned down at all.
+  That is a fact about the measurement, not about the features, and it is the
+  reason both weights ship at 0 rather than an argument for either of them.
+  What would settle the handcuff term is a run long enough for the blocks to
+  agree with each other — `just roles handcuff 2024,2025 40 20` extends the
+  sample rather than repeating it — and a season outside 2024-2025.
+  `bye_backtest`'s -2.1 over 12 paired drafts per season was read against the
+  same machinery and deserves the same caution.
 - The handcuff term was **redesigned twice under its own evidence**, which is
   the reason to run it before shipping it rather than after. Version one made
   the bonus a multiplier on `pick_value` and gave contingent value to everyone
