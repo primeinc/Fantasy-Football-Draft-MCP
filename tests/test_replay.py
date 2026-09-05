@@ -41,13 +41,24 @@ def test_replay_scores_each_pick_and_calibrates(tmp_path, monkeypatch):
     assert p[1]["pick_regret"] > 0 and 0.0 <= p[1]["choice_percentile"] < 1.0
     assert p[1]["need_mult"] > 0 and p[1]["role_mult"] == 1.0
     assert 0.0 <= p[1]["p_available_next"] <= 1.0
-    assert p[2]["actual_rank"] == 1 and p[2]["proj_gap"] == 0.0
-    assert p[2]["pick_regret"] == 0.0 and p[2]["choice_percentile"] == 1.0
+    # Slot 2 takes RB One, the highest projection on the board, and the model
+    # prefers WR One anyway: WR One is the last receiver, so if he goes there is
+    # nothing at the position, while RB still has RB Two behind him. That is the
+    # opportunity cost the recommender exists to price, and it only reads
+    # correctly since `expected_best_at_next_pick` stopped valuing an exhausted
+    # position at its own worst player -- which for a one-man position was that
+    # man himself, making the marginal value of taking him ~0.
+    assert p[2]["model_pick"] == "WR One"
+    assert p[2]["actual"] == "RB One" and p[2]["actual_rank"] == 2
+    assert p[2]["proj_gap"] == -60.0          # model's choice projects 60 fewer points
+    assert p[2]["pick_regret"] > 0 and 0.0 <= p[2]["choice_percentile"] < 1.0
     assert p[3]["off_board"] and p[3]["actual_rank"] is None and p[3]["position"] == "K"
     assert p[4]["slot"] == 1
 
     teams = {t["slot"]: t for t in out["teams"]}
-    assert teams[2]["model_matches"] == 1 and teams[2]["off_board"] == 1
+    # Slot 2's two picks are RB One (the model preferred WR One, see above) and
+    # a kicker the board cannot price, so it matches the model on neither.
+    assert teams[2]["model_matches"] == 0 and teams[2]["off_board"] == 1
     assert teams[1]["picks"] == 2 and teams[1]["proj_left_on_table"] >= 100.0
     assert teams[1]["mine"] is True
 

@@ -851,6 +851,29 @@ def expected_best_at_next_pick(avail: pd.DataFrame) -> dict[str, float]:
     Walks each position from the top down, accumulating the chance every better
     player is already gone. That product is the probability this player is the best
     one left, and the sum over players is the expected value of waiting.
+
+    A position expected to be empty contributes nothing. Both halves of why are
+    worth keeping, because a reason without a measurement and a measurement
+    without a reason each fail differently.
+
+    The measurement: what this replaced contributed the position's own *worst*
+    remaining player, which manufactured urgency out of a bad tail.
+    `marginal_value` is `draft_score - fallback`, so a position with 265
+    receivers trailing down to -145 showed a far larger margin than one with 32
+    defenses trailing to -25. It bit hardest with no next pick at all, where
+    every survival is 0 and every position's fallback was therefore its floor:
+    at the last pick of the recorded draft the top five were five receivers, and
+    they are now Meyers, the top defense, Deebo and two more defenses. A one-man
+    position was the sharpest case — its fallback was that man's own score, so
+    taking him scored a marginal value of ~0 when losing him leaves nothing.
+
+    The reason (lena's): 0 is the *correct* value, not merely a less wrong one.
+    `draft_score` is value over replacement, so replacement level is 0 by
+    construction, and a position that empties out is exactly the case where you
+    stream a replacement-level player off waivers. `expected + 0` is therefore
+    the right number rather than a term that was dropped — which matters,
+    because anyone reading only the measurement could re-add a floor later on
+    the same reasoning that motivated the first one.
     """
     out: dict[str, float] = {}
     for pos, chunk in avail.groupby("position"):
@@ -862,8 +885,7 @@ def expected_best_at_next_pick(avail: pd.DataFrame) -> dict[str, float]:
             p_all_gone *= (1 - p)
             if p_all_gone < 0.005:
                 break
-        # If the position empties out entirely, waiting is worth the worst on the board.
-        out[str(pos)] = expected + p_all_gone * float(chunk["draft_score"].min() if len(chunk) else 0)
+        out[str(pos)] = expected
     return out
 
 
