@@ -25,15 +25,22 @@ import ast
 import collections
 import pathlib
 
-SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "ffdraft"
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+# Both trees. A duplicated test function is the same mechanism with the same
+# silence: pytest runs the last one and the earlier is dead. This integration
+# merged test files from three branches, so tests/ is exactly as exposed as src.
+ROOTS = (ROOT / "src" / "ffdraft", ROOT / "tests")
 
 
 def _top_level_names(tree: ast.Module) -> dict[str, list[int]]:
     """Every name the module binds at module level, with the lines that bind it.
 
-    Functions, classes and plain assignments only. A name rebound inside an
+    Functions, classes, plain assignments and imports. A name rebound inside an
     `if`/`try` body is deliberate branching, not a merge artefact, so nested
-    statements are not walked.
+    statements are not walked — which is also why imports can be included for
+    free: the `try/except ImportError` SDK fallback in `server.py` binds
+    `Context` and `_Server` twice, and both bindings live inside the `try`,
+    where this walk never looks.
     """
     lines: dict[str, list[int]] = collections.defaultdict(list)
     for node in tree.body:
@@ -45,21 +52,28 @@ def _top_level_names(tree: ast.Module) -> dict[str, list[int]]:
                     lines[target.id].append(node.lineno)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             lines[node.target.id].append(node.lineno)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # `import a.b` binds `a`; an alias binds the alias. A later `def
+            # foo` shadowing `from .x import foo` is a real merge artefact.
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                lines[alias.asname or alias.name.split(".")[0]].append(node.lineno)
     return lines
 
 
 def test_no_module_defines_the_same_top_level_name_twice():
-    modules = sorted(SRC.glob("*.py"))
-    # A glob that matched nothing would pass this test in silence, which is the
-    # same failure the test exists to prevent, one level up.
-    assert len(modules) > 5, f"expected the package, found {len(modules)} modules in {SRC}"
+    # rglob, not glob: a subpackage added later would otherwise be silently
+    # uncovered, which is the failure this test exists to prevent, one level up.
+    modules = sorted(p for root in ROOTS for p in root.rglob("*.py"))
+    assert len(modules) > 25, f"expected both trees, found {len(modules)} modules"
 
     findings = []
     for path in modules:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for name, lines in _top_level_names(tree).items():
             if len(lines) > 1:
-                findings.append(f"{path.name}: {name} defined at lines "
+                findings.append(f"{path.relative_to(ROOT).as_posix()}: {name} defined at lines "
                                 + ", ".join(str(n) for n in lines))
     assert not findings, (
         "a module defines the same top-level name more than once; Python binds "
