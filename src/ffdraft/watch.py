@@ -206,6 +206,19 @@ class DraftWatch:
         self.queue_echoes: list[tuple[int, int, list[int]]] = []
         # Incremented per socket session; 0 until the first connect.
         self.connection = 0
+        # The queue INIT appears to carry, read but never used. Set at INIT,
+        # compared against the first real echo of the same connection, and the
+        # verdict appended to `init_queue_checks`. The point is to let the
+        # assumption accumulate evidence across every connection anyone runs
+        # rather than being believed on one decode: `queue_from_init` explains
+        # what was seen and that n is 1.
+        self.init_queue: list[int] | None = None
+        self.init_queue_checks: list[dict] = []
+        # Set the moment a DRAFT_LIST lands, cleared on every connect. Callers
+        # that need the queue before acting wait on this rather than sampling
+        # `queue` on a timer, so there is no interval to guess at. Distinct from
+        # `queue_echo`, which belongs to one `set_queue` call.
+        self.queue_seen = asyncio.Event()
         self.queue_echo: asyncio.Future | None = None
 
     # -- socket loop
@@ -245,6 +258,24 @@ class DraftWatch:
                     f"reconnecting, attempt {failures + 1} of {MAX_FAILED_SESSIONS}",
                     {"league": self.league_id, "event": "disconnect"})
 
+    def _check_init_queue(self, echo: list[int]) -> None:
+        """Record whether INIT's apparent queue matched this connection's first echo.
+
+        Observation, never a decision: nothing reads the result to choose a
+        behaviour. If the two agree across many connections the field becomes
+        something a future change could rely on; if they ever disagree, that is
+        found out before anything depends on it. Seeding the queue from INIT was
+        considered and refused on one observation, which is what this exists to
+        stop being the state of the evidence forever.
+        """
+        self.init_queue_checks.append({
+            "connection": self.connection,
+            "had_init_queue": self.init_queue is not None,
+            "matched": self.init_queue == echo if self.init_queue is not None else None,
+            "init_size": len(self.init_queue) if self.init_queue is not None else 0,
+            "echo_size": len(echo),
+        })
+
     def _reset_for_connection(self) -> None:
         """Clear the state that belongs to one socket session.
 
@@ -266,6 +297,7 @@ class DraftWatch:
         self.ready.clear()
         self.bumped = False
         self.queue = None
+        self.queue_seen.clear()
         self.connection += 1
 
     async def _session(self) -> None:
@@ -315,6 +347,8 @@ class DraftWatch:
             self.online = {t.team_id: any(o is not None and o.is_online for o in t.owners)
                            for t in teams if t is not None}
             self.online_at_init = dict(self.online)
+            # Read, recorded, never acted on. See `_check_init_queue`.
+            self.init_queue = espn_live.queue_from_init(init)
             picks = espn_live.picks_from_init(init)
             self.state.reset()
             for p in picks:
@@ -399,9 +433,13 @@ class DraftWatch:
             # "--5" and then raises inside the session that was reading it.
             parsed = espn_live.queue_from_lines([line])
             if parsed is not None:
+                first_of_connection = self.queue is None
                 self.queue = parsed
                 self.queue_echoes.append(
                     (int(time.time() * 1000), self.connection, list(parsed)))
+                self.queue_seen.set()
+                if first_of_connection:
+                    self._check_init_queue(parsed)
                 if self.queue_echo and not self.queue_echo.done():
                     self.queue_echo.set_result(list(parsed))
         elif kind == "ERROR":

@@ -1842,6 +1842,38 @@ def _watch_or_error(league_id: str):
     return w, None
 
 
+# How long `set_draft_queue` waits for ESPN's first queue echo on a fresh
+# connection before refusing to merge. ESPN sends one unprompted: 3.7 seconds
+# after INIT on the 2026-09-05 join. Ten gives that a wide margin without
+# leaving a caller hanging, and the refusal is what happens if it never comes.
+QUEUE_ECHO_WAIT_SECONDS = 10.0
+
+
+async def _await_first_echo(w, timeout: float | None = None) -> list[int] | None:
+    """Wait for ESPN to echo the queue on this connection, up to `timeout`.
+
+    Waits on `queue_seen`, the watch's own event, rather than sampling `queue` on
+    a timer: the event is set the moment an echo lands, so there is no interval
+    to guess at and no window where the queue is there but this has not looked
+    yet. It is a separate event from `queue_echo`, which `set_queue` owns and
+    replaces per call and which this must not disturb.
+
+    Returns the queue, or None if the timeout passed with no echo.
+
+    `timeout` defaults to the module constant read at call time, not bound at
+    definition, so the wait can be shortened for a test without the default
+    freezing a ten-second pause into every run.
+    """
+    import asyncio as _asyncio
+
+    timeout = QUEUE_ECHO_WAIT_SECONDS if timeout is None else timeout
+    try:
+        await _asyncio.wait_for(w.queue_seen.wait(), timeout=timeout)
+    except (TimeoutError, _asyncio.TimeoutError):
+        return None
+    return w.queue
+
+
 def _queue_rows(w, ids: list[int]) -> list[dict]:
     return [{"rank": i + 1, "espn_id": pid, "name": bd._espn_player_name(pid, w.espn_map)}
             for i, pid in enumerate(ids)]
@@ -1868,7 +1900,9 @@ async def draft_queue(league_id: str) -> str:
     # consecutive echoes. Each row carries its connection, because a list that
     # shrank across a reconnect was not necessarily edited by anyone.
     return _emit({"source": "socket", "queue": _queue_rows(w, w.queue),
-                  "connection": w.connection, "echoes": history}, indent=2)
+                  "connection": w.connection, "echoes": history,
+                  # Observation, not a source. See watch._check_init_queue.
+                  "init_queue_checks": w.init_queue_checks}, indent=2)
 
 
 @mcp.tool()
@@ -1906,6 +1940,12 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
     if unresolved:
         return _emit({"error": "unresolved names; nothing sent", "unresolved": unresolved})
 
+    if not replace and w.queue is None:
+        # ESPN sends the first echo unprompted a few seconds after joining, so a
+        # fresh connection is a brief window rather than a state to refuse from.
+        # Waiting turns almost every refusal into a normal merge; refusing is
+        # what is left when the echo genuinely never comes.
+        await _await_first_echo(w)
     existing = list(w.queue) if w.queue is not None else None
     if not replace and existing is None:
         return _emit({
@@ -1915,9 +1955,9 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
                     "merging into a queue nobody has seen means guessing at it. "
                     "Sending now would replace what the user built without either of "
                     "us being able to say what was lost."),
-            "do": ("ESPN normally echoes the queue within seconds of joining, so "
-                   "waiting a moment and calling again is usually enough; otherwise "
-                   "the user can touch the queue in the app to force an echo"),
+            "do": (f"waited {QUEUE_ECHO_WAIT_SECONDS:.0f}s for ESPN's own echo, which "
+                   "normally arrives within seconds of joining, and none came; the "
+                   "user can touch the queue in the app to force one"),
             "would_send": _queue_rows(w, ids)}, indent=2)
 
     if replace:

@@ -189,8 +189,106 @@ class TestTheReportDescribesWhatEspnDidNotWhatWeMeant:
         assert out["accepted"] == []
 
 
+class TestItWaitsForEspnsOwnEchoBeforeRefusing:
+    """ESPN sends the first echo unprompted a few seconds after joining -- 3.7s
+    on the 2026-09-05 join -- so a fresh connection is a brief window, not a
+    state to refuse from. Waiting turns almost every refusal into a merge.
+
+    The wait is on the watch's `queue_seen` event, so these tests drive the
+    event rather than racing a timer.
+    """
+
+    def test_an_echo_that_lands_during_the_wait_is_merged_into(self, live):
+        assert live.queue is None
+
+        async def go():
+            waiting = asyncio.ensure_future(server._await_first_echo(live.watch, 5.0))
+            # Nothing has arrived, so the wait is still pending on the event.
+            assert not waiting.done()
+            await live.watch.handle_line(
+                "DRAFT_LIST " + " ".join(str(i) for i in USER_QUEUE))
+            return await waiting
+
+        assert asyncio.run(go()) == USER_QUEUE
+
+    def test_a_queue_already_echoed_returns_without_waiting(self, live):
+        _seed_user_queue(live)
+        assert asyncio.run(server._await_first_echo(live.watch, 5.0)) == USER_QUEUE
+
+    def test_the_wait_ends_and_the_call_refuses_when_no_echo_comes(self, live, monkeypatch):
+        # A deadline on real work, not a pause: the event never fires here, and
+        # the constant is read at call time so a test can shorten it.
+        monkeypatch.setattr(server, "QUEUE_ECHO_WAIT_SECONDS", 0.01)
+
+        out = _call(player_names="Bijan Robinson")
+
+        assert "replace=True" in out["error"]
+        assert live.sent == []
+
+    def test_the_event_is_cleared_by_a_reconnect(self, live):
+        _seed_user_queue(live)
+        assert live.watch.queue_seen.is_set()
+
+        live.watch._reset_for_connection()
+
+        assert not live.watch.queue_seen.is_set()
+
+    def test_the_wait_does_not_disturb_set_queues_own_echo_future(self, live):
+        """`queue_seen` is separate from `queue_echo`, which `set_queue` owns
+        and replaces per call."""
+        _seed_user_queue(live)
+
+        out = _call(player_names="Bijan Robinson")
+
+        assert out["mode"] == "merge"
+        assert live.watch.queue_echo is None
+
+
+class TestTheInitQueueIsObservedNotUsed:
+    """`nomination_list` matched the first echo exactly on one join. One
+    observation of a field named for auction nominations is not a contract, so
+    the watch records whether it matches and nothing reads the answer."""
+
+    def test_a_matching_init_queue_is_recorded_as_matched(self, live):
+        live.watch.init_queue = list(USER_QUEUE)
+        _seed_user_queue(live)
+
+        assert live.watch.init_queue_checks == [
+            {"connection": 0, "had_init_queue": True, "matched": True,
+             "init_size": 3, "echo_size": 3}]
+
+    def test_a_disagreement_is_recorded_rather_than_resolved(self, live):
+        live.watch.init_queue = [4429795]
+        _seed_user_queue(live)
+
+        assert live.watch.init_queue_checks[0]["matched"] is False
+        # The queue in use is ESPN's echo either way; observing changed nothing.
+        assert live.queue == USER_QUEUE
+
+    def test_order_counts_not_just_membership(self, live):
+        live.watch.init_queue = list(reversed(USER_QUEUE))
+        _seed_user_queue(live)
+
+        assert live.watch.init_queue_checks[0]["matched"] is False
+
+    def test_only_the_first_echo_of_a_connection_is_checked(self, live):
+        live.watch.init_queue = list(USER_QUEUE)
+        _seed_user_queue(live)
+        live.echo("DRAFT_LIST 4429795")
+
+        assert len(live.watch.init_queue_checks) == 1
+
+    def test_an_init_without_a_queue_is_recorded_as_such(self, live):
+        assert live.watch.init_queue is None
+        _seed_user_queue(live)
+
+        check = live.watch.init_queue_checks[0]
+        assert check["had_init_queue"] is False and check["matched"] is None
+
+
 class TestAnUnknownQueueIsNotOverwritten:
-    def test_a_merge_is_refused_when_espn_has_echoed_nothing(self, live):
+    def test_a_merge_is_refused_when_espn_has_echoed_nothing(self, live, monkeypatch):
+        monkeypatch.setattr(server, "QUEUE_ECHO_WAIT_SECONDS", 0.01)
         assert live.queue is None
 
         out = _call(player_names="Bijan Robinson")
@@ -232,7 +330,8 @@ class TestAReconnectDoesNotCarryTheQueueForward:
         assert live.watch.connection == 1
         assert live.watch.ready.is_set() is False
 
-    def test_the_refusal_fires_again_after_a_reconnect(self, live):
+    def test_the_refusal_fires_again_after_a_reconnect(self, live, monkeypatch):
+        monkeypatch.setattr(server, "QUEUE_ECHO_WAIT_SECONDS", 0.01)
         _seed_user_queue(live)
         live.watch._reset_for_connection()
 

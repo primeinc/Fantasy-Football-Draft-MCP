@@ -693,6 +693,35 @@ def queue_from_lines(lines: Iterable[str]) -> list[int] | None:
     return queue
 
 
+def queue_from_init(init: DraftInit) -> list[int] | None:
+    """The pick queue the INIT snapshot appears to carry, or None if it has none.
+
+    OBSERVATION ONLY. Nothing may decide anything from this. It is read so the
+    watch can record whether it matches the first real `DRAFT_LIST` echo, and
+    the evidence accumulates across connections until there is enough of it to
+    decide on.
+
+    Measured once, on the 2026-09-05 join of a SNAKE draft: `draft_list` was
+    None, and `nomination_list` held this team's ten players in an order exactly
+    matching the first echo 3.7 seconds later. `nomination_list` is named for
+    auction nominations, so one match in the right team's slot is evidence it is
+    some ordered list belonging to this team, not yet evidence of what ESPN
+    writes there in a draft where the two could differ. n=1.
+
+    `draft_list` is checked first because that is the field whose name claims to
+    be this, and a payload that fills it settles the question.
+    """
+    for holder, players in ((init.draft_list, getattr(init.draft_list, "draft_list_players", None)),
+                            (init.nomination_list,
+                             getattr(init.nomination_list, "nomination_list_players", None))):
+        if holder is None or not players:
+            continue
+        ids = [p.player_id for p in players if p is not None]
+        if ids:
+            return ids
+    return None
+
+
 def slot_by_team(init: DraftInit) -> dict[int, int]:
     """ESPN team id -> 1-based draft slot. `draft_position` is zero-based in the
     snapshot: the team that picks first carries 0."""

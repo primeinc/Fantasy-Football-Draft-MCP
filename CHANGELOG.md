@@ -1549,9 +1549,18 @@ All notable changes to this project. Format follows
   the rest; the result names what was added, what was kept and what was removed.
 - `replace=True` is the old behaviour and now has to be asked for. Its result
   names every player it removed.
-- A merge with no echo yet on the connection is refused rather than guessed: the
-  queue ESPN holds is unknown, and sending anyway is exactly how a queue gets
-  overwritten with nobody able to say what was in it.
+- A merge with no echo yet on the connection waits for one, up to ten seconds, on
+  the watch's `queue_seen` event, and only then refuses. ESPN sends the first
+  echo unprompted 3.7 seconds after INIT on the 2026-09-05 join, so refusing is
+  what is left when it never comes rather than the normal outcome of calling
+  early in a connection. Sending blind is how a queue gets overwritten with
+  nobody able to say what was in it.
+- `INIT.nomination_list` held this team's queue in exact order, matching the
+  first echo, on one snake-draft join; `INIT.draft_list` was empty. Recorded and
+  deliberately unconsumed: n is 1 and the field is named for auction
+  nominations. The watch compares it against each connection's first echo and
+  `draft_queue` reports the checks, so the assumption gathers evidence instead of
+  being believed or forgotten.
 - `DraftWatch.queue_echoes` records every echo with a timestamp and a connection
   number, and `draft_queue` returns them, so "when did this player leave my
   queue" has an answer. Comparing consecutive echoes is the only way to get one

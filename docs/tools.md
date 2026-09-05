@@ -670,9 +670,10 @@ it was asked for.
 
 **The INIT snapshot's `draft_list` is empty**, so the queue does not arrive with
 the join frame. It arrives as a `DRAFT_LIST` echo shortly afterwards, unprompted:
-3.7 seconds after INIT on the 2026-09-05 join. So the refusal is a brief window
-at the start of a connection rather than a state a caller sits in, and waiting a
-moment is usually the whole fix.
+3.7 seconds after INIT on the 2026-09-05 join. So `set_draft_queue` **waits** for
+that echo, up to ten seconds, before refusing anything — the refusal is what is
+left when the echo genuinely never comes, not the normal outcome of calling early
+in a connection.
 
 The queue belongs to **one connection**. `run()` reconnects, and ESPN drops the
 queue when a client session ends, so the watch clears it on every connect and
@@ -689,11 +690,21 @@ echoed back, never from what was sent. ESPN drops ids it rejects — an
 already-drafted player is the ordinary case — so a merge that intended to remove
 nothing can still lose one of the user's players, and the report says so.
 
-Measured aside, not currently relied on: the INIT payload does carry this team's
-queue, in order, under `nomination_list` rather than `draft_list` — ten entries
-matching the first echo exactly on the 2026-09-05 join, in a snake draft. Seeding
-from it would close the refusal window entirely. It is one observation of a field
-named for auction nominations, so nothing reads it yet.
+**An observation, deliberately unconsumed.** On the 2026-09-05 join, in a snake
+draft, `INIT.draft_list` was empty but `INIT.nomination_list` held this team's
+ten players in an order matching the first echo exactly. **n = 1**, and
+`nomination_list` is named for auction nominations, so that is evidence it is
+some ordered list belonging to this team, not evidence of what ESPN writes there
+in a draft where the two could differ. Seeding the queue from it would remove the
+wait entirely, and it is not done: if the reading is wrong, the tool would merge
+against a list that is not the user's queue, silently, which is the exact harm
+this design prevents.
+
+Instead the watch reads it, uses it for nothing, and records whether it matched
+that connection's first real echo. `draft_queue` returns those checks as
+`init_queue_checks`, so the evidence accumulates across every connection anyone
+runs and the question can be settled on data rather than on one decode. A
+disagreement would surface before anything depended on it.
 
 ### `make_pick`
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
