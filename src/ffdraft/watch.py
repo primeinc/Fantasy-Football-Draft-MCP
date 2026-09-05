@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from collections.abc import Awaitable, Callable
 from urllib.parse import unquote_plus
 
@@ -51,6 +52,8 @@ class DraftWatch:
         self.online: dict[int, bool] = {}
         # (epoch ms, team id, owner SWID, text), newest last. Room chat only.
         self.chat: list[tuple[int, int, str, str]] = []
+        # (epoch ms, team id, "joined"|"left"), newest last, from this connection on.
+        self.presence: list[tuple[int, int, str]] = []
         self.season = season
         self.team_id = team_id
         self.swid = swid
@@ -195,7 +198,9 @@ class DraftWatch:
             await self.notify(f"pick {keep + 1} undone; board rolled back to {keep} picks.",
                               {"league": self.league_id, "event": "undone"})
         elif kind == "JOINED" and len(fields) >= 3:
-            self.online[int(fields[1])] = True
+            team = int(fields[1])
+            self.online[team] = True
+            self.presence.append((int(time.time() * 1000), team, "joined"))
         elif kind == "LEFT" and len(fields) >= 4:
             team = int(fields[1])
             if (team == self.team_id and fields[2].strip("{}").upper()
@@ -203,6 +208,7 @@ class DraftWatch:
                 self.bumped = True
             else:
                 self.online[team] = False
+                self.presence.append((int(time.time() * 1000), team, "left"))
         elif kind == "CHAT" and len(fields) >= 5:
             self.chat.append((int(fields[3]), int(fields[1]), fields[2], unquote_plus(fields[4])))
         elif kind == "DRAFT_LIST":
@@ -231,6 +237,8 @@ class DraftWatch:
             "offline_count": sum(1 for on in self.online.values() if not on),
             "chat": [{"at_ms": ts, "team": label(t), "text": text}
                      for ts, t, _owner, text in self.chat[-chat_limit:]],
+            "recent": [{"at_ms": ts, "team": label(t), "event": ev}
+                       for ts, t, ev in self.presence[-chat_limit:]],
             **self.state.summary(),
         }
 

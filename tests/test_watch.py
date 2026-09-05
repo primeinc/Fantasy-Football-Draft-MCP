@@ -191,6 +191,11 @@ def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
     assert room["chat"][-1]["text"] == "Kate Pick your player man"
     assert room["chat"][-1]["team"] == "Sydney Sideline Stars (Sydney Tiller)"
     assert room["on_the_clock"] == 115
+    assert [(r["team"], r["event"]) for r in room["recent"]] == [
+        ("The Spreadsheet Squad (Cool Breeze)", "joined"),
+        ("Sydney Sideline Stars (Sydney Tiller)", "left"),
+    ]
+    assert all(r["at_ms"] > 0 for r in room["recent"])
 
 
 def test_set_queue_sends_full_list_and_returns_echo(tmp_path, monkeypatch):
