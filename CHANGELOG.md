@@ -607,6 +607,69 @@ All notable changes to this project. Format follows
   never arose there; the cause was this same availability filter, applied to K
   and D/ST whose ADPs are real but do not describe a real room.
 
+**Measured and not adopted: counting-consistent survival (#35)**
+
+- `_plan_pool` decides whether a required position is reachable by counting, with
+  no ADP; `recommend` then prices that same player's urgency from ADP survival.
+  The two disagree about one defense at one pick — the count says "you can have
+  him", ADP says he survives to your next turn with probability 0.14 — and #33
+  closed by naming that as the thing to fix rather than the absorption curve.
+- Making them consistent is worse than the inconsistency, and by the same
+  mechanism #33 found. Under counting, the player at index `i` survives to pick
+  P exactly when `i >= absorbed_by(P)`; since the count strictly increases
+  between your turns, the best defense the pool offers **never** survives to your
+  next pick. Measured at 132 (next 157): `p_available_next` 0.142 → 0.000,
+  fallback 22.17 → 16.15 (the count says waiting gets you the sixth-best, where
+  the ADP mixture still holds out hope of better), marginal 4.67 → 10.69. Both
+  terms move the same way, and the defense goes from losing at 132 to winning it
+  with a pick_value of 12.61 against the shipped top pick's 7.37 — round 9 of 14,
+  the same absurdity the accurate absorption curve produced.
+- The reason is that a **count is not a certainty**. `absorbed_by` is an
+  expectation, and the step function treats it as fact, so the player at the
+  boundary gets survival 0 where the truth is nearer a coin flip. Fixing that
+  needs a distribution over the absorbed count rather than a point estimate —
+  which makes pool membership probabilistic too, and needs a spread parameter
+  fitted from pick-by-pick position records across many drafts. This repo has
+  one draft with two K/D-ST picks in it; nflverse carries outcomes, not fantasy
+  draft order. So the honest fix needs a data source that is not on hand, and
+  every cheap version of it reintroduces the fitted constant the counting rule
+  exists to avoid.
+- Left as it is, and worth being explicit that the inconsistency errs in the safe
+  direction: ADP survival is *less* urgent than counting survival here, so the
+  plan fills the slot later than a consistent model would, which is the correct
+  behaviour when the supply is genuinely deep. Scope for a real fix is recorded
+  above rather than attempted.
+
+**Measured and not adopted: a data-derived K/D-ST absorption curve (#33)**
+
+- `_absorbed_by` assumes the league takes a required position evenly across the
+  remaining picks. The live record rejects that flatly: through 122 picks — 54%
+  of the draft — the room has taken **2 of its 32** K and D/ST slots (Brandon
+  Aubrey at 86, the Broncos D/ST at 119), where even absorption predicts 17.4.
+  Across 122 picks that is not noise, and the first five tenths of the draft
+  contain one K/D-ST pick between them.
+- So the curve is wrong, and replacing it with one that fits the data makes the
+  plan **worse**. Using the parameter-free lower bound the data points at — the
+  league defers a required position until it must take one every remaining pick
+  — the offered index becomes 0 at every turn until the very end, and three of
+  four strategies then take the best defense at **pick 132, round 9 of 14**.
+  A defense that is genuinely available at every remaining pick is one you take
+  *last*, so a plan that takes it ninth-round is not reading its own inputs.
+- The reason is not the curve, and this is the finding: **pool membership and
+  survival are decided by two models that disagree about the same players.** The
+  counting rule puts a defense in the pool — "you can still have one" — while
+  `p_available_next` for that same defense at that same pick comes from ADP and
+  says 0.11 to 0.26. The low survival collapses `expected_best_at_next_pick` for
+  the position (fallback 22.2 rather than near the best defense's own score),
+  which inflates `marginal_value`, which pulls the defense earlier. Making the
+  curve *more* accurate widens the disagreement and pulls it earlier still.
+- Left as it is. Even absorption is wrong in the safe direction — pessimistic
+  early, so the plan is offered a worse defense than it would really get and
+  fills the slot slightly sooner than necessary — and the accurate curve is
+  wrong in the unsafe one until the availability/urgency inconsistency above is
+  resolved. Offered index at the seven remaining picks, for the record: even
+  0, 1, 5, 6, 9, 10, 14; deferral bound 0, 0, 0, 0, 0, 0, 12.
+
 **The plan's view of a required position degrades, instead of falling off a cliff**
 
 - otto found that the two mechanisms below hand over discontinuously. While the
