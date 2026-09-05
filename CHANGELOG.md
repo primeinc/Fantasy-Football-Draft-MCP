@@ -1579,7 +1579,6 @@ All notable changes to this project. Format follows
   channel is what outlives them -- so it is held until one exists. The socket is
   live from the moment it resumes regardless.
 
->>>>>>> 5b68799 (Bring the watch and its queue back after a server restart)
 **Pick queue: merge, do not replace**
 - `set_draft_queue` merges by default. ESPN's `DRAFT_LIST` carries the whole
   queue rather than a change, and the queue has two authors, so a call that sent
