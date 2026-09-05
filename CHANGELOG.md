@@ -47,6 +47,31 @@ All notable changes to this project. Format follows
   obtain "points" from anywhere. `unit_reason` distinguishes the four ways to
   fail, because "the evidence disagreed" and "the evidence was never gathered"
   are different states and only one of them is a finding.
+- **Two harnesses, because the second clause asks a question only one of them
+  can be asked.** `fitted` is the default and the strict path: something was
+  estimated from data, so whether it generalises is exactly what must be shown.
+  `replication` re-runs a model over disjoint seed blocks — `trade.py` scores two
+  rosters over simulated seasons — where nothing was estimated, there is no
+  held-out set, and the output carries the unit its inputs carry. The clause is
+  *inapplicable* there rather than failed, and answering ordinal would turn a
+  quantity of points into an ordering, which is less true and not more careful.
+- The door is deliberately narrow. A replication harness must declare
+  `input_unit`, the unit its inputs already carry, and one that does not gets
+  ordinal like anyone else — the declaration is the whole argument, so it has to
+  be made rather than assumed. Saying nothing at all gets the strict path, so the
+  door must be asked for by name; an unrecognised harness is ordinal rather than
+  trusted; and the block spread is reported beside every estimate on both paths,
+  so neither buys a mean without its noise. `unit_reason` names the door on a
+  pass as well as the clause on a failure, so a reader sees which argument the
+  number rests on instead of inferring it from the module that produced it.
+- `trade.verdict` reads that verdict rather than choosing its own word, so the
+  sentence and the structured `unit` field cannot disagree about what the number
+  is. An ordinal verdict states the direction and withholds the magnitude.
+- The per-block flags go through `adp._flag`, `bool(pd.notna(x) and x)`, which
+  lena measured on #40: `x is True` fails on `np.True_` and plain truthiness
+  passes `np.nan` and raises on `pd.NA`. `variance_explained > 0` on a numpy
+  scalar is exactly the `np.True_` case, so an identity test would have failed
+  the second clause for a fit that passed it.
 - `stream.calibration_blocks` no longer decides its own units. Every exit,
   including the two that never fit anything, goes through `adp.margin_unit`, and
   `rank_week` indexes `margin_units` rather than defaulting a missing key to the

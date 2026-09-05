@@ -4,6 +4,9 @@ The spread between two disjoint seed blocks of the same configuration is this
 harness's own noise, and it is the size of the effects it is used to measure.
 These tests pin the reporting contract that makes that visible.
 """
+import numpy as np
+import pandas as pd
+
 from ffdraft import adp
 
 
@@ -179,6 +182,61 @@ class TestTheCalibrationRule:
 
     def test_no_blocks_is_ordinal(self):
         assert adp.margin_unit(True, [], 0)["unit"] == adp.UNIT_ORDINAL
+
+    def test_the_flag_read_survives_every_shape_a_frame_returns(self):
+        # `x is True` fails on np.True_ and plain truthiness passes NaN, so the
+        # read is measured rather than assumed. Six states, one answer each.
+        assert adp._flag(True) is True
+        assert adp._flag(np.True_) is True
+        assert adp._flag(False) is False
+        assert adp._flag(np.False_) is False
+        assert adp._flag(np.nan) is False
+        assert adp._flag(pd.NA) is False
+
+    def test_a_numpy_flag_does_not_silently_fail_the_second_clause(self):
+        # What the read is for: `variance_explained > 0` on a numpy scalar gives
+        # np.True_, and an identity test against True would call it a failure.
+        assert adp.margin_unit(True, [np.True_, np.True_], 2)["unit"] == adp.UNIT_POINTS
+
+
+class TestTheReplicationDoor:
+    """The second clause asks whether a fit generalises. A harness that fitted
+    nothing cannot be asked it, so the clause is inapplicable there rather than
+    failed -- and answering ordinal would turn a quantity of points into an
+    ordering, which is less true and not more careful.
+
+    The door is narrow on purpose: the caller has to declare the unit its inputs
+    already carry, because that declaration is the whole argument.
+    """
+
+    def test_a_replication_harness_earns_points_on_sign_agreement(self):
+        out = adp.margin_unit(True, None, 2, adp.HARNESS_REPLICATION, adp.UNIT_POINTS)
+        assert out["unit"] == adp.UNIT_POINTS
+        assert "nothing was fitted" in out["unit_reason"]
+        # The reason names the door, so a reader sees which argument the number
+        # rests on instead of inferring it from the module that produced it.
+        assert out["harness"] == adp.HARNESS_REPLICATION
+
+    def test_the_declaration_is_what_opens_it(self):
+        out = adp.margin_unit(True, None, 2, adp.HARNESS_REPLICATION)
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert "must declare the unit" in out["unit_reason"]
+
+    def test_disagreeing_signs_close_it_like_anyone_else(self):
+        out = adp.margin_unit(False, None, 2, adp.HARNESS_REPLICATION, adp.UNIT_POINTS)
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert "disagree in sign" in out["unit_reason"]
+
+    def test_the_strict_path_is_the_default(self):
+        # Saying nothing gets the fitted rule, so the door has to be asked for
+        # by name rather than fallen through.
+        assert adp.margin_unit(True, None, 2)["unit"] == adp.UNIT_ORDINAL
+        assert adp.margin_unit(True, None, 2)["harness"] == adp.HARNESS_FITTED
+
+    def test_an_unrecognised_harness_is_ordinal_not_trusted(self):
+        out = adp.margin_unit(True, None, 2, "vibes", adp.UNIT_POINTS)
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert "unknown harness" in out["unit_reason"]
 
 
 class TestBlockAgreementCarriesTheVerdict:

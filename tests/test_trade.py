@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ffdraft import board, roles, trade
+from ffdraft import adp, board, roles, trade
 from ffdraft.config import LeagueSettings
 
 
@@ -297,6 +297,52 @@ class TestTheWindowIsStatedWhereAHumanReadsIt:
         summary = {"improvement": 3.0, "block_improvements": [12.0, -6.0],
                    "block_spread": 18.0, "blocks_agree": False, "blocks_agree_p_null": 0.5}
         assert "no call" in trade.verdict(summary, "you", weeks=10)
+
+
+class TestTheUnitIsNotThisModulesToChoose:
+    """`adp.margin_unit` decides what the number may be called, and both the
+    structured field and the sentence read that verdict rather than assuming.
+
+    This harness fits nothing -- the blocks re-run one simulation on disjoint
+    seeds and its inputs are already in points -- so it goes through the
+    declared replication path rather than the fitted one. The declaration is
+    what makes that legitimate, so the test that matters is the one where it is
+    missing.
+    """
+
+    def test_a_declared_replication_may_say_points(self, fixture_board, by_slot):
+        out = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"], n_trials=20, blocks=2, seed=0)
+        yours = out["you"]
+        assert yours["harness"] == adp.HARNESS_REPLICATION
+        assert yours["unit"] == adp.UNIT_POINTS
+        assert "points over" in yours["verdict"]
+
+    def test_an_ordinal_verdict_takes_the_size_out_of_the_sentence(self):
+        # The gate from the caller's side. Same agreeing blocks, no declaration,
+        # so the rule answers ordinal and the sentence may state the direction
+        # and not the magnitude.
+        summary = {"improvement": 34.5, "block_improvements": [36.2, 32.9],
+                   "block_spread": 3.3, "blocks_agree": True, "blocks_agree_p_null": 0.5,
+                   **adp.margin_unit(True, None, 2, adp.HARNESS_REPLICATION)}
+        said = trade.verdict(summary, "you", weeks=10)
+        assert "Ordinal only" in said
+        assert "34.5" not in said
+        assert "must declare the unit" in said
+
+    def test_the_sentence_cannot_disagree_with_the_field(self):
+        # Both readings come from one verdict, so there is no arrangement where
+        # `unit` says ordinal and the prose prints a points figure.
+        for beats, harness, unit in ((None, adp.HARNESS_FITTED, adp.UNIT_ORDINAL),
+                                     ([True, True], adp.HARNESS_FITTED, adp.UNIT_POINTS)):
+            summary = {"improvement": 12.0, "block_improvements": [13.0, 11.0],
+                       "block_spread": 2.0, "blocks_agree": True,
+                       "blocks_agree_p_null": 0.5,
+                       **adp.margin_unit(True, beats, 2, harness)}
+            said = trade.verdict(summary, "you", weeks=14)
+            assert summary["unit"] == unit
+            assert ("12.0 points" in said) is (unit == adp.UNIT_POINTS), said
 
 
 class TestRefusals:

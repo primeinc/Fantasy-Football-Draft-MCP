@@ -9,6 +9,8 @@ Source: dynastyprocess/data, which mirrors FantasyPros ECR history.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 import pandas as pd
 
@@ -983,10 +985,27 @@ def _paired_blocks(draft_pair, score, n_trials: int, blocks: int, seed: int,
 
 UNIT_POINTS = "points"
 UNIT_ORDINAL = "ordinal"
+# The two kinds of harness this rule can be asked about, and they are not the
+# same question. FITTED estimates something from data, so a number that looks
+# like points may not be; REPLICATION re-runs a model whose inputs already carry
+# the unit, so nothing was estimated and there is nothing to hold out.
+HARNESS_FITTED = "fitted"
+HARNESS_REPLICATION = "replication"
 
 
-def margin_unit(signs_agree: bool, beats_own_mean: list[bool] | None,
-                blocks: int) -> dict:
+def _flag(value: object) -> bool:
+    """A boolean read that survives everything a frame can hand back.
+
+    `x is True` fails on `np.True_`, and plain truthiness passes `np.nan` and
+    raises on `pd.NA`. Six states -- True, False, np.True_, np.False_, NaN, NA --
+    one read, measured rather than assumed (lena, #40).
+    """
+    return bool(pd.notna(value) and value)
+
+
+def margin_unit(signs_agree: bool, beats_own_mean: Sequence[object] | None,
+                blocks: int, harness: str = HARNESS_FITTED,
+                input_unit: str | None = None) -> dict:
     """THE CALIBRATION RULE, and the only place it is decided.
 
         Points only when the blocks agree in sign and each block beats its own
@@ -1008,40 +1027,75 @@ def margin_unit(signs_agree: bool, beats_own_mean: list[bool] | None,
     "points" from here at all, which is the point -- there is no other place to
     get it.
 
-    `unit_reason` names which clause failed, so an ordinal answer says why it is
-    ordinal rather than leaving the reader to guess whether the evidence
-    disagreed or was never gathered. Those are different states and only one of
-    them is a finding.
+    TWO HARNESSES, because the second clause asks a question only one of them
+    can be asked. `fitted` is the default and the strict path: something was
+    estimated from data, so whether it generalises is exactly what has to be
+    shown. `replication` is a harness that re-runs a model over disjoint seed
+    blocks -- `trade.py` scores two rosters over simulated seasons -- where
+    nothing was estimated and there is no held-out set, because the output
+    carries the unit its inputs carry. The clause is inapplicable there rather
+    than failed, and answering ordinal would make a quantity of points into an
+    ordering, which is less true and not more careful.
+
+    That door is deliberately narrow. `replication` must declare `input_unit`,
+    the unit its inputs already carry, and a caller that does not gets ordinal
+    like anyone else -- the claim is what makes the path legitimate, so it has to
+    be made rather than assumed. The block spread is reported beside every
+    estimate on both paths, so neither buys a mean without its noise.
+
+    `unit_reason` names the clause that failed and, on a pass, the door that was
+    used, so a reader can see which argument the number is resting on rather
+    than inferring it from the module that produced it.
     """
+    beats = [_flag(b) for b in beats_own_mean] if beats_own_mean is not None else None
     if blocks <= 0:
         return {"unit": UNIT_ORDINAL, "unit_reason": "no blocks",
-                "beats_own_mean": None}
+                "beats_own_mean": None, "harness": harness}
+    if harness not in (HARNESS_FITTED, HARNESS_REPLICATION):
+        return {"unit": UNIT_ORDINAL,
+                "unit_reason": f"unknown harness {harness!r}",
+                "beats_own_mean": beats, "harness": harness}
     if not signs_agree:
         return {"unit": UNIT_ORDINAL, "unit_reason": "the blocks disagree in sign",
-                "beats_own_mean": list(beats_own_mean) if beats_own_mean else None}
-    if beats_own_mean is None:
+                "beats_own_mean": beats, "harness": harness}
+    if harness == HARNESS_REPLICATION:
+        if not input_unit:
+            return {"unit": UNIT_ORDINAL,
+                    "unit_reason": "a replication harness must declare the unit its "
+                                   "inputs already carry, and this one did not",
+                    "beats_own_mean": beats, "harness": harness}
+        return {"unit": UNIT_POINTS if input_unit == UNIT_POINTS else input_unit,
+                "unit_reason": f"the blocks agree in sign and nothing was fitted: a "
+                               f"replication of a model whose inputs are in "
+                               f"{input_unit}, so there is no held-out set and the "
+                               f"second clause does not apply",
+                "beats_own_mean": beats, "harness": harness,
+                "input_unit": input_unit}
+    if beats is None:
         return {"unit": UNIT_ORDINAL,
                 "unit_reason": "no out-of-sample scores were supplied, so the second "
                                "clause is unproven rather than waived",
-                "beats_own_mean": None}
-    if len(beats_own_mean) != blocks:
+                "beats_own_mean": None, "harness": harness}
+    if len(beats) != blocks:
         return {"unit": UNIT_ORDINAL,
-                "unit_reason": f"{len(beats_own_mean)} out-of-sample results for "
+                "unit_reason": f"{len(beats)} out-of-sample results for "
                                f"{blocks} blocks",
-                "beats_own_mean": list(beats_own_mean)}
-    if not all(beats_own_mean):
+                "beats_own_mean": beats, "harness": harness}
+    if not all(beats):
         return {"unit": UNIT_ORDINAL,
                 "unit_reason": "a block does not beat its own mean out of sample, "
                                "which no amount of sign agreement rescues",
-                "beats_own_mean": list(beats_own_mean)}
+                "beats_own_mean": beats, "harness": harness}
     return {"unit": UNIT_POINTS,
             "unit_reason": "the blocks agree in sign and each beats its own mean "
                            "out of sample",
-            "beats_own_mean": list(beats_own_mean)}
+            "beats_own_mean": beats, "harness": harness}
 
 
 def block_agreement(gains: list[float],
-                    beats_own_mean: list[bool] | None = None) -> dict:
+                    beats_own_mean: Sequence[object] | None = None,
+                    harness: str = HARNESS_FITTED,
+                    input_unit: str | None = None) -> dict:
     """The reporting contract for a set of per-block gains, whatever produced them.
 
     One mean is never reported alone: the spread between blocks of the same
@@ -1053,8 +1107,10 @@ def block_agreement(gains: list[float],
     `beats_own_mean` carries the second clause of the calibration rule: one flag
     per block, true when that block's fit beats its own mean on the data it was
     not fitted on. Supplying it is what makes `unit` say "points"; omitting it
-    leaves the clause unproven and `unit` says "ordinal". See `margin_unit`,
-    which decides that and is the one place the rule lives.
+    leaves the clause unproven and `unit` says "ordinal". A harness that fitted
+    nothing passes `harness="replication"` and declares the `input_unit` its
+    inputs already carry instead. See `margin_unit`, which decides all of that
+    and is the one place the rule lives.
     """
     agree = bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains))
     return {
@@ -1063,7 +1119,7 @@ def block_agreement(gains: list[float],
         # The verdict a caller branches on before printing a number with a unit
         # on it. Merged in rather than nested so there is one field to read and
         # no way to print points while ignoring it.
-        **margin_unit(agree, beats_own_mean, len(gains)),
+        **margin_unit(agree, beats_own_mean, len(gains), harness, input_unit),
         # The distance between blocks of the same configuration: the harness's
         # own noise for this term, and the number to read the improvement
         # against. Not a universal floor — see `trials_changed`.

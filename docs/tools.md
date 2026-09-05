@@ -371,6 +371,13 @@ On the current data: **defences calibrate** (signs agree, variance explained
 **Kickers do not** (signs agree but variance explained 0.02 and −0.014, so one
 block is worse than its own mean) and ship ordinal.
 
+The rule is not restated here and enforced somewhere else: `adp.margin_unit`
+decides it and is the only place the word `points` comes from, so a tool that
+cannot show its evidence cannot label a number with a unit. `margin_units_reason`
+beside every verdict names which clause failed, because "the evidence disagreed"
+and "the evidence was never gathered" read the same in an answer and are not the
+same thing.
+
 `line_basis` on every row says whether the book had posted a line for that game.
 Lines cover the whole board about six weeks out and thin to nothing after week
 seven, filling in as each week approaches; a row without one is ranked on what
@@ -514,6 +521,16 @@ whose blocks disagree in sign is reported as no call, not as even**: that
 difference has not been measured. Agreement is not a pass either, and
 `blocks_agree_p_null` says what it is worth — at the default of two blocks, one
 coin flip.
+
+`unit` says whether the gain may be read as a quantity of points, and it comes
+from `adp.margin_unit` rather than from this tool. The calibration rule's second
+clause — each block beats its own mean out of sample — asks whether a *fit*
+generalises, and this harness fits nothing: its blocks re-run one simulation on
+disjoint seeds and its inputs are already in points, so there is no held-out set
+for the clause to be tested on. It therefore goes through the rule's declared
+`replication` path, which grants points on sign agreement **and** on the caller
+naming the unit its inputs carry. Undeclared is ordinal, like anything else, and
+`unit_reason` says which door the answer came through.
 
 What is simulated: a week is the player's per-game rate if he is available, and
 0 on his bye or when his availability draw fails. Availability comes from

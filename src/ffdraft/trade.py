@@ -212,7 +212,16 @@ def compare(before: list[Player], after: list[Player], league: LeagueSettings,
             "empty_slots_after": round(float(np.mean(empty_after)), 2),
         })
     return {"blocks": rows,
-            **adp_mod.block_agreement([r["improvement"] for r in rows]),
+            # A replication harness, declared as one. Nothing is fitted here:
+            # the blocks re-run the same simulation on disjoint seeds, and its
+            # inputs are already in points (`adj_ppg` per available week), so
+            # there is no held-out set for the calibration rule's second clause
+            # to be tested on. `adp.margin_unit` grants points on sign agreement
+            # for that reason and only when the input unit is declared, which is
+            # what makes the claim checkable rather than assumed.
+            **adp_mod.block_agreement([r["improvement"] for r in rows],
+                                      harness=adp_mod.HARNESS_REPLICATION,
+                                      input_unit=adp_mod.UNIT_POINTS),
             "trials_improved": sum(r["trials_improved"] for r in rows),
             "trials": n_trials * blocks}
 
@@ -259,6 +268,10 @@ def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
     `weeks` is the window that was actually scored, passed in rather than read
     off the module constant. The sentence a human reads is the last place a
     window may be stated wrong, and it used to say 14 whatever the run did.
+
+    The word "points" is likewise not this function's to choose. It comes from
+    the verdict `adp.margin_unit` put in the summary, so the sentence and the
+    structured `unit` field cannot disagree about what the number is.
     """
     gain = summary.get("improvement")
     spread = summary.get("block_spread")
@@ -270,6 +283,10 @@ def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
                 f"this harness's own noise rather than a result.")
     direction = "gains" if gain > 0 else "loses"
     p_null = summary.get("blocks_agree_p_null")
+    if summary.get("unit") != adp_mod.UNIT_POINTS:
+        return (f"{side} {direction}, blocks {summary['block_improvements']}, spread "
+                f"{spread}. Ordinal only, because {summary.get('unit_reason')}, so the "
+                f"direction is usable over {weeks} weeks and the size is not.")
     return (f"{side} {direction} {abs(gain):.1f} points over {weeks} weeks, "
             f"blocks {summary['block_improvements']}, spread {spread}. Blocks of a "
             f"trade worth nothing agree in sign with probability {p_null}, so read "
