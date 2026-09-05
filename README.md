@@ -132,7 +132,8 @@ hundredths, ordering correct.
 | `switch_league` | Change active league; board and draft resume instantly |
 | `remove_league` | Delete a league and its draft history |
 | `refresh_data` | Rebuild the board from source. Run once before draft day |
-| `sync_draft` | Pull the live board from Sleeper, ESPN, or pasted text |
+| `sync_draft` | Pull the live board from Sleeper, ESPN (including a draft in progress), or pasted text |
+| `watch_draft` / `stop_watch` | Hold the ESPN draft room open and push each pick into the session as it happens |
 | `on_the_clock` | **The main one.** Sync, status, recommendation, round-scoped value, and matchup detail — one call |
 | `who_should_i_pick` | Recommendation + reasoning for the pick on the clock |
 | `best_available` | Next best players, sortable by value, consistency, or ADP bargain |

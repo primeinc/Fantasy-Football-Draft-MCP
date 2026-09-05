@@ -13,8 +13,47 @@ import numpy as np
 import pandas as pd
 
 try:  # mcp SDK >= 2.0
-    from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver import Context, MCPServer
+
+    class _Server(MCPServer):
+        """MCPServer that also declares the Claude Code channel capability.
+
+        MCPServer builds its initialization options without experimental
+        capabilities, and `claude/channel` must be present at initialize for
+        Claude Code to accept `notifications/claude/channel` pushes from
+        `watch_draft`. The session must be started with
+        `claude --dangerously-load-development-channels server:<name>`.
+        """
+
+        CHANNEL_CAPS = {"claude/channel": {}}
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            # The 2026-07-28 `server/discover` probe derives capabilities from server
+            # state and ignores initialization options, so declare there as well.
+            from mcp import types as _types
+
+            low = self._lowlevel_server
+            default_discover = low._handle_discover
+
+            async def discover(ctx, params):
+                result = await default_discover(ctx, params)
+                result.capabilities.experimental = dict(self.CHANNEL_CAPS)
+                return result
+
+            low.add_request_handler("server/discover", _types.RequestParams, discover)
+
+        async def run_stdio_async(self) -> None:
+            from mcp.server.stdio import stdio_server
+
+            async with stdio_server() as (read_stream, write_stream):
+                await self._lowlevel_server.run(
+                    read_stream, write_stream,
+                    self._lowlevel_server.create_initialization_options(
+                        experimental_capabilities=dict(self.CHANNEL_CAPS)),
+                )
 except ImportError:  # mcp SDK 1.x
+    from mcp.server.fastmcp import Context
     from mcp.server.fastmcp import FastMCP as _Server
 
 from . import adp as adp_mod
@@ -34,7 +73,20 @@ from .config import (
 )
 from .config import list_leagues as cfg_list_leagues
 
-mcp = _Server("fantasy-draft-analyst")
+mcp = _Server(
+    "fantasy-draft-analyst",
+    instructions=(
+        "While watch_draft is running, this server pushes ESPN draft-room events as "
+        "channel messages: one per pick, with a recommendation once the user is within a "
+        "few picks of the clock. On a pick event, tell the user in one line who was taken "
+        "and how far away their turn is; when the message carries a recommendation, "
+        "relay it. Call who_should_i_pick for the full reasoning when the user is on the "
+        "clock. Do not call sync_draft while a watch is running; the watch keeps the "
+        "board current."
+    ),
+)
+# Background draft-room watchers keyed by league id (see watch.py).
+_WATCHES: dict[str, Any] = {}
 
 _CACHE: dict[str, Any] = {"league": None, "weights": None, "adp_csv": {}}
 # Boards are keyed by the settings that actually change them, so a 10-team full-PPR
@@ -334,6 +386,8 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
     platform="sleeper" with draft_id -- fully automatic, public API.
     platform="espn" with league_id -- works for public leagues; private ones need
       ESPN_SWID and ESPN_S2 environment variables from a logged-in browser session.
+      While a draft is in progress the picks come from the draft room socket, which
+      needs those cookies and briefly disconnects the browser draft room.
     platform="paste" with pasted_board -- paste the drafted list from any site.
     """
     state = _state()
@@ -1135,6 +1189,63 @@ def model_settings(consistency_weight: float | None = None, injury_weight: float
         p.unlink()
     return json.dumps({"league": league.name, "weights": weights.__dict__,
                        "board": "will rebuild on next query"}, indent=2)
+
+
+@mcp.tool()
+async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context = None) -> str:
+    """Hold the ESPN draft room open and push every pick into this session as it
+    happens, with a recommendation once you are within three picks of the clock.
+
+    Needs ESPN_SWID and ESPN_S2 and a team you own in the league. The browser
+    draft room shows a "Duplicate Connection" dialog when this connects; it
+    reconnects on its own. Events reach Claude only when the session was started
+    with `claude --dangerously-load-development-channels server:<this server's name>`;
+    otherwise they are dropped and the board is still kept current for
+    who_should_i_pick and draft_status. One watch per league; calling again
+    replaces it.
+    """
+    import asyncio
+    import os
+
+    from . import watch
+
+    swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
+    if not (swid and espn_s2):
+        return json.dumps({"error": "watch_draft needs ESPN_SWID and ESPN_S2"})
+    ctx_info = bd.espn_league_context(league_id, season, swid, espn_s2)
+    if ctx_info["my_team_id"] is None:
+        return json.dumps({"error": "no team owned by ESPN_SWID in this league"})
+
+    league, _ = _settings()
+    board_df = _build_board()
+    connection = ctx.connection
+
+    async def notify(content: str, meta: dict[str, str]) -> None:
+        await connection.notify("notifications/claude/channel",
+                                {"content": content, "meta": meta})
+
+    await stop_watch(league_id)
+    w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
+                         league, board_df, notify)
+    task = asyncio.create_task(w.run(), name=f"draft-watch-{league_id}")
+    _WATCHES[league_id] = (w, task)
+    return json.dumps({
+        "watching": league_id, "team_id": ctx_info["my_team_id"],
+        "draft_slot": ctx_info["draft_slot"], "league_name": ctx_info["league_name"],
+        "note": "picks arrive as channel messages; stop with stop_watch",
+    }, indent=2)
+
+
+@mcp.tool()
+async def stop_watch(league_id: str) -> str:
+    """Stop the draft-room watch for a league."""
+    entry = _WATCHES.pop(league_id, None)
+    if entry is None:
+        return json.dumps({"stopped": False, "watching": sorted(_WATCHES)})
+    w, task = entry
+    task.cancel()
+    return json.dumps({"stopped": True, "league": league_id, "picks_seen": w.picks_seen,
+                       "last_line": w.last_line[:80]})
 
 
 def main() -> None:

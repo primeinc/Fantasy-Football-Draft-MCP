@@ -8,6 +8,34 @@ All notable changes to this project. Format follows
 
 ### Added
 
+**ESPN live draft sync**
+- `sync_draft(platform="espn")` now works while the draft is running. The read API
+  returns no picks until a draft completes, so `board.sync_espn` joins the draft
+  room socket (`espn_live.py`), decodes the INIT snapshot, and returns every pick
+  with the team's real draft position as its slot. Needs `ESPN_SWID`/`ESPN_S2`
+  and a team you own; the browser draft room reconnects after a brief
+  "Duplicate Connection" dialog. Protocol in `docs/data-sources.md`.
+- `watch_draft` / `stop_watch`: hold the draft room socket open and push each
+  pick into the Claude Code session as a channel message (`watch.py`), with a
+  recommendation once the user is within three picks. The server declares the
+  `claude/channel` capability on both handshake eras; the session must start with
+  `claude --dangerously-load-development-channels server:fantasy-draft`.
+- `docs/data-sources.md`: every external endpoint, fields used, state at
+  2026-09-04. `just surfaces` re-probes them.
+
+### Fixed
+
+- ESPN picks of current-year rookies resolved as `ESPN#<id>`: the id crosswalk only
+  read weekly rosters for the lookback seasons. It now adds players from the
+  nflverse `players` table that the rosters lack.
+- `parse_pasted_board` dropped names with dotted initials (A.J. Brown, T.J.
+  Hockenson, J.K. Dobbins), shifting every later pick, and mangled
+  "Round N, Pick M - Name" because the comma split ran before the prefix strip.
+- FantasyPros ADP HTML fallback crashed under pandas 3 (`read_html` no longer
+  accepts a literal string) and, once fixed, returned nothing: the page renders
+  its table client-side. It now raises with a clear message so the board falls
+  back to model rank visibly.
+
 **Team drive efficiency and red zone identity**
 - New `features.team_drive_efficiency` (share of a team's drives ending in a
   touchdown/field goal/punt) and `features.redzone_identity_shift` (a team's neutral
