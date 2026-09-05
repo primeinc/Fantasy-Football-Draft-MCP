@@ -185,6 +185,9 @@ audit:
     print(f"priced through an alias: {len(mj['alias_joined'])}")
     for a in mj["alias_joined"]:
         print(f"  {a['name']:<26} {a['position']:<3} {a['how']:<17} adp {a['adp']:>6}")
+    print(f"priced on the name alone (market lists another position): {len(mj['key_only'])}")
+    for a in mj["key_only"]:
+        print(f"  {a['name']:<26} {a['position']:<3} adp {a['adp']:>6}")
 
 # What the team on the clock (or $slot) should take, what ESPN's list says, how
 # that team has been choosing, and the prediction. Same as the predict_pick tool.

@@ -346,6 +346,14 @@ def rekey(board: pd.DataFrame) -> pd.DataFrame:
 
 # PlayerIndex match types the market join accepts beyond the exact key.
 ALIAS_JOINS = ("alias", "lastname_initial")
+# How the first pass priced a row. "exact" is the strongest join the market frame
+# supports: key and position together when it carries positions, the key alone
+# when it does not (a pasted CSV). "key_only" means the frame did carry positions
+# and this row was still priced on the name alone, because the market held exactly
+# one player under it -- worth reporting, since the two sides disagree on what he
+# plays.
+EXACT_JOIN = "exact"
+KEY_ONLY_JOIN = "key_only"
 
 
 def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
@@ -363,12 +371,57 @@ def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
                 for _, r in un.head(limit).iterrows()]
     for u in unjoined:
         u.pop("adp", None)
-    alias = []
+    alias, key_only = [], []
     if "adp_match" in board.columns:
         al = board[board["adp_match"].isin(ALIAS_JOINS)]
         alias = [{"name": r["name"], "position": r["position"], "how": r["adp_match"],
                   "adp": round(float(r["adp"]), 1)} for _, r in al.iterrows()]
-    return {"unjoined": unjoined, "unjoined_total": int(len(un)), "alias_joined": alias}
+        ko = board[board["adp_match"] == KEY_ONLY_JOIN]
+        key_only = [{"name": r["name"], "position": r["position"],
+                     "adp": round(float(r["adp"]), 1)} for _, r in ko.iterrows()]
+    return {"unjoined": unjoined, "unjoined_total": int(len(un)), "alias_joined": alias,
+            "key_only": key_only}
+
+
+def _exact_market_join(b: pd.DataFrame, src: pd.DataFrame, extra: list[str]) -> pd.DataFrame:
+    """Price board rows whose normalised name is in the market frame, position first.
+
+    Two real players can share a full name at different positions -- the ESPN
+    list carries Josh Allen the quarterback and Josh Allen the linebacker under
+    one key -- so joining on the name alone hands whichever row happens to sort
+    first to both board rows, and the second player is priced as the first.
+    `PlayerIndex` already disambiguates on position for free-text lookups; this
+    is the same rule for the bulk join.
+
+    The name alone is still enough when the market holds exactly one player
+    under it: then the only thing that can differ is the position *label*
+    (fullback-ish tweeners the board calls TE and ESPN calls RB), and no other
+    player can be picked by mistake. Those rows are recorded as `key_only` so
+    the market-join report can show what was priced across a disagreement. A
+    market frame with no position column at all -- a pasted CSV -- has nothing
+    to be aware of and joins on the key as before.
+    """
+    cols = ["adp", *extra]
+    if "position" in src.columns and "position" in b.columns:
+        by_pos = src.drop_duplicates(["_key", "position"])
+        same_pos = by_pos[by_pos["position"].notna()]
+        b = b.merge(same_pos[["_key", "position", *cols]], on=["_key", "position"], how="left")
+        b["adp_match"] = np.where(b["adp"].notna(), EXACT_JOIN, "none")
+        per_key = by_pos.groupby("_key").size()
+        lone = by_pos[by_pos["_key"].isin(per_key.index[per_key == 1])].set_index("_key")
+        missing = b["adp"].isna()
+        if missing.any() and not lone.empty:
+            for c in cols:
+                # Whole-column assignment, not .loc on the missing rows: the
+                # merge leaves an all-NaN float column behind when nothing
+                # joined, and writing strings (espn_injury) into it in place is
+                # an incompatible-dtype set.
+                b[c] = b[c].where(~missing, b["_key"].map(lone[c]))
+            b["adp_match"] = np.where(missing & b["adp"].notna(), KEY_ONLY_JOIN, b["adp_match"])
+        return b
+    b = b.merge(src.drop_duplicates("_key")[["_key", *cols]], on="_key", how="left")
+    b["adp_match"] = np.where(b["adp"].notna(), EXACT_JOIN, "none")
+    return b
 
 
 def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
@@ -378,9 +431,9 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     if adp is not None and not adp.empty:
         extra = [c for c in ("espn_proj", "espn_injury", "espn_rank") if c in adp.columns]
         b = b.drop(columns=[c for c in extra if c in b.columns])
-        src = adp.drop_duplicates("_key")
-        b = b.merge(src[["_key", "adp", *extra]], on="_key", how="left")
-        b["adp_match"] = np.where(b["adp"].notna(), "exact", "none")
+        src = adp.drop_duplicates(["_key", "position"]) if "position" in adp.columns \
+            else adp.drop_duplicates("_key")
+        b = _exact_market_join(b, src, extra)
         # Second pass through the alias index for what the exact key missed:
         # "Josh Palmer" on the board, "Joshua Palmer" at ESPN. Only alias and
         # last-name-plus-initial hits at the same position are taken; fuzzy and

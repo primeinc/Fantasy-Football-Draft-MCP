@@ -341,6 +341,44 @@ class TestMarketJoin:
         assert out.loc["Tyler Palmer", "adp_source"] == "modelled"
         assert list(out["adp_source"]) == ["espn", "espn", "espn", "modelled", "modelled"]
 
+    def test_same_name_at_two_positions_prices_each_from_its_own_row(self):
+        # The market frame carries a QB and a linebacker called Josh Allen. A join
+        # on the name key alone gives both board rows whichever came first.
+        b = pd.DataFrame({"name": ["Josh Allen", "Josh Allen"],
+                          "position": ["QB", "LB"],
+                          "pos_rank": [1, 40], "overall_rank": [10, 500],
+                          "proj_points": [400.0, 20.0]})
+        out = board.attach_adp(b, self._adp()).set_index("position")
+        assert out.loc["QB", "adp"] == 20.0
+        assert out.loc["QB", "espn_proj"] == 380.0
+        assert out.loc["LB", "adp"] == 400.0
+        assert out.loc["LB", "espn_proj"] == 5.0
+        assert list(out["adp_match"]) == ["exact", "exact"]
+
+    def test_lone_market_row_still_prices_a_position_disagreement(self):
+        # One "Trey Palmer" in the market, listed WR; the board calls him RB.
+        # Nobody else can be picked by mistake, so he keeps his market price and
+        # the report says the join crossed a position label.
+        b = pd.DataFrame({"name": ["Trey Palmer"], "position": ["RB"],
+                          "pos_rank": [40], "overall_rank": [300],
+                          "proj_points": [80.0]})
+        out = board.attach_adp(b, self._adp())
+        assert out["adp"].iloc[0] == 300.0
+        assert out["adp_match"].iloc[0] == "key_only"
+        assert out["adp_source"].iloc[0] == "espn"
+        rep = board.market_join_report(out)
+        assert rep["key_only"] == [{"name": "Trey Palmer", "position": "RB", "adp": 300.0}]
+
+    def test_ambiguous_key_at_an_unlisted_position_is_not_priced(self):
+        # Josh Allen the tight end is neither of the two the market knows, and
+        # guessing between them is exactly the collision this join avoids.
+        b = pd.DataFrame({"name": ["Josh Allen"], "position": ["TE"],
+                          "pos_rank": [30], "overall_rank": [250],
+                          "proj_points": [60.0]})
+        out = board.attach_adp(b, self._adp())
+        assert out["adp_source"].iloc[0] == "modelled"
+        assert out["adp_match"].iloc[0] == "none"
+
     def test_report_lists_unjoined_by_projection_and_alias_joins(self):
         b = pd.DataFrame({"name": ["Josh Palmer", "Deep Bench", "Star Guy"],
                           "position": ["WR", "WR", "RB"], "team": ["LAC", "X", "Y"],

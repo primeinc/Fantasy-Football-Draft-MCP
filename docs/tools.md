@@ -188,10 +188,14 @@ no drafted player is in the top recommendations. `sync_draft` reports the same
 `audit` block, and the watch pushes an `audit_failed` event after any snapshot
 that breaks one. Picks not on the board (kickers, defenses) are a warning, not a
 failure. `market_join` lists the board rows the market join could not price
-(strongest projection first, with the synthetic ADP standing in) and the rows
-it priced through an alias. The join is the exact name key first, then the
-alias index (`names.PlayerIndex`) for alias and last-name-plus-initial hits at
-the same position; fuzzy and ambiguous hits are never joined.
+(strongest projection first, with the synthetic ADP standing in), the rows it
+priced through an alias, and the rows it priced on the name alone (`key_only`)
+because the market lists that player at another position. The join is the name
+key *and* position first — two real players share a full name often enough that
+a key-only join hands the second one the first one's price — then the name
+alone when the market holds exactly one player under it, then the alias index
+(`names.PlayerIndex`) for alias and last-name-plus-initial hits at the same
+position; fuzzy and ambiguous hits are never joined.
 
 ### Bye weeks
 `who_should_i_pick`, the watch's pushed recommendation, and `best_available` carry

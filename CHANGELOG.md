@@ -155,6 +155,20 @@ All notable changes to this project. Format follows
   same position only; `adp_match` records how each row joined. `draft_audit`
   reports `market_join`: unpriced rows by projection and alias-priced rows
   (`board.market_join_report`). ESPN ADP rows carry `position`.
+- The exact pass of that join is position-aware (`board._exact_market_join`).
+  It merged on the name key alone, so two real players sharing a full name at
+  different positions collided and the second was priced as the first — the
+  ESPN list carries a Josh Allen at QB and another at LB under one key, which
+  is the same collision `names.PlayerIndex` already avoids for free-text
+  lookups. Now it merges on (key, position), falls back to the key alone only
+  when the market holds exactly one player under that name (recorded as
+  `key_only`, and reported), and keeps the alias second pass. A market frame
+  with no position column at all (a pasted CSV) joins on the key as before.
+  On the live board at 122 picks, repricing 632 rows: before `exact` 620,
+  `alias` 2, `lastname_initial` 1, unpriced 9; after `exact` 618, `key_only` 2,
+  `alias` 2, `lastname_initial` 1, unpriced 9. Nothing lost its price; the two
+  `key_only` rows (Riley Nowakowski, Max Bredeson — tight ends ESPN lists at
+  RB) are now labelled honestly instead of counted as exact.
 - `names.normalize` folds accents: nflverse "Audric Estimé" and ESPN "Audric
   Estime" keyed differently, so his ESPN ADP (169.99, undrafted) never joined
   and the synthetic fallback priced him at 110.7. The walk-forward ADP
