@@ -211,6 +211,22 @@ Read the docstring, the commit message and the returned payload against the diff
 and treat a claim of completeness — "every", "always", "survives", "reports" — as
 the sentence to check first.
 
+The fourth instance is the sharpest, because a test does exist, does assert the
+behaviour, and still cannot ask the question. `draft_queue` marks each queued
+player with `drafted_at`, null when he is still available, and says so in the
+code: present on every row "so 'not drafted' is a stated fact and not an absent
+key a reader has to interpret". The builder takes the annotation as an optional
+argument. Two of its nine call sites pass it; seven do not, and emit null on
+every row. So one key ships three meanings — checked and available, not checked
+by design (the echo history), and could not be checked (no INIT payload, or the
+decode raised and was swallowed to an empty map).
+
+The rule that falls out is mechanical, and it is the one worth taking from this
+section: an annotation must not be an optional argument that defaults to its own
+negative value. Make it required. Then a site that has nothing to say has to say
+so out loud, and the reviewer's question becomes a signature the compiler asks
+for them.
+
 ### The one defect this codebase keeps making
 
 `NaN` is truthy, and pandas hands it back wherever a value is absent. Every
