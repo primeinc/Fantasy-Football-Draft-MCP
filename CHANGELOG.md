@@ -625,9 +625,10 @@ All notable changes to this project. Format follows
   **0 is the correct value, not merely a less wrong one**: `draft_score` is value
   over replacement, replacement level is therefore 0 by construction, and a
   position that empties out is exactly the case where you stream a
-  replacement-level player off waivers. Stating it that way is lena's, and it
-  matters — read as "a tail-length artefact was removed", someone re-adds a
-  floor later on the reasoning that motivated the first one.
+  replacement-level player off waivers. That explanation is lena's and it is the
+  half that stops someone re-adding a floor later; the measurement below is the
+  half that showed there was anything to explain. Neither carries the change on
+  its own, which is the day's lesson in one line.
   What it replaced was a real defect independent of everything above:
   `marginal_value` is `draft_score - fallback`, so a position with 265 receivers
   trailing to -145 showed a far larger margin than one with 32 defenses trailing

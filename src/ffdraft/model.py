@@ -852,26 +852,28 @@ def expected_best_at_next_pick(avail: pd.DataFrame) -> dict[str, float]:
     player is already gone. That product is the probability this player is the best
     one left, and the sum over players is the expected value of waiting.
 
-    A position expected to be empty contributes nothing, and 0 is the *correct*
-    value here rather than merely a less wrong one. `draft_score` is value over
-    replacement, so replacement level is 0 by construction, and a position that
-    empties out is exactly the case where you take a replacement-level player
-    off waivers. `expected + 0` is the right number, not a term that was
-    dropped — which matters, because anyone reading this as "we removed a bad
-    heuristic" could re-add a floor on the same reasoning that motivated the
-    first one. (lena's point, and a better argument than the one this docstring
-    used to make.)
+    A position expected to be empty contributes nothing. Both halves of why are
+    worth keeping, because a reason without a measurement and a measurement
+    without a reason each fail differently.
 
-    What it replaced contributed the position's own *worst* remaining player,
-    which manufactured urgency out of a bad tail: `marginal_value` is
-    `draft_score - fallback`, so a position with 265 receivers trailing down to
-    -145 showed a far larger margin than one with 32 defenses trailing to -25.
-    It bit hardest with no next pick at all, where every survival is 0 and every
-    position's fallback was therefore its floor: at the last pick of the
-    recorded draft the top five were five receivers, and they are now Meyers,
-    the top defense, Deebo and two more defenses. A one-man position was the
-    sharpest case — its fallback was that man's own score, so taking him scored
-    a marginal value of ~0 when losing him leaves nothing at all.
+    The measurement: what this replaced contributed the position's own *worst*
+    remaining player, which manufactured urgency out of a bad tail.
+    `marginal_value` is `draft_score - fallback`, so a position with 265
+    receivers trailing down to -145 showed a far larger margin than one with 32
+    defenses trailing to -25. It bit hardest with no next pick at all, where
+    every survival is 0 and every position's fallback was therefore its floor:
+    at the last pick of the recorded draft the top five were five receivers, and
+    they are now Meyers, the top defense, Deebo and two more defenses. A one-man
+    position was the sharpest case — its fallback was that man's own score, so
+    taking him scored a marginal value of ~0 when losing him leaves nothing.
+
+    The reason (lena's): 0 is the *correct* value, not merely a less wrong one.
+    `draft_score` is value over replacement, so replacement level is 0 by
+    construction, and a position that empties out is exactly the case where you
+    stream a replacement-level player off waivers. `expected + 0` is therefore
+    the right number rather than a term that was dropped — which matters,
+    because anyone reading only the measurement could re-add a floor later on
+    the same reasoning that motivated the first one.
     """
     out: dict[str, float] = {}
     for pos, chunk in avail.groupby("position"):
