@@ -49,6 +49,17 @@ class TestNormalize:
         for raw in ["Josh Palmer", "D.J. Moore", "Kenneth Walker III"]:
             assert normalize(normalize(raw)) == normalize(raw)
 
+    def test_dotted_and_undotted_initials_share_a_key(self):
+        # ESPN and nflverse write "D.J. Moore"; the board writes "DJ Moore". A pick
+        # recorded under one spelling must mark the other spelling as taken.
+        for dotted, plain in [("D.J. Moore", "DJ Moore"), ("A.J. Brown", "AJ Brown"),
+                              ("T.J. Hockenson", "TJ Hockenson"), ("J.K. Dobbins", "JK Dobbins"),
+                              ("C.J. Stroud", "CJ Stroud")]:
+            assert normalize(dotted) == normalize(plain)
+        assert normalize("D.J. Moore") == "dj moore"
+        # single lone initials and real words are untouched
+        assert normalize("Amon-Ra St. Brown") == "amon ra st brown"
+
 
 class TestAliasKeys:
     def test_first_name_swaps_both_directions(self):

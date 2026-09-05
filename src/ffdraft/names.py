@@ -76,22 +76,42 @@ HARD_ALIASES: dict[str, str] = {
 }
 
 
+def _merge_initials(n: str) -> str:
+    """"d j moore" -> "dj moore". Dropping the dots from "D.J." leaves single-letter
+    tokens that never match the undotted spelling nflverse and ESPN disagree on;
+    "D.J. Moore" recorded as drafted still showed available on a "DJ Moore" board."""
+    out: list[str] = []
+    run: list[str] = []
+    for tok in n.split(" "):
+        if len(tok) == 1:
+            run.append(tok)
+            continue
+        if run:
+            out.append("".join(run) if len(run) > 1 else run[0])
+            run = []
+        out.append(tok)
+    if run:
+        out.append("".join(run) if len(run) > 1 else run[0])
+    return " ".join(out)
+
+
 def _base_norm(name: str) -> str:
     """Normalization without alias substitution — keeps the original spelling's tokens."""
     n = str(name).lower().strip()
     n = n.replace("'", "").replace("`", "").replace(".", " ").replace("-", " ")
     n = PUNCT.sub(" ", n)
     n = SUFFIX.sub(" ", n)
-    return SPACES.sub(" ", n).strip()
+    return _merge_initials(SPACES.sub(" ", n).strip())
 
 
 def normalize(name: str) -> str:
-    """Canonical key: lowercase, no punctuation, no generational suffix."""
+    """Canonical key: lowercase, no punctuation, no generational suffix, dotted
+    initials merged ("D.J." and "DJ" agree)."""
     n = str(name).lower().strip()
     n = n.replace("'", "").replace("`", "").replace(".", " ").replace("-", " ")
     n = PUNCT.sub(" ", n)
     n = SUFFIX.sub(" ", n)
-    n = SPACES.sub(" ", n).strip()
+    n = _merge_initials(SPACES.sub(" ", n).strip())
     n = SHORTHAND.get(n.replace(" ", ""), n)
     return HARD_ALIASES.get(n, n)
 
