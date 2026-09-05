@@ -710,6 +710,21 @@ class DraftState:
             return board.iloc[0:0]
         return board[board["_key"].isin(keys)]
 
+    def picks_by_position(self, board: pd.DataFrame) -> dict[str, int]:
+        """Every pick the room has made, counted by position.
+
+        The board's spelling first, the recorded one as the fallback, so a
+        kicker the board does not model still counts -- the same order
+        `my_roster` uses, and for the same reason.
+        """
+        idx = board.set_index("_key")["position"].to_dict() if "_key" in board.columns else {}
+        counts: dict[str, int] = {}
+        for p in self.picks:
+            pos = idx.get(norm_name(p["name"])) or p.get("position")
+            if pos:
+                counts[str(pos)] = counts.get(str(pos), 0) + 1
+        return counts
+
     def my_roster(self, board: pd.DataFrame) -> dict[str, int]:
         mine = [p for p in self.picks if p["slot"] == self.my_slot]
         counts: dict[str, int] = {}

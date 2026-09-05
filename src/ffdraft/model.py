@@ -589,6 +589,66 @@ def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
     return np.clip(np.nan_to_num(out, nan=0.5), 0.0, 1.0)
 
 
+def forced_takes(slots_left: int, picks_left: int, horizon: int) -> int:
+    """How many of a position the league can no longer defer past your next pick.
+
+    At most `picks_left - horizon` of the slots it still has to fill can be taken
+    after your next pick, so anything beyond that is forced inside the horizon.
+    Pigeonhole, not a forecast: it is 0 for most of a draft, which is the point.
+    The room's own deferral stands until the arithmetic says it cannot continue.
+    """
+    return max(0, slots_left - max(0, picks_left - horizon))
+
+
+def expected_takers(rate: float, horizon: int, slots_left: int, picks_left: int) -> float:
+    """How many of a counted position go before your next pick.
+
+    The room's observed rate over the horizon, floored by what the league can no
+    longer defer past it. The floor is 0 for most of a draft and binds only at
+    the end, where remaining supply and remaining picks converge.
+    """
+    if horizon <= 0:
+        return 0.0
+    return max(float(rate) * horizon,
+               float(forced_takes(slots_left, picks_left, horizon)))
+
+
+def counting_survival(takers: float, count: int) -> np.ndarray:
+    """Survival by board index when a position goes in order.
+
+    ESPN's ADP for kickers and defenses does not describe a real room. Every
+    available K and D/ST sat between 84 and 171 on the live board while this
+    room had taken one of each in 125 picks, and the shipped replay scores that
+    term at predicted 0.46 against observed 0.73 for defenses over 22 picks:
+    miscalibrated, in the direction of pessimism. The count is the alternative
+    the room's own record supports.
+
+    If k of a position are taken before your next pick, the k best go, so the
+    player at index i survives exactly when k <= i. Returns P(K <= i) for each
+    index, with K Poisson on `takers`.
+
+    Poisson rather than a step at `takers` itself. A count is an expectation,
+    and #35 is the record of what treating it as a certainty does: the best
+    player at the position never survives, the fallback collapses to the next
+    man down, and the position is pulled earlier at every turn. The spread here
+    is the count's own, not a fitted one -- which matters, because the honest
+    alternative needs a spread parameter from pick-by-pick position records
+    across many drafts, and this repo has one draft with two such picks in it.
+    """
+    n = max(0, int(count))
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    lam = max(0.0, float(takers))
+    out = np.empty(n, dtype=float)
+    pmf = math.exp(-lam)
+    cdf = pmf
+    for i in range(n):
+        out[i] = min(1.0, cdf)
+        pmf *= lam / (i + 1)
+        cdf += pmf
+    return out
+
+
 # ESPN's projection reads the current depth chart; the model's reads last
 # season's box scores. Below ROLE_DISAGREEMENT of the model's number the
 # player's role has shrunk (a backup now, a new team, an injury the model
@@ -722,12 +782,42 @@ def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
     return np.where(v >= 0, v * m, v * (2.0 - m))
 
 
+def _apply_room_survival(avail: pd.DataFrame, league: LeagueSettings, current_pick: int,
+                         next_pick: int, room_picks: Mapping[str, int],
+                         picks_so_far: int) -> None:
+    """Replace the ADP survival of every counted position with the room's own.
+
+    In place, and only for SPECIAL_POSITIONS: those are the positions the league
+    forces you to fill exactly once, where ESPN's ADP describes a market rather
+    than this room. Everyone else keeps the ADP model.
+    """
+    horizon = next_pick - current_pick
+    picks_left = max(0, league.teams * league.rounds - current_pick)
+    for pos in SPECIAL_POSITIONS:
+        rows = avail.index[avail["position"] == pos]
+        if not len(rows):
+            continue
+        taken = int(room_picks.get(pos, 0))
+        need = league.starters.get(pos, 0) * league.teams
+        takers = expected_takers(taken / picks_so_far, horizon,
+                                 max(0, need - taken), picks_left)
+        # By index, best first: the survival of the top defense is not the
+        # survival of the fourth, and a flat per-position number says it is.
+        order = avail.loc[rows, "draft_score"].sort_values(ascending=False).index
+        avail.loc[order, "p_available_next"] = counting_survival(takers, len(order))
+        avail.loc[order, "survival_source"] = (
+            f"room has taken {taken} of {need} {pos} in {picks_so_far} picks; "
+            f"{takers:.1f} expected before your next pick")
+
+
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
               bye_weight: float = 0.0,
               adp_shift: float | Mapping[str, float] = 0.0,
-              role_weights: Mapping[str, float] | None = None) -> pd.DataFrame:
+              role_weights: Mapping[str, float] | None = None,
+              room_picks: Mapping[str, int] | None = None,
+              picks_so_far: int = 0) -> pd.DataFrame:
     """Rank available players for the pick that's on the clock.
 
     Two ideas drive the ordering beyond raw value:
@@ -749,6 +839,13 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     (what a backup is worth conditional on the man ahead of him). Both default
     to 0, and at 0 the result is bit-identical to one computed without them; see
     CHANGELOG.md for the evidence behind any non-zero value.
+
+    `room_picks` and `picks_so_far` are this room's record: how many of each
+    position it has taken, over how many picks. Given both, kickers and defenses
+    are priced by `room_survival` from that record instead of by ADP, and
+    `survival_source` names it. Omit them and nothing changes — every caller that
+    replays or simulates a draft leaves them off, so the backtests and the
+    predictor scores are computed exactly as before.
     """
     avail = board[~board["drafted"]].copy() if "drafted" in board.columns else board.copy()
     if avail.empty:
@@ -759,9 +856,13 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
         shift = avail["position"].map(adp_shift).fillna(0.0).to_numpy(dtype=float)
     else:
         shift = float(adp_shift)
+    avail["survival_source"] = ""
     if next_pick:
         avail["p_available_next"] = survival_probability_vec(
             avail["adp"].to_numpy() - shift, current_pick, next_pick)
+        if room_picks is not None and picks_so_far > 0:
+            _apply_room_survival(avail, league, current_pick, next_pick,
+                                 room_picks, picks_so_far)
     else:
         avail["p_available_next"] = 0.0
 
@@ -1014,7 +1115,12 @@ def explain(row: pd.Series) -> str:
         bits.append(f"ESPN status {inj}")
     p = row.get("p_available_next")
     if p is not None and np.isfinite(p):
-        bits.append(f"{p:.0%} chance he lasts to your next pick")
+        # Where the number came from, when it did not come from ADP. A survival
+        # of 0.82 on a defense reads as a guess unless the record behind it is
+        # on the same line.
+        src = row.get("survival_source")
+        named = f" ({src})" if src is not None and pd.notna(src) and str(src) else ""
+        bits.append(f"{p:.0%} chance he lasts to your next pick{named}")
     bye = row.get("bye_week")
     if bye is not None and pd.notna(bye):
         conflicts = row.get("bye_conflicts") or ""

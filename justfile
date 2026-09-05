@@ -702,6 +702,127 @@ bye $seasons='2022,2023,2024,2025' $trials='12' $weight='0.08' $seed='0':
           f"{out['blocks_agree']}, worst block spread {out['worst_block_spread']}")
     print("  " + adp.block_verdict(out))
 
+# What the room's own record says about K and D/ST survival, against what ESPN
+# ADP says, at each of your remaining picks. The ADP column is the shipped
+# number; `room` is (1 - r)^h from the position's observed take-rate. Measured
+# at the pick on the clock; later picks are a projection at today's rate, and
+# the header says so.
+[script]
+takerate:
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import model, server
+    from ffdraft.board import norm_name
+
+    league, weights = server._settings()
+    st = server._state()
+    # Mark the drafted rows: on the raw board every pick is still "available",
+    # which puts round-one players in the pool at pick 132 and makes every
+    # number below meaningless.
+    b = server._mark_drafted(server._build_board(), st)
+    pos_of = b.set_index("_key")["position"].to_dict()
+    n = len(st.picks)
+    taken = {}
+    for p in st.picks:
+        pos = pos_of.get(norm_name(p["name"])) or p.get("position")
+        if pos:
+            taken[pos] = taken.get(pos, 0) + 1
+    total = league.teams * league.rounds
+    print(f"board {len(b)} rows; {n} picks recorded; {league.teams} teams x {league.rounds} "
+          f"rounds = {total} picks; on the clock {st.on_the_clock}")
+    print("room record by position: "
+          + ", ".join(f"{k} {v}" for k, v in sorted(taken.items(), key=lambda kv: -kv[1])))
+
+    avail = b[~b["drafted"]] if "drafted" in b.columns else b
+    mine = [p for p in st.my_picks() if p >= st.on_the_clock]
+    print(f"your remaining picks: {mine}")
+    for pos in ("K", "DST"):
+        need = league.starters.get(pos, 0) * league.teams
+        got = taken.get(pos, 0)
+        r_obs = got / n if n else 0.0
+        print(f"\n== {pos}: room has taken {got} of {need} in {n} picks "
+              f"(observed rate {r_obs:.4f}/pick)")
+        rows = avail[avail["position"] == pos].sort_values("draft_score", ascending=False)
+        if rows.empty:
+            print("   none available")
+            continue
+        top = rows.iloc[0]
+        print(f"   best available: {top['name']} (adp {float(top['adp']):.0f}, "
+              f"draft_score {float(top['draft_score']):.1f})")
+        scores = rows["draft_score"].tolist()
+        print(f"   {'pick':>4} {'next':>4} {'h':>3} {'left':>5} {'slots':>5} "
+              f"{'forced':>6} {'takers':>7} {'ADP p0':>7} {'cnt p0':>7} "
+              f"{'ADP fb':>7} {'cnt fb':>7} {'ADP mg':>7} {'cnt mg':>7}")
+        for cur, nxt in zip(mine, mine[1:]):
+            h = nxt - cur
+            picks_left = max(0, total - cur)
+            slots_left = max(0, need - got)
+            forced = model.forced_takes(slots_left, picks_left, h)
+            takers = model.expected_takers(r_obs, h, slots_left, picks_left)
+            counting = model.counting_survival(takers, len(scores))
+            adp_p = model.survival_probability_vec(
+                rows["adp"].to_numpy(), cur, nxt)
+
+            def fallback(probs, scores=scores):
+                """The same walk expected_best_at_next_pick does, one position."""
+                expected, gone = 0.0, 1.0
+                for score, p in zip(scores, probs):
+                    expected += score * p * gone
+                    gone *= 1 - p
+                    if gone < 0.005:
+                        break
+                return expected
+
+            fb_adp, fb_cnt = fallback(adp_p), fallback(counting)
+            print(f"   {cur:>4} {nxt:>4} {h:>3} {picks_left:>5} {slots_left:>5} "
+                  f"{forced:>6} {takers:>7.2f} {adp_p[0]:>7.2f} {counting[0]:>7.2f} "
+                  f"{fb_adp:>7.2f} {fb_cnt:>7.2f} {scores[0] - fb_adp:>7.2f} "
+                  f"{scores[0] - fb_cnt:>7.2f}")
+
+    cur = st.next_pick_for_me() or st.on_the_clock
+    nxt = st.pick_after_next()
+    for label, extra in (("ADP survival (before)", {}),
+                         ("room survival (after)",
+                          {"room_picks": taken, "picks_so_far": n})):
+        recs = model.recommend(b, league, current_pick=cur, next_pick=nxt,
+                               roster=st.my_roster(b), top_n=5, mine=st.my_rows(b),
+                               bye_weight=weights.bye, **extra)
+        print(f"\nheadline at pick {cur} (next {nxt}), {label}:")
+        for _, r in recs.iterrows():
+            print(f"   {r['name']:<26} {r['position']:<3} value {float(r['pick_value']):>7.2f}  "
+                  f"survives {float(r['p_available_next']):.2f}  "
+                  f"fallback {float(r['fallback_value']):>7.2f}  "
+                  f"marginal {float(r['marginal_value']):>7.2f}")
+        print(f"   why: {model.explain(recs.iloc[0])}")
+        full = model.recommend(b, league, current_pick=cur, next_pick=nxt,
+                               roster=st.my_roster(b), top_n=len(b), mine=st.my_rows(b),
+                               bye_weight=weights.bye, **extra)
+        dst = full[full["position"] == "DST"]
+        if not dst.empty:
+            top_dst = dst.iloc[0]
+            rank = int(full.index.get_indexer([top_dst.name])[0]) + 1
+            print(f"   best D/ST {top_dst['name']} ranks {rank} of {len(full)}, "
+                  f"value {float(top_dst['pick_value']):.2f}")
+            print(f"   why: {model.explain(top_dst)}")
+
+    # The last two picks, at today's take-rate: the floor has to make a required
+    # position urgent again even though the room has deferred all draft. This is
+    # a projection, not a measurement -- the draft is at pick 125.
+    print("\nprojection at today's rate, your last two picks:")
+    for cur2, nxt2 in ((196, 221), (221, None)):
+        recs = model.recommend(b, league, current_pick=cur2, next_pick=nxt2,
+                               roster=st.my_roster(b), top_n=3, mine=st.my_rows(b),
+                               bye_weight=weights.bye, room_picks=taken, picks_so_far=n)
+        head = recs.iloc[0]
+        print(f"   pick {cur2} (next {nxt2}): {head['name']} ({head['position']}) "
+              f"value {float(head['pick_value']):.2f} survives "
+              f"{float(head['p_available_next']):.2f}")
+
 # Probe every external data surface; see docs/data-sources.md
 [script]
 surfaces:

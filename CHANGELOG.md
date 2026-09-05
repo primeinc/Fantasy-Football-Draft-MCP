@@ -607,6 +607,48 @@ All notable changes to this project. Format follows
   never arose there; the cause was this same availability filter, applied to K
   and D/ST whose ADPs are real but do not describe a real room.
 
+**K and D/ST survival comes from the room's record, by board index (#37)**
+
+- ESPN's ADP for kickers and defenses does not describe a real room, and the
+  shipped replay already scored the gap: survival by position over the recorded
+  draft reads **predicted 0.46 against observed 0.73 for D/ST** on 22 picks,
+  against a well-calibrated **0.33 / 0.30 for K** on 10. The term is
+  miscalibrated for defenses in the direction of pessimism, which is the same
+  fault #33 found from the other side.
+- `recommend` now prices those two positions by counting when given the room's
+  record, and only then: `expected_takers` is the observed rate over the horizon,
+  floored by what the league can no longer defer past your next pick, and
+  `counting_survival` turns that into P(K <= i) by board index. If k of a
+  position go, the k best go, so the top defense and the fourth do not get the
+  same number — a flat per-position scalar was measured first and rejected for
+  exactly that, since it makes the two equally likely to go.
+- Poisson on the count rather than a step at it. #35 is the record of what
+  treating an expected count as a certainty does, and the spread here is the
+  count's own rather than a fitted one.
+- The floor is pigeonhole, not even absorption: of the slots the league still
+  has to fill, at most `picks_left - horizon` can come after your next pick. It
+  is **0 at every turn until 196**, where 15 D/ST slots meet 28 remaining picks
+  and 12 are forced into the horizon. That is where ADP goes blind, and it is
+  the defect this closes: at 196 to 221 ADP prices the top defense's marginal at
+  **9.14** against counting's **20.87**.
+- At 132 the two disagree the other way — ADP 6.81, counting 0.63 — and the
+  calibration above is why the lower number is the correct one. The room had
+  taken 1 of 16 D/ST in 125 picks, which is 0.2 expected over the next 25, and
+  the shipped headline put a defense first in round 9 of 14 on the strength of
+  the miscalibrated term. Deebo Samuel now ranks first there and the top defense
+  falls from rank 1 to rank 10.
+- Off by default. `room_picks` and `picks_so_far` are passed only by
+  `who_should_i_pick`, `draft_audit` and the watch; every replay, backtest and
+  simulation leaves them off, and `just replay` is byte-identical with the change
+  in the tree and at the commit before it — every calibration bin, predictor
+  score and team row. The `why` string names the record behind the number.
+- Open, and marge's to settle on review: her `countN` puts about 15 takers into
+  the 196 horizon against this form's 12, and reads the 132 marginal as 6.57
+  against 0.63. The ADP figures reproduce hers exactly at both picks (6.81 and
+  9.14), so the harnesses agree and only the taker count is in dispute. Her
+  stated probe limit — uniform placement, false in the known direction — is the
+  reason this ships with the observed rate near the horizon.
+
 **Measured and not adopted: counting-consistent survival (#35)**
 
 - `_plan_pool` decides whether a required position is reachable by counting, with
