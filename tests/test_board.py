@@ -174,6 +174,16 @@ class TestSyncEspnLive:
         assert picks == [{"overall": 1, "slot": None, "name": "Jahmyr Gibbs", "player_id": None}]
 
 
+class TestRekey:
+    def test_stale_cached_keys_are_recomputed(self):
+        # A board cached before the initials fix stored "a j brown"; live draft
+        # state keys the same name "aj brown", so the pick never marked him taken.
+        stale = pd.DataFrame({"name": ["A.J. Brown", "DJ Moore"], "_key": ["a j brown", "d j moore"]})
+        fresh = board.rekey(stale)
+        assert list(fresh["_key"]) == ["aj brown", "dj moore"]
+        assert list(stale["_key"]) == ["a j brown", "d j moore"]
+
+
 class TestParsePastedBoard:
     def test_keeps_dotted_initials(self):
         # A real 110-pick ESPN draft room paste lost A.J. Brown, T.J. Hockenson and

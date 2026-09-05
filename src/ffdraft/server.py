@@ -126,7 +126,7 @@ def _build_board(force: bool = False) -> pd.DataFrame:
     if not force and key in _BOARDS:
         return _BOARDS[key]
     if not force and path.exists():
-        b = pd.read_parquet(path)
+        b = bd.rekey(pd.read_parquet(path))
         if "bye_week" not in b.columns:
             b = _attach_byes(b)
             b.to_parquet(path, index=False)

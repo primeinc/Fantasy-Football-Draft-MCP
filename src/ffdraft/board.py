@@ -181,6 +181,16 @@ def synthetic_adp(position: str, pos_rank: float, seasons_stale: float = 0.0) ->
     return float(base + 200.0 * max(0.0, seasons_stale))
 
 
+def rekey(board: pd.DataFrame) -> pd.DataFrame:
+    """Recompute `_key` from `name` with the current normaliser. A cached board
+    carries the keys of whatever normaliser built it; draft state is keyed live,
+    and the two must agree or drafted players show as available."""
+    b = board.copy()
+    if "name" in b.columns:
+        b["_key"] = b["name"].map(norm_name)
+    return b
+
+
 def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     """Join ADP onto the board, falling back to positional draft curves where missing."""
     b = board.copy()
