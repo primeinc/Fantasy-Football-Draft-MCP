@@ -93,9 +93,12 @@ message the moment it happens, with a recommendation once you are within three
 picks of the clock. The board stays current for `who_should_i_pick` and
 `draft_status` either way. Events reach Claude only when the session was started
 with `claude --dangerously-load-development-channels server:fantasy-draft`
-(channels are a research preview). The browser draft room shows "Duplicate
-Connection" when the watch connects and reconnects on its own. One watch per
-league; `stop_watch(league_id)` ends it.
+(channels are a research preview). ESPN allows one draft-room connection per
+team: starting the watch closes your browser draft room with a "Duplicate
+Connection" dialog, and opening the room again pauses the watch (it pushes a
+"paused" event and does not fight back). Keep the room closed while the watch
+runs; open it to pick, then call `watch_draft` again. One watch per league;
+`stop_watch(league_id)` ends it.
 
 ### `record_pick` / `undo_pick` / `reset_draft` / `draft_status`
 Manual board management. `record_pick` accepts shorthand.

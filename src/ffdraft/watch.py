@@ -45,6 +45,8 @@ class DraftWatch:
         self.last_line = ""
         # Set once the INIT snapshot has been applied; callers wait on this.
         self.ready = asyncio.Event()
+        # `LEFT <team> <swid> 2` for our own team precedes a duplicate-connection close.
+        self.bumped = False
 
     # -- socket loop
 
@@ -58,6 +60,17 @@ class DraftWatch:
                 raise
             except Exception as exc:
                 self.connected = False
+                if self.bumped:
+                    # ESPN allows one draft-room connection per team. The user opened
+                    # the room elsewhere; reconnecting would only throw them out again.
+                    await self.notify(
+                        "draft watch paused: the draft room was opened from another "
+                        "location (your browser). Picks are not being tracked. Close the "
+                        "room and call watch_draft again to resume.",
+                        {"league": self.league_id, "event": "paused"})
+                    return
+                if self.ready.is_set():
+                    failures = 0
                 failures += 1
                 if failures >= MAX_FAILED_SESSIONS:
                     await self.notify(
@@ -78,6 +91,8 @@ class DraftWatch:
                f"&6=false&7=false&8=KONA&nocache={random.randint(0, 10**6)}")
         headers = {"Cookie": f"SWID={self.swid}; espn_s2={self.espn_s2}",
                    "Origin": "https://fantasy.espn.com"}
+        self.ready.clear()
+        self.bumped = False
         async with connect(uri, additional_headers=headers, user_agent_header="Mozilla/5.0",
                            open_timeout=15) as ws:
             self.connected = True
@@ -130,6 +145,10 @@ class DraftWatch:
             self.state.save()
             await self.notify(f"pick {keep + 1} undone; board rolled back to {keep} picks.",
                               {"league": self.league_id, "event": "undone"})
+        elif kind == "LEFT" and len(fields) >= 4:
+            if (int(fields[1]) == self.team_id and fields[2].strip("{}").upper()
+                    == self.swid.strip("{}").upper() and fields[3] == "2"):
+                self.bumped = True
         elif kind == "ERROR":
             raise RuntimeError(line)
 

@@ -62,6 +62,28 @@ def test_undone_rolls_back(tmp_path, monkeypatch):
     assert events[-1][1]["event"] == "undone"
 
 
+def test_duplicate_connection_pauses_instead_of_reconnecting(tmp_path, monkeypatch):
+    w, events = _watch(tmp_path, monkeypatch)
+    # ESPN sends LEFT for our own team with reason 2 right before closing the socket.
+    asyncio.run(w.handle_line("LEFT 3 {abc} 2"))
+    assert w.bumped is True
+
+    async def session():
+        raise ConnectionError("no close frame received or sent")
+
+    monkeypatch.setattr(w, "_session", session)
+    asyncio.run(w.run())
+    assert events[-1][1]["event"] == "paused"
+    assert "watch_draft" in events[-1][0]
+
+
+def test_other_teams_leaving_does_not_pause(tmp_path, monkeypatch):
+    w, _ = _watch(tmp_path, monkeypatch)
+    asyncio.run(w.handle_line("LEFT 13 {C8E45485} 1"))
+    asyncio.run(w.handle_line("LEFT 3 {ABC} 1"))
+    assert w.bumped is False
+
+
 def test_error_line_raises(tmp_path, monkeypatch):
     w, _ = _watch(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="No\\+team"):

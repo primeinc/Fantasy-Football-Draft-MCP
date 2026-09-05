@@ -83,8 +83,10 @@ The draft room gets its state over a websocket. `espn_live.py` speaks it.
 4. Past picks are only in INIT; the server does not replay `SELECTED`. `JOINED`, `LEFT`
    and `CHAT` carry team id, owner SWID and (for chat) a millisecond timestamp, so a
    long-lived listener can log draft-room presence and chat per owner. Not built.
-5. One connection per team. A sync from here disconnects the browser draft room with a
-   "Duplicate Connection" dialog; Reconnect restores it.
+5. One connection per team and member, regardless of device cookies (tested with the
+   browser's full cookie jar). A new join closes the existing one: the older side sees
+   `LEFT <team> <swid> 2` then the socket drops without a close frame; a browser shows
+   "Duplicate Connection". `watch.py` treats that LEFT as a pause signal.
 
 The SSE variant `https://fantasydraft.espn.com/game-1/league-{league_id}/sse/JOIN?...`
 answers `ERROR 1 No team with ID {team_id} found` for the same parameters.
