@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -31,6 +32,7 @@ import pandas as pd
 
 from . import adp as adp_mod
 from . import roles
+from .board import UNPRICED, is_position, with_stand_ins
 from .config import LeagueSettings
 from .names import normalize as norm_name
 
@@ -49,6 +51,13 @@ DEFAULT_BLOCKS = adp_mod.DEFAULT_BLOCKS
 BASIS_BOARD = "adj_ppg"
 BASIS_DERIVED = "proj_points / exp_games"
 BASIS_NONE = "none: no projection on the board"
+# A roster player the board cannot price at all, filled in at the position's
+# replacement level through `board.with_stand_ins` -- the same stand-in every
+# other tool gets, so a bystander is worth the same here as he is in a lineup or
+# a waiver drop. Reported per side rather than folded into the total, because a
+# delta that rests partly on replacement-level guesses is a weaker number than
+# one that does not, and only the reader can decide how much weaker.
+BASIS_STAND_IN = "replacement level: the board has no row for him"
 
 
 @dataclass(frozen=True)
@@ -84,21 +93,58 @@ def _finite(value, fallback: float) -> float:
     return out if np.isfinite(out) else fallback
 
 
-def resolve(board: pd.DataFrame, names: list[str]) -> tuple[list[Player], list[str]]:
+def _stand_in_row(board: pd.DataFrame, name: str, position: str) -> dict | None:
+    """One replacement-level row for a player the board does not carry.
+
+    Built by `board.with_stand_ins`, the same helper `DraftState.my_rows` and
+    `rosters.roster_rows` use, so a player unknown to the board is worth exactly
+    the same here as he is in a lineup or a waiver drop. A second pricing rule
+    for the same situation is how `_discount` came to exist twice.
+    """
+    if not is_position(position) or "_key" not in board.columns:
+        return None
+    empty = board.iloc[0:0].copy()
+    empty[UNPRICED] = pd.Series(dtype=bool)
+    built = with_stand_ins(empty, board, [(name, position)])
+    return None if built.empty else built.iloc[0].to_dict()
+
+
+def resolve(board: pd.DataFrame, names: list[str],
+            positions: Mapping[str, str] | None = None,
+            ) -> tuple[list[Player], list[str]]:
     """Board rows for these names, plus the names that matched nothing.
 
-    Unmatched names come back rather than being dropped: a trade scored without
-    one of its own players is a different trade, and silently scoring it is how
-    a tool tells a confident lie.
+    A name the board cannot price becomes a replacement-level stand-in when
+    `positions` says what he plays, and is returned as missing only when nothing
+    can place him. That is what lets a trade be scored at all: the live roster
+    holds MarShawn Lloyd, whom the board has no row for, and refusing the whole
+    evaluation over a player who is not in the trade told the user nothing about
+    the trade they asked about.
+
+    Unmatched names still come back rather than being dropped. The caller
+    decides what a miss means, and for `evaluate` it means different things on
+    the two sides: a name in `give` or `get` stops the evaluation, because a
+    trade scored without one of its own pieces is a different trade, while a
+    bystander is priced and reported.
     """
     if "_key" not in board.columns:
         return [], list(names)
     rows = {k: row for k, row in zip(board["_key"], board.to_dict("records"))}
+    place = dict(positions or {})
     found, missing = [], []
     for name in names:
         row = rows.get(norm_name(name))
         if row is None:
-            missing.append(name)
+            row = _stand_in_row(board, name, str(place.get(norm_name(name)) or ""))
+            if row is None:
+                missing.append(name)
+                continue
+            found.append(Player(
+                name=name, key=norm_name(name),
+                position=str(row.get("position") or ""),
+                adj_ppg=_finite(row.get("proj_points"), 0.0) / roles.SEASON_GAMES,
+                exp_games=float(roles.SEASON_GAMES), bye_week=None,
+                basis=BASIS_STAND_IN))
             continue
         exp_games = _finite(row.get("exp_games"), roles.SEASON_GAMES)
         adj = row.get("adj_ppg")
@@ -301,6 +347,45 @@ def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
             f"the spread before the mean." + tail)
 
 
+def _spread_note(roster: list[Player]) -> str | None:
+    """What this side's `block_spread` does not include, when that is a stand-in.
+
+    A stand-in is given full expected games, because the board has no injury
+    opinion about a player it has no row for and inventing one would be a guess
+    dressed as data. The consequence lands on the spread rather than on the
+    mean: availability is the only thing drawn at random here, so a player who is
+    always available contributes no variance, and `block_spread` comes out
+    narrower than the roster warrants. Narrower is the direction that flatters a
+    delta, so it is said beside the number rather than left for a reader to
+    deduce from the basis column.
+    """
+    names = [p.name for p in roster if p.basis == BASIS_STAND_IN]
+    if not names:
+        return None
+    return ("block_spread excludes the week-to-week variance of "
+            + ", ".join(names)
+            + ": priced at replacement level with full expected games, so their "
+              "availability never varies and the spread is narrower than this "
+              "roster warrants. They are in the estimate as well as absent from "
+              "its spread -- freddy measured a pair of stand-ins moving an "
+              "improvement from +36.9 to -3.9 while the spread tightened from "
+              "4.3 to 0.7, so this side's verdict can turn on them and reads "
+              "more confident as it does. Their points are under stand_ins.")
+
+
+def _stand_ins_of(roster: list[Player], weeks: int) -> list[dict]:
+    """The replacement-level fill-ins on a roster, with what each contributes.
+
+    Points rather than a bare name, because "two of these are guesses" and "two
+    of these are guesses worth 96 points between them" are different warnings,
+    and only the second lets a reader judge whether the delta survives them.
+    """
+    return [{"player": p.name, "position": p.position,
+             "points": round(p.adj_ppg * p.weekly_availability * weeks, 1),
+             "basis": p.basis}
+            for p in roster if p.basis == BASIS_STAND_IN]
+
+
 def _roster_names(picks: list[dict]) -> list[str]:
     return [str(p["name"]) for p in picks]
 
@@ -341,13 +426,41 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         "mine_before": mine, "mine_after": _swap(mine, give, get),
         "theirs_before": theirs, "theirs_after": _swap(theirs, get, give),
     }
+    # Positions from the draft record, which knows what a player is even when the
+    # board cannot price him -- that is the whole reason `record_pick` files one.
+    # Deliberately NOT offered for a name in the trade: a stand-in is a guess,
+    # and the pieces being valued are the one thing this may not guess about. A
+    # traded player with no board row still stops the evaluation, because a trade
+    # scored on a replacement-level estimate of its own centrepiece is a
+    # confident answer to a question the board cannot answer.
+    #
+    # A bystander is the opposite case. He is priced and reported, because
+    # refusing the whole trade over a player who is not in it answers nothing the
+    # user asked: the live roster holds MarShawn Lloyd, who has no board row, and
+    # every trade on that roster was refused for him.
+    traded = {norm_name(n) for n in list(give) + list(get)}
+    positions = {norm_name(p["name"]): str(p.get("position") or "")
+                 for picks in picks_by_slot.values() for p in picks
+                 if norm_name(p["name"]) not in traded}
     resolved, missing = {}, []
     for label, names in rosters.items():
-        players, gone = resolve(board, names)
+        players, gone = resolve(board, names, positions)
         resolved[label] = players
         missing.extend(gone)
-    if missing:
-        errors.append("no board row for: " + ", ".join(sorted(set(missing))))
+    blocking = sorted({n for n in missing if norm_name(n) in traded})
+    if blocking:
+        # Says why THIS name refuses when a bystander does not. The bare "no
+        # board row for" was read as a bug the last time it fired, correctly,
+        # because it fired on a player who was not in the trade. Now that it
+        # cannot, the message has to carry the distinction or the next reader
+        # files the same report. Flagged by freddy.
+        errors.append(
+            "no board row for: " + ", ".join(blocking)
+            + " -- a player being traded cannot be filled in at replacement "
+              "level, because he is the quantity the answer is about. A player "
+              "on either roster who is not in the trade is stood in for and "
+              "reported under stand_ins.")
+    unplaceable = sorted({n for n in missing if norm_name(n) not in traded})
     if errors:
         return {"ok": False, "errors": errors}
 
@@ -363,11 +476,25 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         "weeks": {"from": 1, "to": weeks},
         "give": list(give),
         "get": list(get),
+        # Players on either roster the board could not price, filled in at their
+        # position's replacement level with the points each contributes, so the
+        # total is never silently moved by a guess. Empty means both rosters are
+        # fully priced and the delta rests on the board throughout.
+        "stand_ins": {
+            "yours": _stand_ins_of(resolved["mine_after"], weeks),
+            "theirs": _stand_ins_of(resolved["theirs_after"], weeks),
+        },
+        # Named on a roster but placeable by nothing -- no board row and no
+        # recorded position. They are absent from the simulation entirely, which
+        # is a smaller roster than the user has, so it is said rather than left
+        # to be inferred from a total.
+        "not_scored": unplaceable,
         "you": {
             "slot": my_slot, **yours,
             "depth_before": depth(resolved["mine_before"], league),
             "depth_after": depth(resolved["mine_after"], league),
             "priced_by": priced_by(resolved["mine_after"]),
+            "spread_note": _spread_note(resolved["mine_after"]),
             "verdict": verdict(yours, "you", weeks),
         },
         "counterparty": {
@@ -375,6 +502,7 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
             "depth_before": depth(resolved["theirs_before"], league),
             "depth_after": depth(resolved["theirs_after"], league),
             "priced_by": priced_by(resolved["theirs_after"]),
+            "spread_note": _spread_note(resolved["theirs_after"]),
             "verdict": verdict(theirs_cmp, f"slot {counterparty_slot}", weeks),
             "tendencies": counterparty_tendencies(
                 picks_by_slot.get(counterparty_slot, []), board),

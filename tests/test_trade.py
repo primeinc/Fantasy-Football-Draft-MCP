@@ -60,6 +60,20 @@ def _picks(names: list[str], slot: int, start: int) -> list[dict]:
              "position": rows[n]["position"]} for i, n in enumerate(names)]
 
 
+def _priced(b: pd.DataFrame) -> pd.DataFrame:
+    """The fixture board with a replacement level, so a stand-in is worth something.
+
+    `board.replacement_points` reads this column and answers 0.0 without it,
+    which is honest but makes a stand-in indistinguishable from a player worth
+    nothing. These tests are about a stand-in carrying real points, so the column
+    has to be there.
+    """
+    out = b.copy()
+    out["replacement_points"] = out["position"].map(
+        {"QB": 200.0, "RB": 120.0, "WR": 140.0, "TE": 100.0}).fillna(0.0)
+    return out
+
+
 @pytest.fixture
 def fixture_board():
     return _board(FIXTURE)
@@ -377,6 +391,83 @@ class TestRefusals:
                              counterparty_slot=2, give=["Ghost"], get=["Good WR"])
         assert out["ok"] is False
         assert any("no board row for" in e and "Ghost" in e for e in out["errors"])
+        # And says why this one refuses when a bystander does not, so the next
+        # reader does not file the report dave correctly filed the last time.
+        assert any("cannot be filled in at replacement level" in e
+                   for e in out["errors"])
+
+    def test_a_bystander_with_no_board_row_does_not_refuse_the_trade(
+            self, fixture_board, by_slot):
+        # dave's live repro: give Meyers and Stevenson for Nacua, and the tool
+        # refused with "no board row for: MarShawn Lloyd" -- a player not in the
+        # trade. Every trade on that roster was refused for a bystander.
+        picks = {1: by_slot[1] + [{"overall": 99, "slot": 1, "name": "Bystander",
+                                   "player_id": None, "position": "RB"}],
+                 2: by_slot[2]}
+        out = trade.evaluate(_priced(fixture_board), picks, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"])
+        assert out["ok"] is True, out.get("errors")
+
+    def test_the_bystander_is_priced_at_replacement_and_reported(
+            self, fixture_board, by_slot):
+        # Priced through `board.with_stand_ins`, so he is worth the same here as
+        # in a lineup or a waiver drop, and listed with his points so the total
+        # is never silently moved by a guess.
+        picks = {1: by_slot[1] + [{"overall": 99, "slot": 1, "name": "Bystander",
+                                   "player_id": None, "position": "RB"}],
+                 2: by_slot[2]}
+        out = trade.evaluate(_priced(fixture_board), picks, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"])
+        mine = out["stand_ins"]["yours"]
+        assert [s["player"] for s in mine] == ["Bystander"]
+        assert mine[0]["position"] == "RB"
+        assert mine[0]["basis"] == trade.BASIS_STAND_IN
+        assert mine[0]["points"] > 0
+        # The counterparty's roster is fully priced, so its list is empty rather
+        # than absent -- an empty list is the statement that nothing was guessed.
+        assert out["stand_ins"]["theirs"] == []
+
+    def test_the_spread_says_it_excludes_the_stand_in_s_variance(
+            self, fixture_board, by_slot):
+        # A stand-in has full expected games, so his availability never varies
+        # and he contributes nothing to block_spread. Narrower is the direction
+        # that flatters a delta, so the side carrying him says so beside its own
+        # spread, and the side that does not carry one says nothing.
+        picks = {1: by_slot[1] + [{"overall": 99, "slot": 1, "name": "Bystander",
+                                   "player_id": None, "position": "RB"}],
+                 2: by_slot[2]}
+        out = trade.evaluate(_priced(fixture_board), picks, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"])
+        note = out["you"]["spread_note"]
+        assert note is not None and "Bystander" in note
+        assert "block_spread" in note
+        assert out["counterparty"]["spread_note"] is None
+
+    def test_a_fully_priced_pair_of_rosters_says_nothing_about_the_spread(
+            self, fixture_board, by_slot):
+        out = trade.evaluate(_priced(fixture_board), by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"])
+        assert out["you"]["spread_note"] is None
+        assert out["counterparty"]["spread_note"] is None
+
+    def test_a_bystander_nothing_can_place_is_named_not_silently_dropped(
+            self, fixture_board, by_slot):
+        # No board row AND no recorded position: he cannot be priced at all, so
+        # he is absent from the simulation. That is a smaller roster than the
+        # user has, which is said rather than left to be inferred from a total.
+        picks = {1: by_slot[1] + [{"overall": 99, "slot": 1, "name": "Nobody",
+                                   "player_id": None, "position": None}],
+                 2: by_slot[2]}
+        out = trade.evaluate(_priced(fixture_board), picks, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"])
+        assert out["ok"] is True, out.get("errors")
+        assert out["not_scored"] == ["Nobody"]
+        assert out["stand_ins"]["yours"] == []
 
     def test_an_empty_trade_is_refused(self, fixture_board, by_slot):
         out = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
