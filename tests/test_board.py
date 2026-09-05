@@ -174,6 +174,59 @@ class TestSyncEspnLive:
         assert picks == [{"overall": 1, "slot": None, "name": "Jahmyr Gibbs", "player_id": None}]
 
 
+class TestAuditState:
+    def _state(self, tmp_path, monkeypatch, picks):
+        from ffdraft.config import LeagueSettings
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        st = board.DraftState(LeagueSettings(name="t", teams=16, draft_slot=4, rounds=14))
+        for i, (name, slot) in enumerate(picks, start=1):
+            st.record(name, i, slot)
+        return st
+
+    def _board(self):
+        b = pd.DataFrame({"name": ["Jahmyr Gibbs", "Bijan Robinson", "A.J. Brown", "Ja'Marr Chase",
+                                   "Kenny Gainwell"],
+                          "position": ["RB", "RB", "WR", "WR", "RB"]})
+        return board.rekey(b)
+
+    def test_clean_state_passes(self, tmp_path, monkeypatch):
+        st = self._state(tmp_path, monkeypatch, [("Jahmyr Gibbs", 1), ("Bijan Robinson", 2),
+                                                 ("A.J. Brown", 3), ("Ja'Marr Chase", 4),
+                                                 ("Atlanta Falcons D/ST", 5), ("Brandon Aubrey", 6)])
+        out = board.audit_state(self._board(), st)
+        assert out["ok"] and out["failures"] == []
+        assert out["unresolved"] == 2 and "D/ST" in out["warnings"][0]
+
+    def test_board_spelling_mismatch_fails(self, tmp_path, monkeypatch):
+        # ESPN and nflverse say Kenneth; the board says Kenny. Recorded raw, the
+        # pick never marks him taken. The audit must call that out by name.
+        st = self._state(tmp_path, monkeypatch, [("Kenneth Gainwell", 1)])
+        out = board.audit_state(self._board(), st)
+        assert not out["ok"]
+        assert "Kenneth Gainwell -> board has 'Kenny Gainwell'" in out["failures"][0]
+
+    def test_stale_board_keys_fail(self, tmp_path, monkeypatch):
+        st = self._state(tmp_path, monkeypatch, [("A.J. Brown", 1)])
+        b = self._board()
+        b.loc[b["name"] == "A.J. Brown", "_key"] = "a j brown"
+        out = board.audit_state(b, st)
+        assert not out["ok"] and "normaliser" in out["failures"][0]
+
+    def test_my_picks_off_schedule_and_duplicates_fail(self, tmp_path, monkeypatch):
+        st = self._state(tmp_path, monkeypatch, [("Jahmyr Gibbs", 1), ("Jahmyr Gibbs", 2),
+                                                 ("A.J. Brown", 3), ("Ja'Marr Chase", 9)])
+        out = board.audit_state(self._board(), st)
+        joined = " ".join(out["failures"])
+        assert "recorded twice" in joined and "scheduled picks" in joined
+
+    def test_drafted_player_in_recommendations_fails(self, tmp_path, monkeypatch):
+        st = self._state(tmp_path, monkeypatch, [("A.J. Brown", 1)])
+        recs = board.rekey(pd.DataFrame({"name": ["A.J. Brown", "Jahmyr Gibbs"]}))
+        out = board.audit_state(self._board(), st, recs)
+        assert "drafted players in recommendations: ['A.J. Brown']" in out["failures"]
+
+
 class TestRekey:
     def test_stale_cached_keys_are_recomputed(self):
         # A board cached before the initials fix stored "a j brown"; live draft

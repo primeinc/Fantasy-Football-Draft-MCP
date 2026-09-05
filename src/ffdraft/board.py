@@ -181,6 +181,68 @@ def synthetic_adp(position: str, pos_rank: float, seasons_stale: float = 0.0) ->
     return float(base + 200.0 * max(0.0, seasons_stale))
 
 
+def audit_state(board: pd.DataFrame, state: DraftState,
+                recommendations: pd.DataFrame | None = None) -> dict:
+    """Invariants between the board, the recorded picks and the recommendation.
+
+    failures break a recommendation; warnings are expected gaps (kickers,
+    defenses and players with no modelled season never resolve). A recorded
+    name the board holds under another spelling is a failure: that player
+    still ranks as available.
+    """
+    failures, warnings = [], []
+    keys = board["name"].map(norm_name) if "name" in board.columns else pd.Series(dtype=str)
+    board_keys = set(keys)
+    if "_key" in board.columns and not (board["_key"] == keys).all():
+        failures.append("board _key column disagrees with the current normaliser; rekey it")
+
+    picks = state.picks
+    overalls = [p["overall"] for p in picks]
+    if overalls != list(range(1, len(picks) + 1)):
+        failures.append(f"pick numbers are not contiguous 1..{len(picks)}: "
+                        f"{[o for i, o in enumerate(overalls) if o != i + 1][:5]}")
+
+    seen, dupes = set(), []
+    for p in picks:
+        k = norm_name(p["name"])
+        if k in seen and not p["name"].startswith("ESPN#"):
+            dupes.append(p["name"])
+        seen.add(k)
+    if dupes:
+        failures.append(f"players recorded twice: {dupes[:5]}")
+
+    unresolved = [p["name"] for p in picks if norm_name(p["name"]) not in board_keys]
+    misspelled = []
+    if "name" in board.columns and "position" in board.columns:
+        for n in unresolved:
+            if n.endswith(" D/ST") or n.startswith("ESPN#"):
+                continue
+            row = match_player(n, board)
+            if row is not None:
+                misspelled.append(f"{n} -> board has {row['name']!r}")
+    if misspelled:
+        failures.append("recorded under a spelling the board does not key: " + "; ".join(misspelled[:6]))
+    not_modelled = [n for n in unresolved if not any(n == m.split(" -> ")[0] for m in misspelled)]
+    if not_modelled:
+        warnings.append(f"{len(not_modelled)} picks not on the board (K, DST, unmodelled): "
+                        f"{not_modelled[:8]}")
+
+    mine = [p for p in picks if p["slot"] == state.my_slot]
+    expected_mine = [n for n in state.my_picks() if n <= len(picks)]
+    if [p["overall"] for p in mine] != expected_mine:
+        failures.append(f"your picks {[p['overall'] for p in mine]} != slot {state.my_slot}'s "
+                        f"scheduled picks {expected_mine}")
+
+    if recommendations is not None and not recommendations.empty and "_key" in recommendations.columns:
+        taken = state.taken_keys()
+        leaked = [n for n, k in zip(recommendations["name"], recommendations["_key"]) if k in taken]
+        if leaked:
+            failures.append(f"drafted players in recommendations: {leaked}")
+
+    return {"ok": not failures, "failures": failures, "warnings": warnings,
+            "picks": len(picks), "mine": len(mine), "unresolved": len(unresolved)}
+
+
 def rekey(board: pd.DataFrame) -> pd.DataFrame:
     """Recompute `_key` from `name` with the current normaliser. A cached board
     carries the keys of whatever normaliser built it; draft state is keyed live,

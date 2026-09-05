@@ -29,6 +29,14 @@ All notable changes to this project. Format follows
 - `draft_queue` / `set_draft_queue`: read and replace the ESPN pick queue over the
   socket (`DRAFT_LIST`), so autopick has your plan if you miss the clock.
 
+**Draft audit**
+- `draft_audit` checks the invariants between board, draft state and
+  recommendation (key freshness, contiguous picks, no duplicates, your picks on
+  your slot, no drafted player recommended). `sync_draft` returns the same
+  block; the watch pushes `audit_failed` after a snapshot that breaks one.
+  Added after two live incidents: dotted-initial names keyed differently on
+  the board and in the state, and a cached board keeping stale keys.
+
 **Bye weeks**
 - Every board row carries `bye_week` from the nfldata schedule
   (`features.team_bye_weeks`). `who_should_i_pick` and the watch report

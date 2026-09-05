@@ -434,11 +434,31 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
             unmatched.append(p["name"])
         state.record(row["name"] if row is not None else p["name"],
                      p.get("overall"), p.get("slot"))
+    audit = bd.audit_state(b, state)
     return json.dumps({
         "platform": platform, "picks_synced": len(picks),
         "unmatched_names": unmatched[:20],
         **state.summary(),
+        "audit": {"ok": audit["ok"], "failures": audit["failures"]},
     }, indent=2)
+
+
+@mcp.tool()
+def draft_audit(limit: int = 10) -> str:
+    """Check the invariants a recommendation depends on: board keys match the
+    normaliser, pick numbers are contiguous, no player recorded twice, your picks
+    sit on your slot's schedule, and no drafted player appears in the top
+    recommendations. Run it whenever a recommendation looks wrong."""
+    league, weights = _settings()
+    state = _state()
+    b = _mark_drafted(_build_board(), state)
+    nxt = state.next_pick_for_me()
+    recs = None
+    if nxt is not None:
+        recs = model.recommend(b, league, current_pick=nxt, next_pick=state.pick_after_next(),
+                               roster=state.my_roster(b), top_n=limit, mine=state.my_rows(b),
+                               bye_weight=weights.bye)
+    return json.dumps(bd.audit_state(b, state, recs), indent=2)
 
 
 @mcp.tool()

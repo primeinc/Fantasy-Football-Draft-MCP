@@ -104,6 +104,15 @@ One watch per league; `stop_watch(league_id)` ends it.
 Who is in the ESPN draft room right now and the latest room chat, from the running
 watch's socket, with team and owner names from the league member list.
 
+### `draft_audit`
+Invariants a recommendation depends on, checked against the live board and
+draft state: cached board keys equal the current normaliser's, pick numbers are
+contiguous, no player is recorded twice, your picks sit on your slot's schedule,
+no drafted player is in the top recommendations. `sync_draft` reports the same
+`audit` block, and the watch pushes an `audit_failed` event after any snapshot
+that breaks one. Picks not on the board (kickers, defenses) are a warning, not a
+failure.
+
 ### Bye weeks
 `who_should_i_pick`, the watch's pushed recommendation, and `best_available` carry
 `bye_week`; recommendations also carry `bye_conflicts`, the players you already

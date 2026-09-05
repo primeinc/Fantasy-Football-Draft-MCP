@@ -167,6 +167,12 @@ class DraftWatch:
                 f"({s['picks_until_my_turn']} away).",
                 {"league": self.league_id, "event": "snapshot",
                  "on_the_clock": str(s["on_the_clock"])})
+            if self.board is not None:
+                audit = bd.audit_state(self.board, self.state)
+                if not audit["ok"]:
+                    await self.notify("draft audit FAILED after snapshot: "
+                                      + " | ".join(audit["failures"]),
+                                      {"league": self.league_id, "event": "audit_failed"})
         elif kind == "SELECTED" and len(fields) >= 3:
             team_id, pid = int(fields[1]), int(fields[2])
             overall = self.state.on_the_clock
@@ -279,7 +285,14 @@ class DraftWatch:
         return "Recommend: " + "; then ".join(names) + "."
 
     def _name(self, pid: int) -> str:
-        return bd._espn_player_name(pid, self.espn_map)
+        """Board spelling when the board knows the player, else the crosswalk's.
+        Recording the board's spelling keeps taken_keys aligned with the board
+        the way sync_draft does, whatever the two sources call him."""
+        raw = bd._espn_player_name(pid, self.espn_map)
+        if self.board is None or raw.startswith("ESPN#") or raw.endswith(" D/ST"):
+            return raw
+        row = bd.match_player(raw, self.board)
+        return row["name"] if row is not None else raw
 
 
 def _espn_name_map() -> dict:
