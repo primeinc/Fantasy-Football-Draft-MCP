@@ -70,20 +70,27 @@ the docstring already calls the result a floor rather than an estimate.
 `who_should_i_pick` reports it as `starts_in_a_given_week` with `bench_value`
 beside it whatever the weight is.
 
-The term is **added, not multiplied**, and that is not a detail. `pick_value`'s
-zero means "exactly as good as waiting", not "worthless", and 96% of available
-rows at a live mid-draft pick sit below it — so scaling a positive `pick_value`
-toward zero lands it *above* the entire negative field. Measured at pick 125
-holding two backs who never miss a game: a bench RB the term says can hardly ever
-start ranked **3rd of 575** under a multiplier. What is actually true is that a
-player in the lineup a fraction `m` of the time is worth `m` of his projection,
-and `draft_score` is built from that projection, so the honest operation is to
-scale `draft_score` *before* the fallback subtraction. The difference that makes
-to `pick_value` is exactly `(m - 1) * draft_score * need_mult`, so it is applied
-as an addition with no restructuring: same player, **rank 204**, while a receiver
-the term does not touch stays at rank 1 with an unchanged `pick_value`. Only
-value above replacement is scaled — `draft_score` is value over replacement, not
-points, so a player already below it is not made better by playing less.
+The term is applied to **`draft_score` itself**, before `recommend` computes the
+fallback, the marginal value or either multiplier — not to `pick_value`
+afterwards. A player in the lineup a fraction `m` of the time is worth `m` of his
+projection, and `draft_score` is built from that projection, so that is the one
+place the statement is true. Only value above replacement is scaled:
+`draft_score` is value over replacement, not points, so a player already below it
+is not made better by playing less.
+
+Measured at pick 125 holding two backs who never miss a game, 553 of 575 rows
+negative: a bench RB the term says can hardly ever start goes from `pick_value`
+7.3 at **rank 3** to 0.6 at **rank 16**, while a receiver the term does not touch
+stays at rank 1 with an unchanged 13.3.
+
+**What this does not fix.** Rank 16 is still ahead of the 553 negative rows.
+`pick_value`'s zero means "exactly as good as waiting", not "worthless", so
+anything positive outranks the whole negative field however small it is. Scaling
+the position also scales what that position offers at your next pick — correctly,
+since every candidate there is behind the same held players — so the marginal
+value shrinks proportionally rather than going negative. Ranking a barely-starting
+bench player against a starter is a property of comparing marginal-over-waiting
+across positions, not of this term, and it is not solved here.
 
 `handcuff` prices contingent upside. The direct backup at an NFL team and
 position — depth rank 2 by the model's own projection — inherits the games the
@@ -415,9 +422,13 @@ position; fuzzy and ambiguous hits are never joined.
 hold who share that bye. `model_settings(bye_weight=0.08)` makes the recommender
 cut a candidate's pick value by 8% per same-position player on the same bye and
 4% per other player. Default 0, and `bye_backtest` (2022-2025, 12 paired drafts
-each, weight 0.08) found why: +5.8, +7.0, -19.2, -2.0 weekly lineup points per
-season, -2.1 overall. The penalty fills more starter slots, but the player it
-swaps in decides ten times more, so it stays informational like `matchup_z`.
+per block, two blocks per season, weight 0.08) found why. Per season, the two
+blocks: 2022 +8.1 / +6.3, 2023 +3.8 / +7.9, 2024 **-17.0 / +3.0**, 2025 -5.8 /
+-35.4; overall -3.7, `blocks_agree` false. 2024's blocks disagree in sign by 20
+points, so the season that drove the original conclusion is inside the harness's
+own noise — the earlier single-block figure of -19.2 for 2024 was one half of
+that pair. The penalty is close to inert in any case, changing 5, 6, 15 and 10
+rosters out of 24 per season, so it stays informational like `matchup_z`.
 Kickers and defenses are not modelled, so their byes are yours to check.
 
 ### `bye_backtest`

@@ -203,6 +203,12 @@ needed before it was worth measuring at all are in [CHANGELOG.md](../CHANGELOG.m
 ungated handcuff term at -103.5) but cannot confirm one that is mildly right, so every
 paired backtest here now runs two disjoint blocks and reports both.
 
+Re-running the bye weight under that rule changed what it supports. 2024 came out
+-17.0 on one block and +3.0 on the other — the earlier single-block figure of -19.2 for
+that season was one half of a disagreeing pair, and it was the season the original
+conclusion rested on. The conclusion (weight 0) survives; the evidence for it did not,
+and the entry in [CHANGELOG.md](../CHANGELOG.md) now says which.
+
 Two things that follow, and neither is optional when quoting a number from it. The
 spread belongs to the term as much as to the harness — the bye penalty over 2022 gave
 +8.1 and +6.3 while changing five rosters, against forty for the roles weights — so read
