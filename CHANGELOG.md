@@ -102,6 +102,60 @@ All notable changes to this project. Format follows
 - `draft_strength`: every team's draft ranked by projected starter points
   (`board.team_strength`), with bench projection and open starter slots.
 
+**ESPN's "undrafted" ADP is a placeholder, not a pick number**
+
+- `averageDraftPosition` is not null for a player ESPN's population never
+  drafts: it is filled with a value near ESPN's default draft length. On the
+  2026 list 823 of 999 rows land in one 4-pick-wide bin — 260 share exactly
+  169.99 and 208 share exactly 170.00. A value 468 players share cannot be a
+  draft position, since only one player is taken at each pick.
+- Read as a pick number it told the model that most of the board was about to
+  vanish. `plan_my_draft`'s availability filter (`adp > pick - 1.1*sqrt(pick)`)
+  treated every such row as already gone once the pick number passed ~174: the
+  candidate pool went from 550 at pick 164 to **nine** at pick 189, and *not one
+  of the nine had an ESPN projection at all*. That is why the plan's last three
+  picks were Jakobie Keeney-James, Drake Dabney and Gage Larvadain — men with no
+  NFL role — and it is not something the role-unknown scaling could fix, because
+  there was nothing else left in the pool to prefer.
+- `board.undrafted_adp_mask` finds the placeholder instead of hardcoding it,
+  because its value follows ESPN's default draft length: the most-repeated ADP,
+  accepted only when more than `UNDRAFTED_MIN_TIES` (20) players share it, plus
+  a `UNDRAFTED_ADP_TOLERANCE` (1.0 pick) run either side for the smear the
+  averaging leaves across neighbouring hundredths. That width is policy, not
+  fitted, and is stated as such: it takes the spike (794 of 999 rows, median
+  0.03% rostered) and leaves the nearest genuinely-drafted players outside it —
+  Dalton Schultz at 168.87 and 18.4% owned, Calvin Ridley at 168.94 and 25.1%.
+  A market frame with continuous ADPs (a pasted CSV, consensus ECR) trips
+  neither condition and is untouched.
+- Those rows go to the same synthetic fallback that already covers a row the
+  market join missed, so every consumer of `adp` — survival odds, the
+  availability filter, the reach numbers — reads "no market price" rather than
+  "about to go at 170". They keep `espn_proj` and `espn_rank`, since losing
+  those would have made all 449 of them look role-unknown. A new `adp_source`
+  value `undrafted` keeps the two causes apart, and `market_join_report` counts
+  it separately: 449 undrafted against 9 genuinely unjoined.
+- Live board at 122 picks, one-step before -> after. `adp_source` espn 687 ->
+  espn 238 / undrafted 449, modelled 9 either way. The plan's pool at pick 189
+  9 -> 441, of which those carrying an ESPN projection go 0 -> 275; at 196
+  8 -> 439 (0 -> 274); at 221 7 -> 427 (0 -> 264). The plan itself at picks
+  164/189/196/221: Detroit Lions D/ST, Jakobie Keeney-James, Drake Dabney, Gage
+  Larvadain -> Zach Charbonnet, Evan Engram, James Conner, Tre Tucker. Every
+  name in the new plan is a player ESPN projects; three of the four it replaced
+  were not.
+- The pool at pick 164 goes 550 -> 541, the only place the count falls. Those
+  nine are rows the model ranks highly and ESPN does not price at all, so the
+  synthetic curve gives them an early pseudo-ADP and the filter now reads them
+  as already gone. That is the synthetic fallback's existing behaviour, applied
+  to more rows; it is not new logic.
+- Known limitation, still true and stated rather than hidden: the plan ends with
+  no kicker and no defense although the league starts both. With no next pick,
+  `expected_best_at_next_pick` values waiting at the *worst* player left at that
+  position, so a position with a long bad tail (265 receivers down to a
+  draft_score of -145) shows a far larger marginal value than one with a short
+  tail (32 defenses down to -25). That is tail length, not opportunity cost, and
+  fixing it is a third change to the pick-value model that none of these entries
+  covers. Left undone deliberately.
+
 **The survival model's right tail**
 
 - `survival_probability` treated a player's realised draft slot as normal around

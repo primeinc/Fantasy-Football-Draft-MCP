@@ -63,6 +63,30 @@ player: `player.ownership.averageDraftPosition`, `percentOwned`, `percentStarted
 because it is the list ESPN opponents draft from; FantasyPros consensus is a different
 market and stays the fallback.
 
+`averageDraftPosition` is **not null for a player nobody drafts** — it is filled with a
+placeholder near ESPN's default draft length. On the 2026 list, 823 of 999 rows land in
+one 4-pick-wide bin: 260 share exactly 169.99 and 208 share exactly 170.00. A value 468
+players share cannot be a draft position (only one player is taken at each pick), and the
+rows carrying it have a median 0.03% roster rate against 86.7% for the rest. Read as a
+pick number it tells the survival model that most of the board is about to disappear:
+`plan_my_draft`'s availability filter treated all 448 such board rows as already gone once
+the pick number passed ~174, collapsing the pool from 501 candidates at pick 164 to nine
+at pick 189.
+
+`board.undrafted_adp_mask` finds the placeholder rather than hardcoding it, since its
+value follows ESPN's default draft length: the most-repeated ADP, accepted only when more
+than `UNDRAFTED_MIN_TIES` (20) players share it, plus a `UNDRAFTED_ADP_TOLERANCE` (1.0
+pick) run either side to catch the smear the averaging leaves across neighbouring
+hundredths. That width is policy, not fitted: it takes the spike (794 of 999 rows) and
+leaves the nearest genuinely-drafted players outside it — Dalton Schultz at 168.87 and
+18.4% owned, Calvin Ridley at 168.94 and 25.1%. A market frame with continuous ADPs (a
+pasted CSV, consensus ECR) trips neither condition and is never touched.
+
+Those rows keep their `espn_proj` and `espn_rank` and are priced by the same synthetic
+fallback that covers a row the market join missed, under `adp_source: undrafted` so the
+two causes stay apart in `draft_audit`'s `market_join` block (449 undrafted against 9
+genuinely unjoined on the live board).
+
 Fields used: `settings.scoringSettings.scoringItems[statId=53].points` (reception
 points), `settings.rosterSettings.lineupSlotCounts` (slot id -> count; 0 QB, 2 RB, 4 WR,
 6 TE, 16 DST, 17 K, 20 bench, 21 IR, 23 flex), `teams[].owners`, `draftDetail.picks[]`

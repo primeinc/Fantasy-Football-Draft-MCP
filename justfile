@@ -179,6 +179,7 @@ audit:
     for w in out["warnings"]:
         print("warn", w)
     mj = out["market_join"]
+    print(f"market says undrafted (ESPN's placeholder ADP, priced synthetically): {mj['undrafted_total']}")
     print(f"market join: {mj['unjoined_total']} rows priced synthetically; strongest projections:")
     for u in mj["unjoined"]:
         print(f"  {u['name']:<26} {u['position']:<3} {u.get('team', '')!s:<4} proj {u['proj_points']:>6} synthetic adp {u['synthetic_adp']:>6}")
