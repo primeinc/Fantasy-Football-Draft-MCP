@@ -438,8 +438,84 @@ section above for the six states and why `is True` fails on the ordinary frame
 rather than the odd one. Regression test:
 `test_a_bench_from_mixed_sources_does_not_invent_a_stand_in`.
 
+## PR 11 — Weekly lineup and live ESPN rosters
+
+Stack. New `lineup.py` and `rosters.py` with their tests.
+
+`lineup.starting_lineup` answers who starts from the league's own slots rather
+than from board rank, and `lineup.droppable` is its complement. That distinction
+is not cosmetic: the tool that reached for "everyone outside my top N by rank"
+offered the user's only defense as a drop while the same row reported it starting
+every week, because a receiver-heavy roster puts the kicker and defense in the
+tail of a rank ordering. `rosters.read_rosters` pulls a week's ESPN rosters into
+the board's row shape, through the same replacement-level stand-in the draft
+record uses, so a player the board cannot price holds his slot instead of
+vanishing.
+
+Tests: `tests/test_lineup.py`, `tests/test_rosters.py`.
+
+Two shared-surface additions belong with it. `board.is_position` asks whether a
+value *is* a position — a non-empty string — rather than whether it is present;
+`pd.notna` is the wrong test here because it passes `0.0` and `""`. And
+`board.espn_cookies` / `board.espn_league_url` are the cookie jar and league URL
+written once. They were forked six ways beforehand, five in `board.py` and one in
+`adp.py`, each independently remembering that ESPN rejects a bare SWID. The six
+existing copies were deliberately left alone rather than rewritten mid-integration;
+converging them is its own pass, recorded under Open.
+
+## PR 12 — Kicker and defense streaming
+
+Stack. New `stream.py` with its tests, and `stream_kdst`.
+
+Weekly K and D/ST ranked by matchup, with a look-ahead, and calibrated where the
+data supports it. Every margin carries the unit it is honestly in: `adp.margin_unit`
+decides whether a number may be called points or only an ordinal ranking, and
+this module asks rather than asserting.
+
+Tests: `tests/test_stream.py`.
+
+Known before it ships: the payload is 63 KB for one week, of which the two ranked
+lists are 16 KB per week over two weeks at roughly 266 bytes a row. Compact JSON
+is 39 KB, so indentation is a third of it. A client can refuse a response that
+size. The cap belongs on the ranked lists; the calibration blocks are not the
+problem.
+
+## PR 13 — Trade evaluator
+
+Stack. New `trade.py` with its tests, and `evaluate_trade`.
+
+Both rosters simulated week by week on their own starting lineups over the
+scored window, with byes and injury availability, reported as points before and
+after with the spread between disjoint seed blocks beside every estimate. A side
+whose blocks disagree in sign is reported as no call rather than as a win.
+
+Tests: `tests/test_trade.py`.
+
+The calibration rule it declares itself under is worth the description: a harness
+that fitted nothing may report points if it says so and declares the unit its
+inputs already carry, and `adp.HARNESS_FITTED` is the strict default. That is
+narrower than "the output is in points", because a replication's inputs may
+themselves come from something fitted.
+
+Open against it: `resolve` looks names up against the raw board, so a roster
+holding a player the board cannot price refuses the whole trade — including when
+that player is not in it. The stand-in that every other roster path gets does not
+reach here. Refusing on an unpriced `give` or `get` is right and the docstring
+gives the right reason; refusing on a bystander is not.
+
 ## Open
 
+- Shared surface, joining the section that owns the file rather than getting one:
+  `draft_retrospective` extends `replay.py`, so it belongs to PR 5; the pick
+  queue's merge semantics extend `watch.py` and `server.py`, so they belong to
+  PR 3. Both are named here so the file list is not the only record of the
+  decision.
+- The cookie jar and league URL are constructed six times outside
+  `board.espn_cookies` and `board.espn_league_url` — five in `board.py`, one in
+  `adp.py`. Each remembers independently that ESPN rejects a bare SWID, which is
+  the `_discount` fork in its early state: one rule written six times and then
+  corrected once. The new code routes through the shared pair; converging the
+  six is a quiet pass of its own, not something to fold into a feature merge.
 - `353be59` cleared every type-check finding across the package. Its hunks are
   distributed by file above. If upstream would rather take the sweep whole, it
   becomes a tenth PR that lands last, and it carries the `just check` ty line in
