@@ -153,6 +153,64 @@ def test_adp_shift_lowers_survival_odds():
     assert p8["TE One"] < p0["TE One"] and p8["QB One"] < p0["QB One"]
 
 
+def _twin_board() -> pd.DataFrame:
+    """Two real players under one normalised key at different positions, which a
+    position-aware market join lets onto the board."""
+    b = _board()
+    twin = pd.DataFrame({
+        "name": ["Alex Twin", "Alex Twin"], "position": ["RB", "TE"], "team": ["B", "B"],
+        "proj_points": [260.0, 90.0], "draft_score": [260.0, 90.0], "adp": [4.0, 40.0],
+        "pos_rank": [3, 2], "overall_rank": [4, 7], "consistency": [0.5, 0.5],
+        "adj_ppg": [15.0, 15.0],
+    })
+    twin["_key"] = twin["name"].map(board.norm_name)
+    return pd.concat([b, twin], ignore_index=True)
+
+
+def test_replay_holds_a_same_name_pair_as_two_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
+                            starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                      "K": 0, "DST": 0})
+    st = board.DraftState(league)
+    st.record("Alex Twin", 1, 1, position="RB")   # the RB row, 260 points
+    st.record("RB One", 2, 2)
+    st.record("Alex Twin", 3, 1, position="TE")   # the TE row, 90 points
+
+    out = replay.replay_draft(_twin_board(), st, league, candidates=3)
+    p = {r["pick"]: r for r in out["picks"]}
+    # Both picks score, and each against its own row. Keyed by name, pick 1 would
+    # have taken both rows out of the pool and pick 3 would have read off_board.
+    assert p[1]["off_board"] is False and p[1]["actual_proj"] == 260.0
+    assert p[3]["off_board"] is False and p[3]["actual_proj"] == 90.0
+    assert p[1]["position"] == "RB" and p[3]["position"] == "TE"
+    # Pick 1 took the RB row at ADP 4, pick 3 the TE row at ADP 40.
+    assert p[1]["reach"] == 3.0 and p[3]["reach"] == 37.0
+    assert out["overall"]["off_board_picks"] == 0
+
+    # And the pool really lost one row at a time: at pick 2 the TE twin is still
+    # a candidate the model can name.
+    everyone = replay.replay_draft(_twin_board(), st, league, candidates=100)
+    assert everyone["picks_scored"] == 3
+
+
+def test_lineup_value_treats_a_nan_projection_as_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
+                            starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                      "K": 0, "DST": 0})
+    b = _board()
+    b.loc[b["name"] == "WR One", "proj_points"] = float("nan")
+    picks = [{"name": "RB One", "position": "RB"}, {"name": "WR One", "position": "WR"}]
+    v = board.lineup_value(b, picks, league)
+    # NaN is truthy, so `proj.get(key) or 0.0` would have returned it and made
+    # the whole total NaN rather than counting the unprojected starter as 0.
+    assert v["starters_proj"] == 300
+    assert v["bench_proj"] == 0 and v["picks"] == 2
+    # The slot is still filled by him -- he is on the roster, he is just worth 0.
+    assert v["open_starter_slots"] == 1
+
+
 class TestAsOfReplay:
     """The snapshots the watch files, read back by a replay. Written here, not
     by a watch: opening the draft socket is not something a test may do."""
@@ -321,17 +379,7 @@ def test_counterfactual_lets_the_model_pick_where_the_real_team_went_off_board(
 
 def test_counterfactual_holds_players_by_board_row_not_by_name(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "STATE_DIR", tmp_path)
-    b = _board()
-    # Two real players under one normalised key at different positions, which is
-    # what a position-aware market join now lets onto the board.
-    twin = pd.DataFrame({
-        "name": ["Alex Twin", "Alex Twin"], "position": ["RB", "TE"], "team": ["B", "B"],
-        "proj_points": [260.0, 90.0], "draft_score": [260.0, 90.0], "adp": [4.0, 40.0],
-        "pos_rank": [3, 2], "overall_rank": [4, 7], "consistency": [0.5, 0.5],
-        "adj_ppg": [15.0, 15.0],
-    })
-    twin["_key"] = twin["name"].map(board.norm_name)
-    b = pd.concat([b, twin], ignore_index=True)
+    b = _twin_board()
     league = _counterfactual_league()
     st = board.DraftState(league)
     st.record("Alex Twin", 1, 1, position="RB")

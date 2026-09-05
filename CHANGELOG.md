@@ -81,6 +81,25 @@ All notable changes to this project. Format follows
   `role_mult` and `p_available_next`; overall adds log loss and survival
   calibration by round and by position.
 
+**Same-name pairs and NaN projections in the replay**
+- `replay_draft` indexed the board by normalised name and added the taken name
+  to a set, so two board rows sharing a key were both removed when one was
+  taken, and the second pick of that name read `off_board`. Harmless while the
+  only duplicate was one player listed twice; not harmless now that the
+  position-aware market join lets a genuine same-name pair coexist as two rows
+  at different positions. It is keyed by board row, the same way
+  `counterfactual_draft` is, and the row-resolution helpers (`_key_rows`,
+  `_row_for`, `_rows_for_picks`) are shared between the two. A recorded pick
+  carries a name, so a duplicate is settled by the pick's own position and by
+  what earlier picks already took.
+- Verified as a pure refactor on the live 632-row board: `just replay` returns
+  identical numbers before and after (122 picks scored, 117 on board, Brier
+  0.128, log loss 0.412, blend 3.107 / top1 0.188).
+- `board.lineup_value` counted a NaN projection as NaN, not 0: NaN is truthy, so
+  `proj.get(key) or 0.0` handed the NaN straight back and one unprojected
+  starter turned a whole team's `starters_proj` into NaN. It is 0 now, which
+  under-counts by that player rather than destroying the total.
+
 **As-of market snapshots**
 - The replay's oldest stated limit was that projections and ADP are today's, not
   as of the pick. ESPN keeps no history — no surface answers "what was his ADP

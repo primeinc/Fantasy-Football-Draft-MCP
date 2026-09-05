@@ -69,6 +69,46 @@ def room_drift(board: pd.DataFrame, state: DraftState, last: int = 0) -> dict:
             "n": len(reaches), "by_position": by_position, "shift": shift}
 
 
+def _key_rows(b: pd.DataFrame) -> dict[str, list[int]]:
+    """Normalised name -> the board rows carrying it, in board order. Usually one
+    row per name; the point of the list is the times it is not."""
+    out: dict[str, list[int]] = {}
+    for row, key in zip(b["_row"], b["_key"]):
+        out.setdefault(str(key), []).append(int(row))
+    return out
+
+
+def _row_for(rows_of_key: dict[str, list[int]], pos_of: dict[int, object], key: str,
+             taken: set[int], position: str | None) -> int | None:
+    """The board row a recorded pick refers to. A pick carries a name, not an id,
+    so a name on two rows is settled by the pick's own position where it has one,
+    and otherwise by the first row nobody has taken."""
+    free = [r for r in rows_of_key.get(key, ()) if r not in taken]
+    if not free:
+        return None
+    if position:
+        for r in free:
+            if str(pos_of.get(r)) == str(position):
+                return r
+    return free[0]
+
+
+def _rows_for_picks(b: pd.DataFrame, picks: list[dict]) -> dict[int, int | None]:
+    """Resolve every recorded pick to a board row, once, in draft order. Doing it
+    up front means a pick can be looked up before the walk reaches it, which the
+    survival forecasts need."""
+    rows_of_key = _key_rows(b)
+    pos_of = dict(zip(b["_row"], b["position"]))
+    seen: set[int] = set()
+    out: dict[int, int | None] = {}
+    for p in picks:
+        row = _row_for(rows_of_key, pos_of, norm_name(p["name"]), seen, p.get("position"))
+        out[p["overall"]] = row
+        if row is not None:
+            seen.add(row)
+    return out
+
+
 def _as_of_coverage(rows: list[dict], snapshots: str | Path | None) -> dict:
     """What an as-of replay actually managed to price from snapshots. Reported
     because the honest answer is usually "some of it": the watch only snapshots
@@ -129,18 +169,30 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
     b = board.copy()
     if "_key" not in b.columns:
         b["_key"] = b["name"].map(norm_name)
-    b = b.set_index("_key", drop=False)
+    # Keyed by board row, not by normalised name. Two rows can share a key -- the
+    # same player listed twice, or two real players with one name at different
+    # positions, which the position-aware market join now lets onto the board --
+    # and a name-keyed pool removes both when one is taken.
+    b = b.reset_index(drop=True)
+    b["_row"] = np.arange(len(b), dtype=int)
+    b = b.set_index("_row", drop=False)
     as_of_from: str | Path | None = None
     if as_of:
         if snapshots is None:
             raise ValueError("as_of needs `snapshots`: the league id or the snapshot directory")
         as_of_from = snapshots
     picks = sorted(state.picks, key=lambda p: p["overall"])
-    taken_at: dict[str, int] = {norm_name(p["name"]): p["overall"] for p in picks}
+    # Which board row each recorded pick refers to, resolved once in draft order:
+    # a pick carries a name, so a duplicate key is settled by position and by
+    # what the picks before it already took. None for a pick the board cannot
+    # model at all.
+    row_at = _rows_for_picks(b, picks)
+    taken_at: dict[int, int] = {r: p["overall"] for p in picks
+                                if (r := row_at[p["overall"]]) is not None}
     rosters: dict[int, dict[str, int]] = {}
     rows: list[dict] = []
     forecasts: list[tuple[float, bool, int, str]] = []
-    taken: set[str] = set()
+    taken: set[int] = set()
     wf = choice.WalkForward(team_effects=team_effects) if walk_forward else None
     recent_positions: list[str] = []
 
@@ -156,7 +208,8 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
     for p in picks:
         overall, slot = p["overall"], p["slot"]
         key = norm_name(p["name"])
-        pool = b[~b["_key"].isin(taken)]
+        taken_row = row_at[overall]
+        pool = b[~b["_row"].isin(taken)]
         if as_of_from is not None:
             from .watch import read_snapshot
 
@@ -169,8 +222,10 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
                                "actual_covered": key in covered})
         recs, next_pick = recommend_for(slot, overall, pool)
         if wf is not None and len(recs):
-            wf.observe(recs, key if key in recs.index else None, recent_positions, overall, slot)
-        where = np.flatnonzero(recs.index.to_numpy() == key)
+            wf.observe(recs, taken_row if taken_row in recs.index else None,
+                       recent_positions, overall, slot)
+        where = (np.flatnonzero(recs.index.to_numpy() == taken_row)
+                 if taken_row is not None else np.array([], dtype=int))
         rnd = (overall - 1) // league.teams + 1
         row = {
             "pick": overall, "round": rnd, "slot": slot,
@@ -217,13 +272,14 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
             for k, r in recs.head(candidates).iterrows():
                 p_avail = float(r["p_available_next"])
                 if np.isfinite(p_avail):
-                    gone_before = taken_at.get(str(k), 10**9) < next_pick
+                    gone_before = taken_at.get(int(k), 10**9) < next_pick
                     forecasts.append((p_avail, not gone_before, rnd, str(r["position"])))
         pos = row["position"]
         if pos:
             rosters.setdefault(slot, {})[pos] = rosters.get(slot, {}).get(pos, 0) + 1
             recent_positions.append(str(pos))
-        taken.add(key)
+        if taken_row is not None:
+            taken.add(taken_row)
 
     per_pick = pd.DataFrame(rows)
     teams = _team_totals(per_pick, league, state.my_slot)
@@ -243,7 +299,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         on_clock = state.on_the_clock
         if on_clock <= league.teams * league.rounds:
             slot = state.slot_for_pick(on_clock)
-            pool = b[~b["_key"].isin(taken)]
+            pool = b[~b["_row"].isin(taken)]
             recs, next_pick = recommend_for(slot, on_clock, pool)
             out["forecast"] = {"pick": on_clock, "slot": slot, "next_pick": next_pick,
                                **wf.forecast(recs, recent_positions, slot=slot)}
@@ -332,9 +388,7 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
         adp_shift = room_drift(board, state)["shift"]
     proj_of = dict(zip(b["_row"], b["proj_points"]))
     pos_of = dict(zip(b["_row"], b["position"]))
-    rows_of_key: dict[str, list[int]] = {}
-    for r, k in zip(b["_row"], b["_key"]):
-        rows_of_key.setdefault(str(k), []).append(int(r))
+    rows_of_key = _key_rows(b)
     rng = np.random.default_rng(seed)
     wf = choice.WalkForward()
     picks = sorted(state.picks, key=lambda p: p["overall"])
@@ -342,17 +396,9 @@ def counterfactual_draft(board: pd.DataFrame, state: DraftState, league: LeagueS
     subs: list[dict] = []
 
     def row_for(key: str, taken: set[int], position: str | None) -> int | None:
-        """The board row a recorded pick refers to, given what this timeline has
-        already taken. A recorded pick carries a name, not an id, so a duplicate
-        key is resolved by position where the pick has one."""
-        free = [r for r in rows_of_key.get(key, ()) if r not in taken]
-        if not free:
-            return None
-        if position:
-            for r in free:
-                if str(pos_of.get(r)) == str(position):
-                    return r
-        return free[0]
+        # Per timeline: each arm has taken different players, so the same
+        # recorded pick can resolve to a different row in each of them.
+        return _row_for(rows_of_key, pos_of, key, taken, position)
 
     def recs_for(arm: _Arm, team_slot: int, overall: int) -> pd.DataFrame:
         pool = b[~b["_row"].isin(arm.taken)]
