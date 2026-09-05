@@ -44,7 +44,7 @@ def test_stop_watch_cancels_the_registered_task():
 def test_watch_draft_stops_the_previous_watch_before_registering_the_new_one():
     src = inspect.getsource(server.watch_draft)
     tree = ast.parse(src.lstrip().replace("\n    ", "\n") if src.startswith(" ") else src)
-    order: list[str] = []
+    order: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
             fn = node.value.func

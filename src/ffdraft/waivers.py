@@ -29,7 +29,6 @@ tool in `server.py` fetches them.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,7 +41,6 @@ from .config import CURRENT_SEASON
 from .config import OUT_STATUSES as _OUT_STATUSES
 from .names import normalize as norm_name
 
-READS_HOST = "https://lm-api-reads.fantasy.espn.com"
 # The same filter `espn_dump` uses, so the pool here is the pool that dump
 # captured and the field shapes in docs/data-sources.md describe both.
 POOL_FILTER = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS", "ONTEAM"]},
@@ -61,11 +59,10 @@ def fetch_pool_and_settings(league_id: str, season: int = CURRENT_SEASON,
     out from the tool so the tool is composition and the network is one function
     a test can replace.
     """
-    swid = swid or os.environ.get("ESPN_SWID") or ""
-    espn_s2 = espn_s2 or os.environ.get("ESPN_S2") or ""
-    cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
-               "espn_s2": espn_s2} if swid and espn_s2 else {}
-    url = f"{READS_HOST}/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league_id}"
+    from .board import espn_cookies, espn_league_url
+
+    cookies = espn_cookies(swid, espn_s2)
+    url = espn_league_url(league_id, season)
     headers = {"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona"}
     pool = requests.get(url, params={"view": "kona_player_info"}, cookies=cookies,
                         timeout=30,

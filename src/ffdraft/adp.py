@@ -1501,7 +1501,6 @@ def champion_strategies(league_id: str, seasons: list[int]) -> dict:
     ECR history only goes back to 2020 -- earlier seasons get position/timing
     data but no value verdicts or steal context. ESPN only.
     """
-    import os
 
     import requests
 
@@ -1519,16 +1518,13 @@ def champion_strategies(league_id: str, seasons: list[int]) -> dict:
             return "DST"
         return pos_map.get(norm_name(name), "UNK")
 
-    swid = os.environ.get("ESPN_SWID")
-    espn_s2 = os.environ.get("ESPN_S2")
-    cookies = {}
-    if swid and espn_s2:
-        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}", "espn_s2": espn_s2}
+    from .board import espn_cookies, espn_league_url
+
+    cookies = espn_cookies()
 
     out_seasons = []
     for season in seasons:
-        url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
-              f"/segments/0/leagues/{league_id}")
+        url = espn_league_url(league_id, season)
         resp = requests.get(url, params={"view": ["mTeam", "mDraftDetail"]},
                            cookies=cookies, timeout=20,
                            headers={"User-Agent": "ffdraft-mcp/1.0"})

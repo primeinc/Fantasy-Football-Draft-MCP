@@ -41,7 +41,9 @@ PLAYER_FILTER = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS", 
 
 
 def _cookies(swid: str, espn_s2: str) -> dict[str, str]:
-    return {"SWID": swid if swid.startswith("{") else f"{{{swid}}}", "espn_s2": espn_s2}
+    from .board import espn_cookies
+
+    return espn_cookies(swid, espn_s2)
 
 
 def _get(url: str, params: dict, cookies: dict[str, str],
@@ -89,7 +91,9 @@ def dump_draft(league_id: str, out_dir: str | os.PathLike, season: int = CURRENT
     manifest: dict = {"league_id": league_id, "season": season, "taken_at_ms": int(time.time() * 1000),
                       "root": str(root), "read_api": [], "live": [], "errors": []}
 
-    base = f"{READS_HOST}/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league_id}"
+    from .board import espn_league_url
+
+    base = espn_league_url(league_id, season)
     for view in READ_VIEWS:
         entry = _write(read_dir / f"{view}.json", _get(base, {"view": view}, cookies))
         entry["view"] = view

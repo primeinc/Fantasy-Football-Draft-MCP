@@ -88,14 +88,8 @@ def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
     This is the list your ESPN opponents draft from, so it is the right input to
     survival odds in an ESPN league; consensus rank is a different market.
     """
-    swid = swid or os.environ.get("ESPN_SWID")
-    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
-    cookies = {}
-    if swid and espn_s2:
-        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
-                   "espn_s2": espn_s2}
-    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
-           f"/segments/0/leagues/{league_id}")
+    cookies = espn_cookies(swid, espn_s2)
+    url = espn_league_url(league_id, season)
     flt = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS", "ONTEAM"]},
                        "limit": 1000,
                        "sortDraftRanks": {"sortPriority": 100, "sortAsc": True, "value": "PPR"}}}
@@ -1031,12 +1025,8 @@ def sync_espn(league_id: str, season: int = CURRENT_SEASON,
     """
     swid = swid or os.environ.get("ESPN_SWID")
     espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
-    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
-           f"/segments/0/leagues/{league_id}")
-    cookies = {}
-    if swid and espn_s2:
-        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
-                   "espn_s2": espn_s2}
+    url = espn_league_url(league_id, season)
+    cookies = espn_cookies(swid, espn_s2)
     resp = requests.get(url, params={"view": ["mDraftDetail", "mTeam", "kona_player_info"]},
                         cookies=cookies, timeout=20,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
@@ -1175,14 +1165,8 @@ def espn_league_context(league_id: str, season: int = CURRENT_SEASON,
     Used by draft_backtest so a season/league_id is enough to run -- no manual
     configure_league bookkeeping for a season you're not actively drafting.
     """
-    swid = swid or os.environ.get("ESPN_SWID")
-    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
-    cookies = {}
-    if swid and espn_s2:
-        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
-                   "espn_s2": espn_s2}
-    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
-           f"/segments/0/leagues/{league_id}")
+    cookies = espn_cookies(swid, espn_s2)
+    url = espn_league_url(league_id, season)
     resp = requests.get(url, params={"view": ["mTeam", "mSettings", "mDraftDetail"]},
                         cookies=cookies, timeout=20,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
@@ -1349,14 +1333,8 @@ def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
     the season. First-party, so nothing here is assumed from a default template."""
     from . import features
 
-    swid = swid or os.environ.get("ESPN_SWID")
-    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
-    cookies = {}
-    if swid and espn_s2:
-        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
-                   "espn_s2": espn_s2}
-    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
-           f"/segments/0/leagues/{league_id}")
+    cookies = espn_cookies(swid, espn_s2)
+    url = espn_league_url(league_id, season)
     resp = requests.get(url, params={"view": ["mSettings", "mTeam"]}, cookies=cookies,
                         timeout=20, headers={"User-Agent": "ffdraft-mcp/1.0"})
     resp.raise_for_status()
@@ -1518,14 +1496,8 @@ def team_strength(board: pd.DataFrame, state: DraftState,
 def espn_league_directory(league_id: str, season: int = CURRENT_SEASON,
                           swid: str | None = None, espn_s2: str | None = None) -> dict[int, dict]:
     """ESPN team id -> team name and owner display names, for labelling room events."""
-    swid = swid or os.environ.get("ESPN_SWID")
-    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
-    cookies = {}
-    if swid and espn_s2:
-        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
-                   "espn_s2": espn_s2}
-    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
-           f"/segments/0/leagues/{league_id}")
+    cookies = espn_cookies(swid, espn_s2)
+    url = espn_league_url(league_id, season)
     resp = requests.get(url, params={"view": ["mTeam"]}, cookies=cookies, timeout=20,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
     resp.raise_for_status()
