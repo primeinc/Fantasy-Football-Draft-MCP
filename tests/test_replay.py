@@ -36,7 +36,12 @@ def test_replay_scores_each_pick_and_calibrates(tmp_path, monkeypatch):
     assert p[1]["actual"] == "WR Two" and p[1]["actual_rank"] > 1
     assert p[1]["model_pick"] == "RB One"
     assert p[1]["proj_gap"] == 100.0 and p[1]["reach"] == 5.0
+    assert p[1]["market_z"] == 1.0                      # 5 picks early / sd floor 5
+    assert p[1]["pick_regret"] > 0 and 0.0 <= p[1]["choice_percentile"] < 1.0
+    assert p[1]["need_mult"] > 0 and p[1]["role_mult"] == 1.0
+    assert 0.0 <= p[1]["p_available_next"] <= 1.0
     assert p[2]["actual_rank"] == 1 and p[2]["proj_gap"] == 0.0
+    assert p[2]["pick_regret"] == 0.0 and p[2]["choice_percentile"] == 1.0
     assert p[3]["off_board"] and p[3]["actual_rank"] is None and p[3]["position"] == "K"
     assert p[4]["slot"] == 1
 
@@ -50,23 +55,61 @@ def test_replay_scores_each_pick_and_calibrates(tmp_path, monkeypatch):
     # Forecasts exist for picks whose team picked again inside the record:
     # pick 1 (slot 1 next at 4) and pick 2 (slot 2 next at 3), 3 candidates each.
     assert o["survival_forecasts"] == 6
-    assert 0.0 <= o["survival_brier"] <= 1.0
+    assert 0.0 <= o["survival_brier"] <= 1.0 and o["survival_log_loss"] > 0
     assert sum(c["n"] for c in o["survival_calibration"]) == 6
+    assert sum(r["n"] for r in o["survival_by_round"]) == 6
+    assert sum(r["n"] for r in o["survival_by_position"]) == 6
     assert o["biggest_reaches"][0]["actual"] == "WR Two"
-    # Reaches: WR Two 6-1=5, RB One 1-2=-1, RB Two 3-4=-1 -> median -1.
-    assert out["room_drift"] == {"median_reach": -1.0, "mean_reach": 1.0, "n": 3}
+    assert o["biggest_regrets"][0]["actual"] == "WR Two"
+    assert o["biggest_regrets"][0]["model_pick"] == "RB One"
+    # Reaches: WR Two 6-1=5, RB One 1-2=-1, RB Two 3-4=-1 -> median -1. Under
+    # DRIFT_MIN_PICKS at every position, so each position's shift is the room's.
+    d = out["room_drift"]
+    assert (d["median_reach"], d["mean_reach"], d["n"]) == (-1.0, 1.0, 3)
+    assert d["by_position"] == {"RB": {"median": -1.0, "n": 2}, "WR": {"median": 5.0, "n": 1}}
+    assert d["shift"] == {"RB": -1.0, "WR": -1.0}
+
+
+def test_room_drift_uses_a_positions_own_median_once_it_has_enough_picks(tmp_path, monkeypatch):
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(replay, "DRIFT_MIN_PICKS", 2)
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1)
+    st = board.DraftState(league)
+    st.record("WR Two", 1, 1)
+    st.record("RB One", 2, 2)
+    st.record("RB Two", 3, 2)
+    d = replay.room_drift(_board(), st)
+    # Reaches 5, -1, 0: room median 0. RB has two picks (median -0.5); WR one
+    # pick, so it takes the room's.
+    assert d["shift"] == {"RB": -0.5, "WR": 0.0}
+    b = _board()
+    plain = model_recs(b, league, 0.0)
+    per_pos = model_recs(b, league, d["shift"])
+    # RB shift is negative (they go after ADP here), so RB survival rises; a
+    # position with no shift entry is untouched.
+    assert per_pos["RB Two"] > plain["RB Two"]
+    assert per_pos["QB One"] == plain["QB One"]
+
+
+def model_recs(b, league, shift):
+    from ffdraft import model
+
+    out = model.recommend(b, league, current_pick=10, next_pick=20, top_n=6, adp_shift=shift)
+    return out.set_index("name")["p_available_next"]
 
 
 def test_room_drift_last_n_and_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "STATE_DIR", tmp_path)
     league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1)
     st = board.DraftState(league)
-    assert replay.room_drift(_board(), st) == {"median_reach": 0.0, "mean_reach": 0.0, "n": 0}
+    assert replay.room_drift(_board(), st) == {"median_reach": 0.0, "mean_reach": 0.0, "n": 0,
+                                               "by_position": {}, "shift": {}}
     st.record("WR Two", 1, 1)
     st.record("RB One", 2, 2)
     st.record("RB Two", 3, 2)
     # RB One 1-2 = -1, RB Two 3-3 = 0.
-    assert replay.room_drift(_board(), st, last=2) == {"median_reach": -0.5, "mean_reach": -0.5, "n": 2}
+    d = replay.room_drift(_board(), st, last=2)
+    assert (d["median_reach"], d["mean_reach"], d["n"]) == (-0.5, -0.5, 2)
 
 
 def test_adp_shift_lowers_survival_odds():

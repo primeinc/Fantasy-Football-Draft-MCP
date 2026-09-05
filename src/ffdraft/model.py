@@ -9,6 +9,7 @@ knowing whether he'll still be there when you pick again is what decides who to 
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -481,8 +482,15 @@ def project(tbl: pd.DataFrame, league: LeagueSettings, weights: ModelWeights) ->
 
 # ---------------------------------------------------------------- pick-aware layer
 
+# The spread of a player's realised draft slot around his ADP: at least
+# ADP_SD_FLOOR picks, growing with ADP_SD_RATE of the ADP. replay.market_z reads
+# the same spread so a reach is measured in these units.
+ADP_SD_FLOOR = 5.0
+ADP_SD_RATE = 0.22
+
+
 def survival_probability(adp: float, current_pick: int, next_pick: int,
-                         sd_floor: float = 5.0) -> float:
+                         sd_floor: float = ADP_SD_FLOOR) -> float:
     """Chance a player is still on the board at your next pick.
 
     ADP is treated as the centre of a normal distribution whose spread widens later
@@ -491,7 +499,7 @@ def survival_probability(adp: float, current_pick: int, next_pick: int,
     """
     if not np.isfinite(adp):
         return 0.5
-    sd = max(sd_floor, 0.22 * adp)
+    sd = max(sd_floor, ADP_SD_RATE * adp)
     # P(this player's realised draft slot lands after our next pick)
     p_survive = 1 - _norm_cdf((next_pick - adp) / sd)
     p_gone_now = _norm_cdf((current_pick - adp) / sd)
@@ -500,17 +508,21 @@ def survival_probability(adp: float, current_pick: int, next_pick: int,
     return float(np.clip(p_survive / max(1e-6, 1 - p_gone_now), 0.0, 1.0))
 
 
+_erf_vec = np.vectorize(math.erf, otypes=[float])
+
+
+def _norm_cdf_vec(z: np.ndarray) -> np.ndarray:
+    return 0.5 * (1 + _erf_vec(z / math.sqrt(2)))
+
+
 def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
-                             sd_floor: float = 5.0) -> np.ndarray:
+                             sd_floor: float = ADP_SD_FLOOR) -> np.ndarray:
     """Vectorised form of survival_probability. plan_my_draft evaluates the whole
     board once per round, so the scalar version ran thousands of times per call."""
     adp = np.asarray(adp, dtype=float)
-    sd = np.maximum(sd_floor, 0.22 * adp)
-    # erf is available elementwise via numpy's own implementation path.
-    _erf = np.vectorize(math.erf, otypes=[float])
-    ncdf = lambda z: 0.5 * (1 + _erf(z / math.sqrt(2)))  # noqa: E731
-    p_survive = 1 - ncdf((next_pick - adp) / sd)
-    p_gone_now = ncdf((current_pick - adp) / sd)
+    sd = np.maximum(sd_floor, ADP_SD_RATE * adp)
+    p_survive = 1 - _norm_cdf_vec((next_pick - adp) / sd)
+    p_gone_now = _norm_cdf_vec((current_pick - adp) / sd)
     out = np.where(p_gone_now >= 0.999, 0.0,
                    p_survive / np.maximum(1e-6, 1 - p_gone_now))
     return np.clip(np.nan_to_num(out, nan=0.5), 0.0, 1.0)
@@ -529,9 +541,12 @@ ROLE_CEILING = 1.30
 
 
 def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
-    """Scale for pick_value from the ESPN/model projection ratio: the ratio
-    itself below ROLE_DISAGREEMENT (floored at ROLE_FLOOR), ROLE_CEILING above
-    ROLE_GROWTH, 1 between. Players ESPN does not project keep 1."""
+    """Scale for pick_value from the ESPN/model projection ratio, continuous
+    in the ratio: 1 inside [ROLE_DISAGREEMENT, ROLE_GROWTH]; below it
+    ratio / ROLE_DISAGREEMENT (so 1 at the edge, ROLE_FLOOR at worst); above
+    it ratio / ROLE_GROWTH capped at ROLE_CEILING. No step at either edge: a
+    ratio of 0.699 and 0.701 land within a hair of each other. Players ESPN
+    does not project keep 1."""
     ones = pd.Series(1.0, index=tbl.index)
     if "espn_proj" not in tbl.columns or "proj_points" not in tbl.columns:
         return ones
@@ -541,14 +556,15 @@ def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
     known = espn.notna() & ours.notna() & (ours > 0)
     low = known & (ratio < ROLE_DISAGREEMENT)
     high = known & (ratio > ROLE_GROWTH)
-    out = ones.where(~low, ratio.clip(lower=ROLE_FLOOR, upper=1.0))
-    return out.where(~high, ROLE_CEILING)
+    out = ones.where(~low, (ratio / ROLE_DISAGREEMENT).clip(lower=ROLE_FLOOR, upper=1.0))
+    return out.where(~high, (ratio / ROLE_GROWTH).clip(lower=1.0, upper=ROLE_CEILING))
 
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
-              bye_weight: float = 0.0, adp_shift: float = 0.0) -> pd.DataFrame:
+              bye_weight: float = 0.0,
+              adp_shift: float | Mapping[str, float] = 0.0) -> pd.DataFrame:
     """Rank available players for the pick that's on the clock.
 
     Two ideas drive the ordering beyond raw value:
@@ -562,16 +578,21 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     and half that per other player; `bye_conflicts` names them either way.
 
     `adp_shift` is how many picks earlier than ADP this room has been taking
-    players (replay.room_drift); survival odds are computed against ADP minus it.
+    players (replay.room_drift), one number or one per position; survival odds
+    are computed against ADP minus it.
     """
     avail = board[~board["drafted"]].copy() if "drafted" in board.columns else board.copy()
     if avail.empty:
         return avail
 
     roster = roster or {}
+    if isinstance(adp_shift, Mapping):
+        shift = avail["position"].map(adp_shift).fillna(0.0).to_numpy(dtype=float)
+    else:
+        shift = float(adp_shift)
     if next_pick:
         avail["p_available_next"] = survival_probability_vec(
-            avail["adp"].to_numpy() - adp_shift, current_pick, next_pick)
+            avail["adp"].to_numpy() - shift, current_pick, next_pick)
     else:
         avail["p_available_next"] = 0.0
 

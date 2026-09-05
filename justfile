@@ -86,11 +86,11 @@ replay $picks='0':
     b, st = server._build_board(), server._state()
     drift = replay.room_drift(b, st)
     print(f"room drift: median {drift['median_reach']} picks before ADP (mean {drift['mean_reach']}, n {drift['n']})")
-    for shift in (0.0, drift["median_reach"]):
+    print("  by position: " + ", ".join(f"{p} {d['median']} (n {d['n']})" for p, d in drift["by_position"].items()))
+    for label, shift in (("none", 0.0), ("room median", drift["median_reach"]), ("per position", drift["shift"])):
         out = replay.replay_draft(b, st, league, adp_shift=shift)
         o = out["overall"]
-        print(f"== adp_shift {shift}")
-        print(f"survival forecasts {o['survival_forecasts']}  brier {o['survival_brier']}  baseline {o['survival_brier_baseline']}")
+        print(f"== adp_shift {label}: brier {o['survival_brier']}  baseline {o['survival_brier_baseline']}  log loss {o['survival_log_loss']}")
         for c in o["survival_calibration"]:
             print(f"  p {c['p_range']}  n {c['n']:>4}  predicted {c['predicted']:.2f}  observed {c['observed']:.2f}")
     print(f"picks scored {out['picks_scored']}  on board {o['on_board_picks']}  off board {o['off_board_picks']}")
@@ -98,20 +98,32 @@ replay $picks='0':
     print("teams (least projected points left on the table first)")
     for t in out["teams"]:
         me = " <- you" if t["mine"] else ""
-        print(f"  slot {t['slot']:>2}  picks {t['picks']}  matches {t['model_matches']}  top3 {t['top3']}  "
-              f"mean rank {t['mean_rank']}  off board {t['off_board']}  left on table {t['proj_left_on_table']:>7}  "
-              f"mean reach {t['mean_reach']}{me}")
-    print("biggest reaches (ADP - pick)")
+        print(f"  slot {t['slot']:>2}  picks {t['picks']}  top3 {t['top3']}  pct {t['mean_choice_percentile']!s:>5}  "
+              f"regret {t['pick_regret']:>7}  pts left {t['proj_left_on_table']:>7}  z {t['mean_market_z']!s:>5}  "
+              f"need {t['mean_need_mult']!s:>4}  p_next {t['mean_urgency_waste']!s:>4}  off {t['off_board']}{me}")
+    print("survival by round (brier / baseline / log loss)")
+    for r in o["survival_by_round"]:
+        print(f"  round {r['round']:>2}  n {r['n']:>4}  {r['brier']:.3f} / {r['brier_baseline']:.3f} / {r['log_loss']:.3f}  "
+              f"predicted {r['predicted']:.2f} observed {r['observed']:.2f}")
+    print("survival by position")
+    for r in o["survival_by_position"]:
+        print(f"  {r['position']:<4} n {r['n']:>4}  {r['brier']:.3f} / {r['brier_baseline']:.3f} / {r['log_loss']:.3f}  "
+              f"predicted {r['predicted']:.2f} observed {r['observed']:.2f}")
+    print("biggest reaches (market z = (ADP - pick) / ADP spread)")
     for r in o["biggest_reaches"]:
-        print(f"  pick {r['pick']:>3} slot {r['slot']:>2} {r['actual']:<28} {r['reach']:>7}")
+        print(f"  pick {r['pick']:>3} slot {r['slot']:>2} {r['actual']:<28} z {r['market_z']:>6}  reach {r['reach']:>6}")
     print("biggest values")
     for r in o["biggest_values"]:
-        print(f"  pick {r['pick']:>3} slot {r['slot']:>2} {r['actual']:<28} {r['reach']:>7}")
+        print(f"  pick {r['pick']:>3} slot {r['slot']:>2} {r['actual']:<28} z {r['market_z']:>6}  reach {r['reach']:>6}")
+    print("biggest regrets (model pick_value left on the table)")
+    for r in o["biggest_regrets"]:
+        print(f"  pick {r['pick']:>3} slot {r['slot']:>2} {r['actual']:<26} over {r['model_pick']:<24} {r['pick_regret']:>7}")
     n = int(os.environ["picks"])
     for r in out["picks"][-n:] if n else []:
         print(f"  {r['pick']:>3} r{r['round']:<2} slot {r['slot']:>2} {r['actual']:<26} rank {r['actual_rank']!s:>4} "
-              f"proj {r['actual_proj']!s:>6} espn {r['actual_espn_proj']!s:>6} "
-              f"model {r['model_pick']!s:<22} gap {r['proj_gap']!s:>6} reach {r['reach']!s:>6}")
+              f"pct {r['choice_percentile']!s:>5} proj {r['actual_proj']!s:>6} espn {r['actual_espn_proj']!s:>6} "
+              f"role {r['role_mult']!s:>4} model {r['model_pick']!s:<22} regret {r['pick_regret']!s:>6} "
+              f"z {r['market_z']!s:>5}")
 
 # Dump everything ESPN reports about a league's draft into $out_dir (default: cwd).
 # Cookies come from .mcp.json. Opens the draft room once for the snapshot, which

@@ -56,14 +56,30 @@ All notable changes to this project. Format follows
   model for the team on the clock; model rank of the real pick, points left
   on the table, reach against ADP, per-team totals, and the survival model's
   calibration and Brier score from the forecasts it made during the draft.
-- `replay.room_drift`: median picks before ADP the room drafts. `recommend`
-  takes `adp_shift` and `who_should_i_pick` and the watch pass the drift, after
-  the replay showed the unshifted odds overconfident (predicted 0.71, observed
-  0.53 in that bin; shifted by the room's 4 picks: 0.71 vs 0.63, Brier 0.140
-  to 0.136).
-- `role_multiplier` also scales up, by 1.3, when ESPN projects over 130% of
-  the model: the replay showed the room taking players the model ranked past
-  300 whose 2026 role is new (KC Concepcion 156 vs 102, Aaron Jones 178 vs 103).
+- `replay.room_drift`: median picks before ADP the room drafts, room-wide and
+  per position (a position's own median once it has 8 picks). `recommend`
+  takes `adp_shift` (one number or one per position); `who_should_i_pick`
+  and the watch pass the per-position shift. Evidence from the live replay at
+  122 picks, 1060 survival forecasts, Brier / log loss: no shift 0.140 /
+  0.444; room median (4 picks) 0.136 / 0.433; per position 0.128 / 0.412;
+  base rate 0.250. The room takes QBs a median 16 picks before ADP (Mahomes
+  at 47, Goff at 65); QB survival Brier went from 0.272 (worse than the base
+  rate) to 0.221.
+- `role_multiplier` is continuous: ratio / 0.70 below 0.70 (floor 0.2),
+  ratio / 1.30 above 1.30 (cap 1.3), 1 between, so a ratio of 0.699 and
+  0.701 price within a hair of each other. Before/after on the live board at
+  pick 125 (model proj, ESPN proj, multiplier): Tyrone Tracy 185 / 41 ->
+  0.32; Oronde Gadsden 164 / 77 -> 0.67; KC Concepcion 102 / 156 -> 1.17;
+  Aaron Jones 103 / 178 -> 1.30; Jakobi Meyers 205 / 182, Woody Marks
+  177 / 132, Deebo Samuel 203 / 150 and Chuba Hubbard 160 / 180 -> 1.00.
+  The 0.70 and 1.30 edges are policy, chosen so that ordinary
+  model-vs-ESPN disagreement (most of the board sits between 0.75 and 1.25)
+  is left alone; they are not fitted.
+- Per-pick replay rows carry `pick_regret` (model pick_value left on the
+  table), `choice_percentile`, `market_z` (reach in units of the survival
+  model's ADP spread, `model.ADP_SD_FLOOR` / `ADP_SD_RATE`), `need_mult`,
+  `role_mult` and `p_available_next`; overall adds log loss and survival
+  calibration by round and by position.
 
 **Room order and team strength**
 - `draft_room.upcoming`: the next five picks with team and owner names, room
@@ -118,6 +134,10 @@ All notable changes to this project. Format follows
   2026-09-04. `just surfaces` re-probes them.
 
 ### Fixed
+
+- `pyproject.toml` license is an SPDX string (setuptools 77+), not the
+  deprecated table plus classifier that `python -m build` warned about.
+- `survival_probability_vec` no longer carries a lint suppression.
 
 - ESPN picks of current-year rookies resolved as `ESPN#<id>`: the id crosswalk only
   read weekly rosters for the lookback seasons. It now adds players from the

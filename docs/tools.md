@@ -77,10 +77,12 @@ projects under 70% of the model's number the player's role has changed (a
 backup now, a new team, an injury the model cannot see) and `pick_value` is
 scaled by the ratio (`model.role_multiplier`, floor 0.2); above 130% the role
 has grown (a rookie or new starter the box scores lag) and it is scaled by
-1.3; `why` says which. `room_drift` is the median number of picks before ADP
-this room has been taking players (`replay.room_drift`); survival odds are
-computed against ADP minus it, which the replay's calibration showed brings
-predicted and observed survival into line.
+1.3; `why` says which. Both scalings are continuous in the ratio. `room_drift`
+is the median number of picks before ADP this room has been taking players
+(`replay.room_drift`), room-wide and per position once a position has 8
+picks; survival odds are computed against ADP minus the per-position `shift`.
+The replay's calibration is the evidence: Brier 0.140 unshifted, 0.128 with
+the per-position shift, base rate 0.250, on 1060 forecasts at 122 picks.
 `draft_audit` warns on every recommended player in that state and on players
 ESPN does not project at all.
 

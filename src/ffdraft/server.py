@@ -365,7 +365,7 @@ def who_should_i_pick(limit: int = 6) -> str:
     drift = room_drift(b, state)
     recs = model.recommend(b, league, current_pick=current, next_pick=after,
                            roster=roster, top_n=limit, mine=state.my_rows(b),
-                           bye_weight=weights.bye, adp_shift=drift["median_reach"])
+                           bye_weight=weights.bye, adp_shift=drift["shift"])
 
     picks = []
     for _, r in recs.iterrows():
@@ -389,8 +389,9 @@ def who_should_i_pick(limit: int = 6) -> str:
         "your_next_pick_after_this": after,
         "picks_you_wait": (after - current) if after else None,
         "your_roster": roster,
-        "room_drift": {**drift, "note": "median picks before ADP this room drafts; "
-                                        "survival odds are shifted by it"},
+        "room_drift": {**drift, "note": "median picks before ADP this room drafts, by "
+                                        "position where it has enough picks; survival "
+                                        "odds are shifted by `shift`"},
         "recommendations": picks,
         "headline": (f"Take {picks[0]['player']} — {picks[0]['why']}" if picks else "Board empty"),
     }, indent=2)
@@ -1474,7 +1475,7 @@ def draft_replay(league_id: str = "", picks: int = 0) -> str:
     state = _state()
     b = _build_board()
     league = _settings()[0]
-    drift = replay.room_drift(b, state)["median_reach"]
+    drift = replay.room_drift(b, state)["shift"]
     out = replay.replay_draft(b, state, league, adp_shift=drift)
     out["calibration_without_shift"] = replay.replay_draft(b, state, league)["overall"]
     entry = _WATCHES.get(league_id) if league_id else None

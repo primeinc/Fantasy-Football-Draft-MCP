@@ -320,7 +320,7 @@ class DraftWatch:
         recs = model.recommend(b, self.league, current_pick=nxt, next_pick=after,
                                roster=roster, top_n=3, mine=self.state.my_rows(b),
                                bye_weight=self.bye_weight,
-                               adp_shift=room_drift(b, self.state)["median_reach"])
+                               adp_shift=room_drift(b, self.state)["shift"])
         if recs.empty:
             return "No recommendation: board empty."
         names = [f"{r['name']} ({r['position']}, {float(r['p_available_next']):.0%} lasts"
