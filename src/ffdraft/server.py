@@ -237,6 +237,35 @@ def _mark_drafted(b: pd.DataFrame, state: bd.DraftState) -> pd.DataFrame:
     return b
 
 
+def _jsonable(value: Any) -> Any:
+    """Replace NaN with null anywhere in a hand-built payload.
+
+    NaN is not JSON. Python's own module writes it as a bare `NaN` literal,
+    which its own parser reads back and every conforming client rejects, so the
+    failure is invisible from inside the process and total from outside it.
+    `who_should_i_pick` emitted `"espn_injury": NaN` and became unparseable the
+    moment a team defense reached the list — ESPN files no injury status for a
+    defense, and NaN is truthy, so no `or`-guard catches it. `_rows` already
+    does this for table output; hand-built dicts had nothing.
+    """
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return float(value) if np.isfinite(value) else None
+    if value is None or isinstance(value, (str, int)):
+        return value
+    try:
+        return None if pd.isna(value) else value
+    except (TypeError, ValueError):
+        return value
+
+
 def _rows(df: pd.DataFrame, cols: list[str], n: int) -> list[dict]:
     out = []
     for _, r in df.head(n).iterrows():
@@ -437,10 +466,13 @@ def who_should_i_pick(limit: int = 6) -> str:
             "consistency": round(float(r["consistency"]), 3),
             "survives_to_next_pick": round(float(r["p_available_next"]), 2),
             "bye_week": int(bye) if bye is not None and pd.notna(bye) else None,
-            "bye_conflicts": r.get("bye_conflicts") or "",
+            # `or ""` would not do here: NaN is truthy and would pass straight
+            # through, which is the same trap as espn_injury above.
+            "bye_conflicts": (r.get("bye_conflicts") if pd.notna(r.get("bye_conflicts"))
+                              else "") or "",
             "why": model.explain(r),
         })
-    return json.dumps({
+    return json.dumps(_jsonable({
         "evaluating_pick": current,
         "round": (current - 1) // league.teams + 1,
         "your_next_pick_after_this": after,
@@ -451,7 +483,7 @@ def who_should_i_pick(limit: int = 6) -> str:
                                         "odds are shifted by `shift`"},
         "recommendations": picks,
         "headline": (f"Take {picks[0]['player']} — {picks[0]['why']}" if picks else "Board empty"),
-    }, indent=2)
+    }), indent=2)
 
 
 @mcp.tool()

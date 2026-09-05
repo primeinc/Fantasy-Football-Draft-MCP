@@ -757,6 +757,38 @@ class TestSpecialTeams:
             {"DST": 1, "K": 0})["QB"]
 
 
+class TestJsonPayloads:
+    def test_nan_never_reaches_the_wire(self):
+        # ESPN files no injury status for a team defense, so the value is NaN.
+        # Python writes that as a bare `NaN` literal, which its own parser reads
+        # back and every conforming client rejects: the failure is invisible
+        # from inside the process and total from outside it.
+        import json
+        import math
+
+        from ffdraft import server
+
+        payload = server._jsonable({
+            "espn_injury": float("nan"),
+            "team": float("nan"),
+            "nested": [{"p": float("inf")}, {"q": pd.NaT}],
+            "kept": ["HOU", 3, 1.5, True, None],
+        })
+        assert payload["espn_injury"] is None
+        assert payload["team"] is None
+        assert payload["nested"] == [{"p": None}, {"q": None}]
+        assert payload["kept"] == ["HOU", 3, 1.5, True, None]
+
+        raw = json.dumps(payload)
+        assert "NaN" not in raw and "Infinity" not in raw
+
+        def reject(constant):
+            raise ValueError(constant)
+
+        json.loads(raw, parse_constant=reject)
+        assert math.isnan(float("nan"))  # the value really was NaN going in
+
+
 class TestSyncEspnLive:
     def test_in_progress_draft_uses_socket_snapshot(self, monkeypatch):
         import sys

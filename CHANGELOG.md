@@ -301,6 +301,17 @@ All notable changes to this project. Format follows
   every caller on the board, not just for kickers.
 - `MARKET_JOIN_VERSION` 4: a cached board built before this has no K or D/ST
   rows (or has them without the boolean flags) and reprices on load.
+- `who_should_i_pick` returned invalid JSON as soon as a defense reached the
+  list. It emitted `r.get("espn_injury")` straight into `json.dumps`, ESPN files
+  no injury status for a team defense, and NaN is truthy so no `or`-guard
+  catches it. Python writes NaN as a bare `NaN` literal, which its own parser
+  reads back happily and every conforming client rejects — so the failure was
+  invisible from inside the process and total from outside it. Found by lena
+  against my board. New `server._jsonable` walks a hand-built payload and turns
+  every non-finite float, NaT and NA into null; `_rows` already did this for
+  table output and the hand-built dicts had nothing. Swept the other eight
+  tools: only this one leaked.
+
 - The cost, measured and recorded rather than left for someone to find. Putting
   64 rarely-drafted players into the pool makes the walk-forward choice model
   worse: `just replay`'s blend log loss goes 3.103 -> 3.183 and its forecast for
