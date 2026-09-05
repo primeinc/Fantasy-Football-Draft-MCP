@@ -56,6 +56,13 @@ check: `https://api.sleeper.app/v1/state/nfl`.
 with `view` in `mDraftDetail`, `mTeam`, `mSettings`, `kona_player_info`. Private leagues
 need the `SWID` and `espn_s2` cookies (`ESPN_SWID`, `ESPN_S2`).
 
+`kona_player_info` with an `X-Fantasy-Filter` header carries ESPN's own market for every
+player: `player.ownership.averageDraftPosition`, `percentOwned`, `percentStarted`, and
+`player.draftRanksByRankType.PPR.rank`. `board.load_espn_adp` reads it and, when
+`ESPN_LEAGUE_ID` and the cookies are set, it is the board's ADP (`adp_source: espn`)
+because it is the list ESPN opponents draft from; FantasyPros consensus is a different
+market and stays the fallback.
+
 Fields used: `settings.scoringSettings.scoringItems[statId=53].points` (reception
 points), `settings.rosterSettings.lineupSlotCounts` (slot id -> count; 0 QB, 2 RB, 4 WR,
 6 TE, 16 DST, 17 K, 20 bench, 21 IR, 23 flex), `teams[].owners`, `draftDetail.picks[]`

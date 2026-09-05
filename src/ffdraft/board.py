@@ -80,16 +80,68 @@ FANTASYPROS_ADP = {
 }
 
 
+def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
+                  swid: str | None = None, espn_s2: str | None = None) -> pd.DataFrame:
+    """ESPN's own average draft position for every rostered-or-not player, from the
+    league's `kona_player_info` view: `player.ownership.averageDraftPosition`.
+
+    This is the list your ESPN opponents draft from, so it is the right input to
+    survival odds in an ESPN league; consensus rank is a different market.
+    """
+    swid = swid or os.environ.get("ESPN_SWID")
+    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
+    cookies = {}
+    if swid and espn_s2:
+        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
+                   "espn_s2": espn_s2}
+    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
+           f"/segments/0/leagues/{league_id}")
+    flt = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS", "ONTEAM"]},
+                       "limit": 1000,
+                       "sortDraftRanks": {"sortPriority": 100, "sortAsc": True, "value": "PPR"}}}
+    resp = requests.get(url, params={"view": "kona_player_info"}, cookies=cookies, timeout=30,
+                        headers={"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona",
+                                 "X-Fantasy-Filter": json.dumps(flt)})
+    resp.raise_for_status()
+    rows = []
+    for entry in resp.json().get("players") or []:
+        p = entry.get("player") or {}
+        adp = (p.get("ownership") or {}).get("averageDraftPosition")
+        if adp is None or not p.get("fullName"):
+            continue
+        rows.append({"name": p["fullName"], "adp": float(adp), "espn_id": str(p.get("id")),
+                     "espn_rank": ((p.get("draftRanksByRankType") or {}).get("PPR") or {}).get("rank"),
+                     "percent_owned": (p.get("ownership") or {}).get("percentOwned")})
+    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "espn_rank", "percent_owned"])
+    out["_key"] = out["name"].map(norm_name)
+    out["source"] = "espn_adp"
+    return out.dropna(subset=["adp"]).drop_duplicates("_key").reset_index(drop=True)
+
+
+def espn_adp_configured() -> bool:
+    """ESPN_LEAGUE_ID plus both cookies are set, so load_adp would prefer ESPN ADP."""
+    return all(os.environ.get(k) for k in ("ESPN_LEAGUE_ID", "ESPN_SWID", "ESPN_S2"))
+
+
+def strip_adp(board: pd.DataFrame) -> pd.DataFrame:
+    """The board without its market columns, ready for attach_adp again."""
+    return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format")
+                               if c in board.columns])
+
+
 def load_adp(fmt: str = "half_ppr", csv_path: str | None = None,
-             season: int = CURRENT_SEASON, superflex: bool = False) -> pd.DataFrame:
+             season: int = CURRENT_SEASON, superflex: bool = False,
+             espn_league_id: str | None = None) -> pd.DataFrame:
     """Draft-cost estimates, in order of preference.
 
     1. A CSV you export from your own platform — always best, because ADP is
        league- and format-specific and your room is what you're drafting against.
-    2. FantasyPros preseason expert consensus rank, mirrored by dynastyprocess as a
+    2. ESPN's own ADP when an ESPN league id and cookies are available (env
+       ESPN_LEAGUE_ID, ESPN_SWID, ESPN_S2): the list your ESPN opponents draft from.
+    3. FantasyPros preseason expert consensus rank, mirrored by dynastyprocess as a
        parquet going back to 2019. This is the reliable path: a direct data file
        rather than an HTML page that changes layout and blocks scripted requests.
-    3. FantasyPros' live HTML page, as a last resort.
+    4. FantasyPros' live HTML page, as a last resort.
     """
     if csv_path:
         df = pd.read_csv(csv_path)
@@ -103,6 +155,17 @@ def load_adp(fmt: str = "half_ppr", csv_path: str | None = None,
         out["_key"] = out["name"].map(norm_name)
         out["source"] = "csv"
         return out.dropna(subset=["adp"])
+
+    espn_league_id = espn_league_id or os.environ.get("ESPN_LEAGUE_ID")
+    if espn_league_id and season == CURRENT_SEASON and os.environ.get("ESPN_SWID") \
+            and os.environ.get("ESPN_S2"):
+        try:
+            espn = load_espn_adp(espn_league_id, season)
+            if len(espn) >= 100:
+                return espn
+            print(f"ESPN ADP returned {len(espn)} players; using consensus")
+        except Exception as exc:
+            print(f"ESPN ADP unavailable ({type(exc).__name__}); using consensus")
 
     try:
         from .adp import preseason_ecr
@@ -259,7 +322,9 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     b["_key"] = b["name"].map(norm_name)
     if adp is not None and not adp.empty:
         b = b.merge(adp[["_key", "adp"]].drop_duplicates("_key"), on="_key", how="left")
-        b["adp_source"] = np.where(b["adp"].notna(), "consensus", "modelled")
+        label = "espn" if "source" in adp.columns and (adp["source"] == "espn_adp").any() \
+            else "consensus"
+        b["adp_source"] = np.where(b["adp"].notna(), label, "modelled")
     else:
         b["adp"] = np.nan
         b["adp_source"] = "modelled"
@@ -702,6 +767,102 @@ def espn_league_context(league_id: str, season: int = CURRENT_SEASON,
         "rounds": max(1, roster_slots),
         "my_team_id": my_team["id"] if my_team is not None else None,
         "draft_slot": draft_slot,
+    }
+
+
+# ESPN scoring statIds this model scores. Anything else is reported by id.
+_ESPN_STAT_NAMES = {
+    3: "passing_yards", 4: "passing_tds", 19: "passing_2pt", 20: "interceptions",
+    24: "rushing_yards", 25: "rushing_tds", 26: "rushing_2pt", 42: "receiving_yards",
+    43: "receiving_tds", 44: "receiving_2pt", 53: "receptions", 72: "fumbles_lost",
+}
+_ESPN_SLOT_NAMES = {"0": "QB", "2": "RB", "4": "WR", "6": "TE", "16": "DST", "17": "K",
+                    "20": "BENCH", "21": "IR", "23": "FLEX", "7": "OP", "3": "RB/WR",
+                    "5": "WR/TE"}
+_ESPN_POSITION_NAMES = {"1": "QB", "2": "RB", "3": "WR", "4": "TE", "5": "K", "16": "DST"}
+
+
+def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
+                      swid: str | None = None, espn_s2: str | None = None) -> dict:
+    """The league's rules as ESPN states them: roster, scoring, schedule and
+    playoffs, waivers, trades, locks, tiebreakers, plus the bye-week topology of
+    the season. First-party, so nothing here is assumed from a default template."""
+    from . import features
+
+    swid = swid or os.environ.get("ESPN_SWID")
+    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
+    cookies = {}
+    if swid and espn_s2:
+        cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
+                   "espn_s2": espn_s2}
+    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
+           f"/segments/0/leagues/{league_id}")
+    resp = requests.get(url, params={"view": ["mSettings", "mTeam"]}, cookies=cookies,
+                        timeout=20, headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp.raise_for_status()
+    data = resp.json()
+    s = data.get("settings") or {}
+    sched, acq, trade = s.get("scheduleSettings") or {}, s.get("acquisitionSettings") or {}, \
+        s.get("tradeSettings") or {}
+    roster, scoring, draft = s.get("rosterSettings") or {}, s.get("scoringSettings") or {}, \
+        s.get("draftSettings") or {}
+
+    slots = {_ESPN_SLOT_NAMES.get(k, f"slot_{k}"): v
+             for k, v in (roster.get("lineupSlotCounts") or {}).items() if v}
+    limits = {_ESPN_POSITION_NAMES.get(k, f"pos_{k}"): v
+              for k, v in (roster.get("positionLimits") or {}).items() if v and v > 0}
+    items = {}
+    other = {}
+    for it in scoring.get("scoringItems") or []:
+        name = _ESPN_STAT_NAMES.get(it.get("statId"))
+        if name:
+            items[name] = it.get("points")
+        elif it.get("points"):
+            other[str(it.get("statId"))] = it.get("points")
+    periods = sched.get("matchupPeriods") or {}
+    reg = int(sched.get("matchupPeriodCount") or 0)
+    playoff_periods = sorted(int(k) for k in periods if int(k) > reg)
+    playoff_weeks = sorted(w for k in playoff_periods for w in periods[str(k)])
+    byes = features.team_bye_weeks(season)
+    per_week: dict[int, int] = {}
+    for w in byes.values():
+        per_week[w] = per_week.get(w, 0) + 1
+    deadline = trade.get("deadlineDate")
+    return {
+        "league": s.get("name"), "teams": s.get("size"), "season": season,
+        "draft": {"type": draft.get("type"), "rounds": sum(v for k, v in slots.items() if k != "IR"),
+                  "seconds_per_pick": draft.get("timePerSelection"),
+                  "keepers": draft.get("keeperCount"), "pick_trading": draft.get("isTradingEnabled")},
+        "roster": {"starters": {k: v for k, v in slots.items() if k not in ("BENCH", "IR")},
+                   "bench": slots.get("BENCH", 0), "ir": slots.get("IR", 0),
+                   "position_limits": limits,
+                   "lineup_lock": roster.get("lineupLocktimeType"),
+                   "move_limit": roster.get("moveLimit")},
+        "scoring": {"type": scoring.get("scoringType"), "items": items,
+                    "other_items_by_stat_id": other,
+                    "matchup_tie": scoring.get("matchupTieRule"),
+                    "playoff_tie": scoring.get("playoffMatchupTieRule"),
+                    "home_bonus": scoring.get("homeTeamBonus")},
+        "schedule": {"regular_season_weeks": reg,
+                     "playoff_teams": sched.get("playoffTeamCount"),
+                     "playoff_weeks": playoff_weeks,
+                     "playoff_round_length": sched.get("playoffMatchupPeriodLength"),
+                     "playoff_seeding": sched.get("playoffSeedingRule"),
+                     "playoff_reseed": sched.get("playoffReseed"),
+                     "divisions": len(sched.get("divisions") or [])},
+        "waivers": {"type": acq.get("acquisitionType"), "hours": acq.get("waiverHours"),
+                    "process_days": acq.get("waiverProcessDays"),
+                    "process_hour": acq.get("waiverProcessHour"),
+                    "faab": acq.get("isUsingAcquisitionBudget"),
+                    "budget": acq.get("acquisitionBudget") if acq.get("isUsingAcquisitionBudget") else None,
+                    "season_limit": acq.get("acquisitionLimit"),
+                    "per_matchup_limit": acq.get("matchupAcquisitionLimit")},
+        "trades": {"max": trade.get("max"), "review_hours": trade.get("revisionHours"),
+                   "veto_votes": trade.get("vetoVotesRequired"),
+                   "deadline_ms": deadline},
+        "byes": {"teams_on_bye_by_week": dict(sorted(per_week.items())),
+                 "last_bye_week": max(per_week) if per_week else None,
+                 "byes_in_playoffs": [w for w in per_week if w in playoff_weeks]},
     }
 
 

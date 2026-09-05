@@ -42,6 +42,21 @@ All notable changes to this project. Format follows
   Added after two live incidents: dotted-initial names keyed differently on
   the board and in the state, and a cached board keeping stale keys.
 
+**ESPN ADP**
+- `board.load_espn_adp`: ESPN's own average draft position from
+  `kona_player_info` (`ownership.averageDraftPosition`, with ESPN id, PPR rank
+  and percent owned). `load_adp` prefers it over consensus when
+  `ESPN_LEAGUE_ID` and the cookies are set, so survival odds are priced off
+  the list the room actually drafts from. Boards carry `adp_source`
+  (`espn` / `consensus` / `modelled`); a board cached under consensus is
+  repriced in place on the next load (`server._price_board`).
+
+**League rules**
+- `league_rules`: the league's settings as ESPN states them (`mSettings`):
+  draft, roster slots and position limits, every scoring item, schedule and
+  playoffs, waivers, trades, lineup lock, tiebreakers, plus the season's
+  bye-week topology. Replaces the assumed-template unknowns.
+
 **Bye weeks**
 - Every board row carries `bye_week` from the nfldata schedule
   (`features.team_bye_weeks`). `who_should_i_pick` and the watch report

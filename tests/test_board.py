@@ -104,6 +104,124 @@ class TestLoadAdpHtmlFallback:
         assert list(out["adp"]) == [1.5, 2.2]
 
 
+class TestRepriceCachedBoard:
+    def test_consensus_board_is_repriced_with_espn_adp(self, monkeypatch, tmp_path):
+        from ffdraft import server
+
+        monkeypatch.setenv("ESPN_LEAGUE_ID", "1")
+        monkeypatch.setenv("ESPN_SWID", "{A}")
+        monkeypatch.setenv("ESPN_S2", "s")
+        league, _ = server._settings()
+        path = tmp_path / "board.parquet"
+        stale = pd.DataFrame({"name": ["Jakobi Meyers"], "position": ["WR"], "team": ["JAX"],
+                              "pos_rank": [20], "overall_rank": [60], "bye_week": [7],
+                              "adp": [118.3], "adp_source": ["consensus"],
+                              "adp_delta": [58.3], "adp_format": ["ppr"]})
+        stale.to_parquet(path, index=False)
+        monkeypatch.setattr(server, "_board_path", lambda _l: path)
+        monkeypatch.setattr(board, "load_adp", lambda **_k: pd.DataFrame(
+            {"name": ["Jakobi Meyers"], "adp": [104.5], "_key": ["jakobi meyers"],
+             "source": ["espn_adp"]}))
+        server._BOARDS.pop(league.cache_key(), None)
+
+        b = server._build_board()
+        row = b[b["name"] == "Jakobi Meyers"].iloc[0]
+        assert row["adp_source"] == "espn" and row["adp"] == 104.5
+        assert pd.read_parquet(path)["adp_source"].iloc[0] == "espn"
+        server._BOARDS.pop(league.cache_key(), None)
+
+
+class TestLeagueRules:
+    def test_surfaces_first_party_settings_and_bye_topology(self, monkeypatch):
+        from ffdraft import features
+
+        settings = {
+            "name": "TITLE LEAUGE ", "size": 16,
+            "draftSettings": {"type": "SNAKE", "timePerSelection": 86400, "keeperCount": 0,
+                              "isTradingEnabled": False},
+            "rosterSettings": {"lineupSlotCounts": {"0": 1, "2": 2, "4": 2, "6": 1, "16": 1,
+                                                    "17": 1, "20": 6, "21": 1, "23": 0},
+                               "positionLimits": {"1": 4, "2": 8, "3": 8, "4": 3, "5": 3, "16": 3},
+                               "lineupLocktimeType": "INDIVIDUAL_GAME", "moveLimit": -1},
+            "scoringSettings": {"scoringType": "H2H_POINTS", "matchupTieRule": "NONE",
+                                "playoffMatchupTieRule": "NONE", "homeTeamBonus": 0,
+                                "scoringItems": [{"statId": 53, "points": 1.0},
+                                                 {"statId": 4, "points": 4.0},
+                                                 {"statId": 198, "points": 5.0},
+                                                 {"statId": 99, "points": 0.0}]},
+            "scheduleSettings": {"matchupPeriodCount": 14, "playoffTeamCount": 6,
+                                 "playoffMatchupPeriodLength": 1, "playoffReseed": False,
+                                 "playoffSeedingRule": "TOTAL_POINTS_SCORED",
+                                 "divisions": [{"id": 0}],
+                                 "matchupPeriods": {str(i): [i] for i in range(1, 18)}},
+            "acquisitionSettings": {"acquisitionType": "WAIVERS_TRADITIONAL", "waiverHours": 24,
+                                    "waiverProcessDays": ["MONDAY"], "waiverProcessHour": 11,
+                                    "isUsingAcquisitionBudget": False, "acquisitionBudget": 100,
+                                    "acquisitionLimit": -1, "matchupAcquisitionLimit": -1.0},
+            "tradeSettings": {"max": -1, "revisionHours": 24, "vetoVotesRequired": 7,
+                              "deadlineDate": 1796230800000},
+        }
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"settings": settings, "teams": []}
+
+        monkeypatch.setattr(board.requests, "get", lambda *_a, **_k: Resp())
+        monkeypatch.setattr(features, "team_bye_weeks", lambda _s: {
+            "GB": 11, "NE": 11, "MIN": 6, "CIN": 6, "JAX": 7, "ARI": 14})
+
+        r = board.espn_league_rules("1", 2026, swid="{A}", espn_s2="s")
+        assert r["teams"] == 16 and r["draft"]["rounds"] == 14
+        assert r["roster"]["starters"] == {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "DST": 1, "K": 1}
+        assert r["roster"]["bench"] == 6 and r["roster"]["ir"] == 1
+        assert r["roster"]["position_limits"]["QB"] == 4
+        assert r["scoring"]["items"] == {"receptions": 1.0, "passing_tds": 4.0}
+        assert r["scoring"]["other_items_by_stat_id"] == {"198": 5.0}
+        assert r["schedule"]["playoff_weeks"] == [15, 16, 17]
+        assert r["waivers"]["type"] == "WAIVERS_TRADITIONAL" and r["waivers"]["budget"] is None
+        assert r["byes"]["teams_on_bye_by_week"] == {6: 2, 7: 1, 11: 2, 14: 1}
+        assert r["byes"]["byes_in_playoffs"] == []
+
+
+class TestEspnAdp:
+    def test_parses_ownership_adp(self, monkeypatch):
+        payload = {"players": [
+            {"player": {"id": 4429795, "fullName": "Jahmyr Gibbs",
+                        "ownership": {"averageDraftPosition": 1.32, "percentOwned": 99.9},
+                        "draftRanksByRankType": {"PPR": {"rank": 1}}}},
+            {"player": {"id": 3916433, "fullName": "Jakobi Meyers",
+                        "ownership": {"averageDraftPosition": 118.4, "percentOwned": 80.0},
+                        "draftRanksByRankType": {"PPR": {"rank": 101}}}},
+            {"player": {"id": 1, "fullName": "No Adp", "ownership": {}}},
+        ]}
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return payload
+
+        monkeypatch.setattr(board.requests, "get", lambda *_a, **_k: Resp())
+        out = board.load_espn_adp("1", 2026, swid="{ABC}", espn_s2="s2")
+        assert list(out["name"]) == ["Jahmyr Gibbs", "Jakobi Meyers"]
+        assert list(out["adp"]) == [1.32, 118.4]
+        assert list(out["espn_rank"]) == [1, 101]
+        assert set(out["source"]) == {"espn_adp"}
+
+    def test_attach_labels_espn_source(self):
+        b = pd.DataFrame({"name": ["Jakobi Meyers", "Nobody"], "position": ["WR", "WR"],
+                          "pos_rank": [20, 90], "overall_rank": [60, 300]})
+        adp = pd.DataFrame({"name": ["Jakobi Meyers"], "adp": [118.4], "source": ["espn_adp"]})
+        adp["_key"] = adp["name"].map(board.norm_name)
+        out = board.attach_adp(b, adp)
+        assert list(out["adp_source"]) == ["espn", "modelled"]
+        assert out["adp"].iloc[0] == 118.4
+
+
 class TestSyncEspnLive:
     def test_in_progress_draft_uses_socket_snapshot(self, monkeypatch):
         import sys

@@ -127,15 +127,30 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         return _BOARDS[key]
     if not force and path.exists():
         b = bd.rekey(pd.read_parquet(path))
+        changed = False
         if "bye_week" not in b.columns:
             b = _attach_byes(b)
+            changed = True
+        # A board priced off consensus before ESPN ADP was configured is
+        # repriced in place: projections stay, only the market columns change.
+        if bd.espn_adp_configured() and "adp_source" in b.columns \
+                and not (b["adp_source"] == "espn").any():
+            b = _price_board(bd.strip_adp(b), league)
+            changed = True
+        if changed:
             b.to_parquet(path, index=False)
         _BOARDS[key] = b
         return b
 
     tbl = model.build_player_table(league, weights)
     proj = model.project(tbl, league, weights)
-    proj = _attach_byes(proj)
+    proj = _price_board(_attach_byes(proj), league)
+    proj.to_parquet(path, index=False)
+    _BOARDS[key] = proj
+    return proj
+
+
+def _price_board(proj: pd.DataFrame, league: LeagueSettings) -> pd.DataFrame:
     try:
         adp = bd.load_adp(
             csv_path=(_CACHE["adp_csv"] or {}).get(league.name),
@@ -145,10 +160,7 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         print(f"ADP unavailable ({type(exc).__name__}); using model rank as proxy")
         adp = None
     proj = bd.attach_adp(proj, adp)
-    proj = bd.convert_adp_format(proj, _scoring_label(league))
-    proj.to_parquet(path, index=False)
-    _BOARDS[key] = proj
-    return proj
+    return bd.convert_adp_format(proj, _scoring_label(league))
 
 
 def _attach_byes(b: pd.DataFrame) -> pd.DataFrame:
@@ -455,6 +467,16 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
 
 
 @mcp.tool()
+def league_rules(league_id: str, season: int = CURRENT_SEASON) -> str:
+    """The ESPN league's rules as ESPN states them: draft format, roster slots and
+    position limits, every scoring value, regular season and playoff weeks and
+    seeding, waiver mode and timing, trade rules, lineup lock, tiebreakers, plus
+    the season's bye-week topology (teams on bye per week, byes inside the
+    playoffs). First-party: read from the league settings, never assumed."""
+    return json.dumps(bd.espn_league_rules(league_id, season), indent=2, default=str)
+
+
+@mcp.tool()
 def draft_audit(limit: int = 10) -> str:
     """Check the invariants a recommendation depends on: board keys match the
     normaliser, pick numbers are contiguous, no player recorded twice, your picks
@@ -601,7 +623,7 @@ def value_picks(limit: int = 20, direction: str = "undervalued") -> str:
     # fringe receiver kept surfacing next to real draft picks.
     if "adp_source" in avail.columns:
         consensus = avail["adp_source"].astype(str).str.startswith("consensus") | \
-                    avail["adp_source"].astype(str).str.contains("ecr|csv", case=False)
+                    avail["adp_source"].astype(str).str.contains("ecr|csv|espn", case=False)
         if consensus.any():
             avail = avail[consensus]
     avail = avail[avail["adp"] <= 220]

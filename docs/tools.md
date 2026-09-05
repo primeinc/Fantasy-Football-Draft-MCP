@@ -104,6 +104,17 @@ One watch per league; `stop_watch(league_id)` ends it.
 Who is in the ESPN draft room right now and the latest room chat, from the running
 watch's socket, with team and owner names from the league member list.
 
+### `league_rules`
+The ESPN league's rules as ESPN states them, from the `mSettings` view: draft
+type, rounds and clock, starting slots, bench and IR, position limits, every
+scoring value (named for the stats the model scores, by ESPN statId for the
+rest), regular-season length, playoff weeks, seeding and reseed, waiver mode,
+timing and budget, trade limits, review window, veto count and deadline, lineup
+lock mode, matchup and playoff tiebreakers. The `byes` block adds the season's
+bye topology from the nfldata schedule: teams on bye per week, the last bye
+week, and any bye week that falls inside the playoffs. Nothing in it is a
+default assumption.
+
 ### `draft_audit`
 Invariants a recommendation depends on, checked against the live board and
 draft state: cached board keys equal the current normaliser's, pick numbers are
@@ -189,7 +200,10 @@ blending it into the ranking made WR predictions worse than talent alone, not be
 
 ### `value_picks`
 Where the model disagrees with the market. `direction`: `undervalued` or `overvalued`.
-Restricted to players the market actually ranks.
+Restricted to players the market actually ranks. `adp_source` says which market:
+`espn` when `ESPN_LEAGUE_ID` and the cookies are set (ESPN's own average draft
+position, the list the room drafts from), otherwise `consensus`. A board cached
+under consensus is repriced on the next load once ESPN ADP is configured.
 
 ### `team_context`
 An NFL team's offensive environment: O-line ranks with history, pace, run/pass split,
