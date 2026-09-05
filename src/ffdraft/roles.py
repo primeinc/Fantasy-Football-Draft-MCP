@@ -329,10 +329,11 @@ def pick_value_multiplier(avail: pd.DataFrame, league: LeagueSettings,
     return ones * (1 - start_prob_weight + start_prob_weight * p_start)
 
 
-def start_prob_adjustment(avail: pd.DataFrame, league: LeagueSettings,
-                          mine: pd.DataFrame | None = None,
-                          start_prob_weight: float = START_PROB_WEIGHT) -> pd.Series:
-    """What the start-probability term adds to a pick_value. Never a multiplier.
+def scaled_draft_score(avail: pd.DataFrame, league: LeagueSettings,
+                       mine: pd.DataFrame | None = None,
+                       start_prob_weight: float = START_PROB_WEIGHT) -> pd.Series:
+    """The `draft_score` `recommend` should use, given how often each candidate
+    would actually be in my lineup. Applied to the score, never to `pick_value`.
 
     Scaling `pick_value` itself does not work, and no choice of factor fixes it.
     `pick_value` is not a ratio scale — its zero means "exactly as good as
@@ -346,19 +347,22 @@ def start_prob_adjustment(avail: pd.DataFrame, league: LeagueSettings,
     So the term is applied where it is actually true. A player who is in the
     lineup a fraction `m` of the time is worth `m` of his own projection, and
     `draft_score` is built from that projection, so the honest statement is
-    "scale his draft_score by m", *before* the fallback subtraction rather than
-    after it. Writing out what `recommend` computes:
+    "scale his draft_score by m" — and `recommend` calls this before anything
+    downstream reads the column, so the fallback, the marginal value and both
+    multipliers all see the right number.
 
-        pick_value      = (0.80 * (ds - fallback) + 0.20 * ds) * need
-        pick_value(m*ds) = (0.80 * (m*ds - fallback) + 0.20 * m*ds) * need
+    The difference this makes to `pick_value` can be derived instead —
+    `(m - 1) * ds * need` — and that was the first version. It is only an
+    identity while every factor after it is a plain multiplication. It is not:
+    `role_mult` is applied after `need_mult`, and `_discount` reads a multiplier
+    as a reflection below zero, so on the negative half the true factor is
+    `(2 - need)` rather than `need`, and for a candidate crossing from positive
+    to negative there is no single factor at all — which is precisely the case
+    this term exists to create. Rather than reconstruct a difference through
+    three transformations, scale the input to all three. Found by marge.
 
-    and the difference between them is exactly `(m - 1) * ds * need`. So the
-    points-side scaling is available as an addition, with no restructuring of
-    `recommend` and no multiplier anywhere. At m = 1 it is 0 to the bit.
-
-    This also gives exclusion for free and without a sentinel: a candidate who
-    can never start loses his whole `draft_score`, which for a good player is a
-    large negative number, so he drops below the field instead of landing on
+    Exclusion falls out with no sentinel: a candidate who can never start loses
+    his whole `draft_score`, so he drops below the field instead of landing on
     zero at rank 12. `START_PROB_FLOOR` is then a statement about what the model
     can claim, not a workaround for arithmetic.
 
@@ -371,14 +375,11 @@ def start_prob_adjustment(avail: pd.DataFrame, league: LeagueSettings,
     rose past him. Below replacement the term is silent — his value already says
     he is not a starter.
     """
-    zero = pd.Series(0.0, index=avail.index)
+    ds = pd.to_numeric(avail.get("draft_score"), errors="coerce")
     if avail.empty or not start_prob_weight:
-        return zero
+        return ds
     mult = pick_value_multiplier(avail, league, mine, start_prob_weight)
-    ds = pd.to_numeric(avail.get("draft_score"), errors="coerce").fillna(0.0).clip(lower=0.0)
-    need = pd.to_numeric(avail.get("need_mult"), errors="coerce").fillna(1.0) \
-        if "need_mult" in avail.columns else pd.Series(1.0, index=avail.index)
-    return (mult - 1.0) * ds * need
+    return ds.where(ds <= 0, ds * mult)
 
 
 def pick_value_bonus(avail: pd.DataFrame, league: LeagueSettings,

@@ -730,6 +730,22 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     else:
         avail["p_available_next"] = 0.0
 
+    if role_weights and float(role_weights.get("start_prob", 0.0)):
+        from . import roles
+
+        # Applied to draft_score itself, before anything downstream reads it,
+        # rather than reconstructed as a correction afterwards. A player in the
+        # lineup a fraction m of the time is worth m of his projection, and
+        # draft_score is built from that projection, so this is the one place
+        # the statement is true. Doing it later means undoing need_mult and
+        # role_mult by algebra, and that algebra is wrong the moment either is
+        # applied by anything other than plain multiplication -- which is
+        # exactly what `_discount` does on the negative half of the board.
+        avail["p_start"] = roles.start_probabilities(avail, league, mine)
+        avail["draft_score_full"] = avail["draft_score"]
+        avail["draft_score"] = roles.scaled_draft_score(
+            avail, league, mine, float(role_weights["start_prob"]))
+
     # The heart of it: what a position is expected to still offer at your next turn.
     # Raw value says take the best player; that's wrong in a snake draft, because
     # passing on an elite QB costs you almost nothing (the QB you get two rounds
@@ -763,25 +779,16 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     avail["role_mult"] = role_multiplier(avail)
     avail["pick_value"] = _discount(avail["pick_value"], avail["role_mult"])
 
-    if role_weights:
+    if role_weights and float(role_weights.get("handcuff", 0.0)):
         from . import roles
 
-        # Both roles terms are additive in pick_value's own units, so neither is
-        # a multiplier. The start-probability term is the algebraic equivalent of
-        # scaling a candidate's draft_score before the fallback subtraction; a
-        # multiplier on pick_value cannot express it, because scaling a positive
-        # value toward zero promotes it past the negative 96% of the board. See
-        # roles.start_prob_adjustment.
-        avail["roles_mult"] = roles.pick_value_multiplier(
-            avail, league, mine,
-            start_prob_weight=float(role_weights.get("start_prob", 0.0)))
-        avail["roles_bonus"] = (
-            roles.start_prob_adjustment(
-                avail, league, mine,
-                start_prob_weight=float(role_weights.get("start_prob", 0.0)))
-            + roles.pick_value_bonus(
-                avail, league, mine,
-                handcuff_weight=float(role_weights.get("handcuff", 0.0))))
+        # Contingent points are points, in the same units draft_score is built
+        # from, so they are added rather than multiplied -- scaling a deep bench
+        # player's negative pick_value by his handcuff case pushes him further
+        # down, which is backwards. The start-probability term is not here: it
+        # was applied to draft_score above.
+        avail["roles_bonus"] = roles.pick_value_bonus(
+            avail, league, mine, handcuff_weight=float(role_weights["handcuff"]))
         avail["pick_value"] = avail["pick_value"] + avail["roles_bonus"]
 
     avail["bye_conflicts"] = ""
