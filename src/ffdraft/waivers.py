@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -39,6 +40,7 @@ import requests
 from . import roles
 from .config import CURRENT_SEASON
 from .config import OUT_STATUSES as _OUT_STATUSES
+from .names import normalize as norm_name
 
 READS_HOST = "https://lm-api-reads.fantasy.espn.com"
 # The same filter `espn_dump` uses, so the pool here is the pool that dump
@@ -89,6 +91,17 @@ UNVERIFIED_SHAPE = "unverified-shape"
 ROLE_ENTROPY_EVIDENCE = ("monotonic in two seasons: 0.381/0.529/0.707 mean absolute "
                          "percentage error by entropy tercile in 2024 (n 356) and "
                          "0.366/0.510/0.704 in 2025 (n 347)")
+
+# Role change is no longer unmeasured, and what it measured is negative. Carried
+# verbatim in every row for the same reason the entropy result is: a score whose
+# backtest went against it must say so where it is read, not in a changelog.
+ROLE_CHANGE_EVIDENCE = (
+    "MEASURED AND NEGATIVE: over 2022-2025 the top 10 by role change scored 6.4 to "
+    "10.1 fewer PPR points over the following four weeks than the top 10 by recent "
+    "points per game, from the same undrafted pool. Both blocks agree in all four "
+    "seasons (spreads 0.48-1.06) and the sign holds at all eight (recent, prior) "
+    "windows tried, effects -7.1 to -8.6. Ranking claims by this score is worse "
+    "than ranking them by what the player just scored")
 
 # Weeks either side of the split when measuring a role change. Two recent weeks
 # against the three before them: one week is a game script, and a window longer
@@ -185,37 +198,66 @@ def free_agents(players: list[dict]) -> pd.DataFrame:
 
 
 def role_change(weekly: pd.DataFrame, snaps: pd.DataFrame, season: int,
-                week: int) -> pd.DataFrame:
-    """How far each player's role moved in the last `RECENT_WEEKS` weeks.
+                week: int, recent: int = RECENT_WEEKS,
+                prior: int = PRIOR_WEEKS) -> pd.DataFrame:
+    """How far each player's role moved in the last `recent` weeks.
 
     Share of his own team's targets and carries, and his share of its offensive
-    snaps, in weeks `[week - RECENT_WEEKS + 1, week]` against the
-    `PRIOR_WEEKS` before them. A player with no prior window is a new role
-    rather than a changed one and carries `prior_games` 0, which the caller can
-    tell apart from a flat one.
+    snaps, in weeks `[week - recent + 1, week]` against the `prior` weeks before
+    them. A player with no prior window is a new role rather than a changed one
+    and carries `prior_games` 0, which the caller can tell apart from a flat one.
 
-    UNMEASURED: nothing yet shows a role change through week w predicts points
-    in w+1..w+4. That is milestone 3, and until it lands this ranks players by a
-    quantity whose predictive value is unknown.
+    The two windows are arguments rather than only constants so the backtest can
+    sweep them. A window is a choice about what counts as "changed", and one
+    measured at a single setting is a result about that setting; see
+    `role_change_backtest`.
+
+    MEASURED, and it went against this score. The docstring here used to say
+    nothing showed a role change through week w predicts points in w+1..w+4, and
+    that milestone 3 would decide. It has: ranking the undrafted pool by this
+    number picks players who go on to score 6.4 to 10.1 fewer points over the
+    next four weeks than ranking the same pool by recent points per game, in
+    every season and at every window tried. `ROLE_CHANGE_EVIDENCE` carries the
+    numbers, and the ordering that rests on them is `rank_claims`'s to answer
+    for.
     """
     w = weekly[(weekly["season"] == season) & (weekly["season_type"] == "REG")].copy()
     for col in ("targets", "carries"):
         w[col] = pd.to_numeric(w.get(col), errors="coerce").fillna(0.0)
-    recent_lo = week - RECENT_WEEKS + 1
-    prior_lo = recent_lo - PRIOR_WEEKS
+    recent_lo = week - int(recent) + 1
+    prior_lo = recent_lo - int(prior)
     windows = {"recent": (recent_lo, week), "prior": (prior_lo, recent_lo - 1)}
 
     frames = {}
     for label, (lo, hi) in windows.items():
         chunk = w[(w["week"] >= max(1, lo)) & (w["week"] <= hi)]
-        team_totals = chunk.groupby(["recent_team"], observed=True).agg(
+        # Team totals per (team, WEEK), joined to the player's own week, then
+        # summed over the window. Two defects fall out of the per-week join and
+        # both were found by the milestone-3 backtest rather than by reading:
+        #
+        # A player traded mid-window used to produce one row per team, because
+        # `recent_team` was in the grouping key. Six players in 2024 week 10
+        # alone, and it was not a cosmetic duplicate: `rank_claims` does
+        # `by_name.loc[name]`, which returns a FRAME for a duplicated label, and
+        # `float()` of a two-row Series raises. `waiver_targets` would have
+        # crashed with a traceback the first time a traded player sat on waivers,
+        # which is a common way to end up there.
+        #
+        # And the denominator used to be the team's whole window even in weeks
+        # the player did not play, so a man who missed a game looked like his
+        # role had shrunk. That mixes availability into a measure of role, which
+        # is the one thing it must not contain -- the tool's whole claim is about
+        # the snaps he takes when he is out there.
+        totals = chunk.groupby(["recent_team", "week"], observed=True).agg(
             team_targets=("targets", "sum"), team_carries=("carries", "sum"))
-        per = chunk.groupby(["player_id", "player_display_name", "recent_team"],
-                            observed=True).agg(
+        per_week = chunk.join(totals, on=["recent_team", "week"])
+        per = per_week.groupby("player_id", observed=True).agg(
+            player_display_name=("player_display_name", "last"),
             targets=("targets", "sum"), carries=("carries", "sum"),
+            team_targets=("team_targets", "sum"),
+            team_carries=("team_carries", "sum"),
             games=("week", "nunique"),
             points=("fantasy_points_ppr", "sum")).reset_index()
-        per = per.join(team_totals, on="recent_team")
         per[f"{label}_target_share"] = per["targets"] / per["team_targets"].replace(0, np.nan)
         per[f"{label}_carry_share"] = per["carries"] / per["team_carries"].replace(0, np.nan)
         per[f"{label}_games"] = per["games"]
@@ -227,6 +269,11 @@ def role_change(weekly: pd.DataFrame, snaps: pd.DataFrame, season: int,
     out = frames["recent"].join(frames["prior"].drop(columns=["player_display_name"]),
                                 how="left")
     out = out.rename(columns={"player_display_name": "name"})
+    # One row per player, asserted rather than assumed: everything downstream
+    # indexes this frame by name, and a duplicate there is a raise rather than a
+    # wrong number.
+    if out.index.has_duplicates:
+        raise AssertionError("role_change produced more than one row for a player")
     for col in ("prior_target_share", "prior_carry_share"):
         out[col] = out[col].fillna(0.0)
     out["prior_games"] = out["prior_games"].fillna(0)
@@ -246,7 +293,7 @@ def role_change(weekly: pd.DataFrame, snaps: pd.DataFrame, season: int,
     out["role_change"] = (out["target_share_change"].fillna(0.0)
                           + out["carry_share_change"].fillna(0.0)
                           + out["snap_share_change"].fillna(0.0))
-    out["role_change_evidence"] = UNMEASURED
+    out["role_change_evidence"] = ROLE_CHANGE_EVIDENCE
     return out[out["recent_games"] >= MIN_RECENT_GAMES].reset_index()
 
 
@@ -423,12 +470,22 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
 
     There is no weighted blend, and that is deliberate — but it is not the
     absence of a choice. It is weight 1 on `role_change` and 0 on the rest for
-    ordering, which is a maximally strong UNMEASURED choice; marge's point, and
-    the docstring says it that way so the next reader does not think a decision
-    was avoided. It is still the better call: the four numbers stay in the row
-    where a human can override them, where a soft blend would hide four invented
-    weights inside one score nobody can decompose. What licenses changing it is
-    milestone 3's backtest, and until that lands no weight from anyone.
+    ordering, which is a maximally strong choice; marge's point, and the
+    docstring says it that way so the next reader does not think a decision was
+    avoided. The four numbers stay in the row where a human can override them,
+    where a soft blend would hide four invented weights inside one score nobody
+    can decompose.
+
+    THE BACKTEST THAT WAS SUPPOSED TO LICENSE THAT WEIGHT HAS RUN, AND IT DOES
+    NOT. `role_change_backtest` finds this ordering worse than ranking the same
+    pool by recent points per game by 6.4 to 10.1 points over the next four
+    weeks, in all four seasons and at all eight windows tried; see
+    `ROLE_CHANGE_EVIDENCE`, which every claim row now carries. What replaces the
+    ordering is a product decision with more than one defensible answer -- rank
+    by recent points, blend, keep role change only as a tiebreak, or drop the
+    score from the ordering and leave it as a column -- so it is not settled
+    here unilaterally. What is settled is that nobody may now describe this
+    ordering as merely unmeasured.
 
     The contingency is resolved for the **whole pool before truncation**. It used
     to be read after `.head(limit)`, which meant it was only ever consulted for
@@ -502,7 +559,7 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
             "claim_priority": claim_priority(rank, rules),
             "drop": drop,
             "evidence": {
-                "role_change": UNMEASURED,
+                "role_change": ROLE_CHANGE_EVIDENCE,
                 "projection_lag": UNMEASURED,
                 "contingent_value": UNMEASURED,
                 "roster_need": UNMEASURED,
@@ -564,4 +621,336 @@ def waiver_report(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.Dat
             "status": "ok" if considered else "no free agents in the pool",
         },
         "claims": claims,
+    }
+
+
+# ------------------------------------------------------ does role change work
+
+# The horizon a claim is made for. You claim a man off waivers to start him over
+# the next month, not to hold him for a season, so this is what the score has to
+# predict if it is worth anything.
+OUTCOME_WEEKS = 4
+# A claim list is about this long, so this is the set a user actually acts on.
+# The question is not "does role_change correlate with anything" but "are the
+# ten it puts in front of you better than the ten something else would".
+TOP_K = 10
+# Positions a role change is defined for at all. A kicker has no target or carry
+# share, and a defense is not a player.
+SCORED_POSITIONS = ("RB", "WR", "TE")
+# The waiver pool, as a PROXY: historical ownership is in no source here, so
+# "unrostered" stands in as "nobody drafted him". `adp.preseason_ecr` is the last
+# August consensus before the season, which is leak-free by construction, and a
+# 16-team 14-round league drafts this many players. Anyone ranked worse than
+# that, or absent from the list, went undrafted.
+#
+# THE PROXY THIS REPLACED WAS THE MEASUREMENT'S BIGGEST DEFECT, and it is worth
+# the paragraph because it produced a large, consistent, wrong answer. The first
+# version defined the pool as "outside the top N at his position by points scored
+# SO FAR THIS SEASON", which sounds equivalent and is not: a star who misses
+# five weeks has few points to date and lands in the pool. Reading one cohort's
+# rows found Puka Nacua, Christian McCaffrey and T.J. Hockenson in a 2024 week-10
+# "waiver pool" -- all rostered in every league in the country, all returning
+# from injury, and so all carrying a high recent points per game with a huge four
+# weeks ahead of them. That handed the points-ranked baseline a population of
+# returning stars, which is not a comparison but a definition, and it did it
+# silently: every number was internally consistent and the effect was stable
+# across four seasons and eight windows.
+#
+# Preseason rank cannot go wrong that way, because missing games is not what puts
+# a player on it.
+DRAFTED_THROUGH = 16 * 14
+# Regular-season weeks. Week 18 exists and is scored, but a claim made for
+# weeks 15-18 is a playoff decision with different rules, so the last cohort
+# whose whole outcome window is regular season is the last one measured.
+LAST_REGULAR_WEEK = 18
+# Below this many players a top-10 comparison is not a comparison.
+MIN_POOL = 2 * TOP_K
+
+
+def _undrafted_keys(season: int) -> set[str]:
+    """Normalised names nobody drafted, by the August consensus before `season`.
+
+    The ownership proxy. Leak-free: an August snapshot cannot know what happens
+    in October, and unlike points-to-date it does not select for players who
+    missed games -- which is the trap this replaced.
+
+    A name absent from the consensus entirely is undrafted, which is the common
+    case and the point: the waiver pool is mostly people nobody ranked.
+    """
+    from . import adp as adp_mod
+    from .names import normalize as norm_name
+
+    ecr = adp_mod.preseason_ecr(season)
+    if ecr.empty:
+        return set()
+    del norm_name
+    return set(ecr[ecr["ecr"] <= DRAFTED_THROUGH]["_key"])
+
+
+def _positions(weekly: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
+    """Each player's position as of `week`, from the box scores themselves."""
+    w = weekly[(weekly["season"] == season) & (weekly["season_type"] == "REG")
+               & (weekly["week"] <= week)]
+    return w.groupby("player_id", observed=True).agg(
+        position=("position", "last")).reset_index()
+
+
+def _points_ahead(weekly: pd.DataFrame, season: int, lo: int, hi: int) -> pd.Series:
+    """PPR points per player over weeks [lo, hi]. A player with no row scored
+    nothing available to a lineup, which is the honest number for a claim."""
+    w = weekly[(weekly["season"] == season) & (weekly["season_type"] == "REG")
+               & (weekly["week"] >= lo) & (weekly["week"] <= hi)]
+    return w.groupby("player_id", observed=True)["fantasy_points_ppr"].sum()
+
+
+def role_change_cohort(weekly: pd.DataFrame, snaps: pd.DataFrame, season: int,
+                       week: int, recent: int = RECENT_WEEKS,
+                       prior: int = PRIOR_WEEKS, weeks_ahead: int = OUTCOME_WEEKS,
+                       top_k: int = TOP_K, min_prior_games: int = 0,
+                       drafted_keys: set[str] | None = None) -> dict | None:
+    """One Tuesday: rank the pool by role change, and by what they just scored.
+
+    The comparison is against recent points per game rather than against nothing,
+    because "rank the free agents by what they just scored" is what a waiver tool
+    without this feature does, and it is the case the module claims to get right.
+    Beating an empty pool would be no evidence at all -- almost any ranking beats
+    a random draw from a pool that contains a few real players.
+
+    Returns None when the week cannot be scored: no prior window, no outcome
+    window, or a pool too small for a top-ten comparison to mean anything.
+    """
+    if week - recent + 1 - prior < 1:
+        return None
+    if week + weeks_ahead > LAST_REGULAR_WEEK:
+        return None
+    changes = role_change(weekly, snaps, season, week, recent, prior)
+    if changes.empty:
+        return None
+    frame = changes.merge(_positions(weekly, season, week), on="player_id", how="left")
+    frame = frame[frame["position"].isin(SCORED_POSITIONS)]
+    drafted = drafted_keys if drafted_keys is not None else _undrafted_keys(season)
+    keys = frame["name"].map(norm_name)
+    pool = frame[~keys.isin(drafted)].copy()
+    pool = pool[pool["recent_games"] > 0]
+    if min_prior_games:
+        pool = pool[pool["prior_games"] >= min_prior_games]
+    if len(pool) < MIN_POOL:
+        return None
+
+    ahead = _points_ahead(weekly, season, week + 1, week + weeks_ahead)
+    pool["points_ahead"] = pool["player_id"].map(ahead).fillna(0.0)
+    pool["recent_ppg"] = pool["recent_points"] / pool["recent_games"]
+
+    # mergesort and a name tiebreak, so a pool full of ties does not hand the
+    # answer to the order of the input frame -- the same defect marge found in
+    # `rank_claims`, and it would be worse here because it would move a measured
+    # number rather than one row of a list.
+    def top(column: str) -> pd.DataFrame:
+        return pool.sort_values([column, "name"], ascending=[False, True],
+                                kind="mergesort").head(top_k)
+
+    by_role, by_points = top("role_change"), top("recent_ppg")
+    keep = ["name", "position", "role_change", "recent_ppg", "recent_games",
+            "prior_games", "points_ahead"]
+    return {
+        # The two lists themselves, so a result about them can be read rather
+        # than only summarised. A backtest that reports a single number and
+        # cannot show its rows is a backtest nobody can find the defect in.
+        "top_by_role_change": by_role[keep].to_dict("records"),
+        "top_by_recent_points": by_points[keep].to_dict("records"),
+        "season": int(season), "week": int(week), "pool": int(len(pool)),
+        "by_role_change": round(float(by_role["points_ahead"].mean()), 2),
+        "by_recent_points": round(float(by_points["points_ahead"].mean()), 2),
+        "pool_mean": round(float(pool["points_ahead"].mean()), 2),
+        "effect": round(float(by_role["points_ahead"].mean()
+                              - by_points["points_ahead"].mean()), 2),
+        # How much of the answer the two rankings already share. An effect near
+        # zero on a nine-of-ten overlap says the two disagree about one player,
+        # not that the score is worthless.
+        "overlap": int(len(set(by_role["name"]) & set(by_points["name"]))),
+        # The diagnostic that turned out to carry the result. `role_change` is a
+        # difference of shares and the prior share is filled with 0.0 for a
+        # player who has no prior window, so a man who did not play at all in
+        # those weeks scores his ENTIRE recent share as a change. `role_change`'s
+        # own docstring says the caller can tell that apart by `prior_games` 0 --
+        # and `rank_claims` does not.
+        "top_with_no_prior_window": int((by_role["prior_games"] <= 0).sum()),
+        "top_mean_prior_games": round(float(by_role["prior_games"].mean()), 2),
+    }
+
+
+def _effect_summary(rows: list[dict]) -> dict:
+    """Pool block rows, keeping the spread and the agreement visible.
+
+    Deliberately not `adp._block_summary`: that one reports `trials_changed` and
+    `players_swapped`, which are facts about paired mock drafts and have no
+    meaning here. Borrowing it would have filled those fields with something,
+    and a number nobody can interpret is worse than a field that is absent. What
+    carries over is the discipline and the arithmetic, `2 ** -(k - 1)` included.
+    """
+    gains = [r["effect"] for r in rows]
+    agree = bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains))
+    return {
+        "blocks": rows,
+        "effect": round(float(np.mean(gains)), 2) if gains else None,
+        "block_effects": gains,
+        # The distance between blocks of the same configuration: this harness's
+        # own noise for this term, and the number to read `effect` against.
+        "block_spread": round(float(max(gains) - min(gains)), 2) if gains else None,
+        # No agreement, no finding. A block at exactly 0 agrees with nothing.
+        "blocks_agree": agree,
+        # k blocks of a term that does nothing agree in sign with probability
+        # 2^-(k-1). At two blocks that is one coin flip, so `blocks_agree: true`
+        # is not a pass, and this sits beside it saying so.
+        "blocks_agree_p_null": round(0.5 ** (len(rows) - 1), 4) if rows else None,
+        "cohorts": sum(r["cohorts"] for r in rows),
+    }
+
+
+def role_change_backtest(seasons: list[int], recent: int = RECENT_WEEKS,
+                         prior: int = PRIOR_WEEKS, weeks_ahead: int = OUTCOME_WEEKS,
+                         top_k: int = TOP_K, blocks: int = 2,
+                         min_prior_games: int = 0, progress=None) -> dict:
+    """Does a role change through week w predict points in w+1..w+`weeks_ahead`?
+
+    The claim `role_change`'s docstring has carried as UNMEASURED since it was
+    written. Every Tuesday of every season is one cohort: take the pool, rank it
+    by role change and by recent points per game, and compare what the top ten of
+    each actually went on to score.
+
+    Blocks are ALTERNATING weeks, not early-season against late. Two disjoint
+    samples of the same process is the point, and the season's halves are not the
+    same process -- a role change in week 5 is news and the same change in week
+    13 is a fact everyone already has. Splitting early/late would measure the
+    calendar and report it as harness noise.
+
+    An effect whose blocks disagree in sign is a measurement of this harness and
+    not of the score, and `verdict` says so in words rather than leaving it to be
+    read off `blocks_agree`.
+    """
+    from . import sources
+
+    def say(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
+    out_seasons = []
+    for season in seasons:
+        weekly = sources.weekly_stats([season])
+        snaps = sources.snap_counts([season])
+        # Once per season: the consensus does not move during one.
+        drafted = _undrafted_keys(season)
+        cohorts = []
+        for week in range(1, LAST_REGULAR_WEEK + 1):
+            row = role_change_cohort(weekly, snaps, season, week, recent, prior,
+                                     weeks_ahead, top_k, min_prior_games, drafted)
+            if row is not None:
+                cohorts.append(row)
+                say(f"{season} week {week}: pool {row['pool']}, "
+                    f"role {row['by_role_change']:.1f} vs points "
+                    f"{row['by_recent_points']:.1f} "
+                    f"(overlap {row['overlap']}/{top_k}, "
+                    f"{row['top_with_no_prior_window']}/{top_k} of the role top "
+                    f"never played in the prior window)")
+        if len(cohorts) < blocks:
+            out_seasons.append({"season": int(season),
+                                "error": f"only {len(cohorts)} scorable weeks"})
+            continue
+        rows = []
+        for block in range(blocks):
+            chunk = cohorts[block::blocks]
+            rows.append({
+                "block": block + 1,
+                "weeks": [c["week"] for c in chunk],
+                "cohorts": len(chunk),
+                "by_role_change": round(float(np.mean(
+                    [c["by_role_change"] for c in chunk])), 2),
+                "by_recent_points": round(float(np.mean(
+                    [c["by_recent_points"] for c in chunk])), 2),
+                "pool_mean": round(float(np.mean([c["pool_mean"] for c in chunk])), 2),
+                "effect": round(float(np.mean([c["effect"] for c in chunk])), 2),
+                "mean_overlap": round(float(np.mean([c["overlap"] for c in chunk])), 1),
+                "mean_top_with_no_prior_window": round(float(np.mean(
+                    [c["top_with_no_prior_window"] for c in chunk])), 1),
+            })
+        out_seasons.append({"season": int(season), **_effect_summary(rows)})
+
+    scored = [s for s in out_seasons if "error" not in s]
+    agree = bool(scored) and all(s["blocks_agree"] for s in scored)
+    return {
+        "question": (f"do the top {top_k} by role change through week w outscore the "
+                     f"top {top_k} by recent points per game over weeks "
+                     f"w+1..w+{weeks_ahead}?"),
+        "windows": {"recent_weeks": int(recent), "prior_weeks": int(prior),
+                    "min_prior_games": int(min_prior_games)},
+        "seasons": out_seasons,
+        "blocks_agree": agree,
+        "pool_definition": (f"undrafted by the August consensus before the season "
+                            f"(preseason ECR worse than {DRAFTED_THROUGH}, or absent "
+                            "from it) -- a leak-free PROXY for unrostered, because "
+                            "historical ownership is in no source here"),
+        "verdict": effect_verdict({"seasons": out_seasons, "blocks_agree": agree}),
+    }
+
+
+def effect_verdict(out: dict) -> str:
+    """One line saying what this backtest's numbers will and will not carry.
+
+    Its own rather than `adp.block_verdict` because that one speaks of drafts and
+    improvements; the rule it states is the same and is stated the same way, so
+    that a role-change result and a bye result cannot be summed up differently by
+    whichever recipe printed them.
+    """
+    seasons = [s for s in out.get("seasons", []) if "error" not in s]
+    if not seasons:
+        return "nothing scored: no verdict"
+    p_null = next((s.get("blocks_agree_p_null") for s in seasons
+                   if s.get("blocks_agree_p_null") is not None), None)
+    if not out.get("blocks_agree"):
+        return ("the blocks disagree in sign in at least one season: this effect is "
+                "inside the harness's own noise and supports no weight")
+    odds = f" (one season's blocks agree by chance with probability {p_null})" if p_null \
+        else ""
+    return (f"every season's blocks agree in sign{odds}, so the sign is consistent — "
+            "which is an observation, not a pass, and says nothing about the magnitude")
+
+
+def window_sweep(seasons: list[int], windows: list[tuple[int, int]],
+                 weeks_ahead: int = OUTCOME_WEEKS, top_k: int = TOP_K,
+                 blocks: int = 2, min_prior_games: int = 0, progress=None) -> dict:
+    """The same measurement at several `(recent, prior)` settings.
+
+    One window is a choice about what counts as "changed", and a result measured
+    at a single setting is a result about that setting. Reporting the sweep is
+    also the only way to see the shape that matters most: a term whose sign
+    flips as the window moves by one week has not been measured, whatever any
+    single row of it says.
+    """
+    # Annotated: the row dicts hold both floats and a per-season mapping, and
+    # without this the inferred value type is a union that no comparison checks.
+    rows: list[dict[str, Any]] = []
+    for recent, prior in windows:
+        out = role_change_backtest(seasons, recent, prior, weeks_ahead, top_k,
+                                   blocks, min_prior_games, progress)
+        scored = [s for s in out["seasons"] if "error" not in s]
+        rows.append({
+            "recent_weeks": int(recent), "prior_weeks": int(prior),
+            "effect": round(float(np.mean([s["effect"] for s in scored])), 2)
+            if scored else None,
+            "worst_block_spread": round(float(max(s["block_spread"] for s in scored)), 2)
+            if scored else None,
+            "seasons_whose_blocks_agree": sum(1 for s in scored if s["blocks_agree"]),
+            "seasons_scored": len(scored),
+            "per_season": {s["season"]: s["effect"] for s in scored},
+        })
+    # float() rather than the raw value: the rows carry a per-season dict too, so
+    # the inferred value type is a union and a bare comparison does not check.
+    signs = [float(r["effect"]) for r in rows if r["effect"] is not None]
+    stable = bool(signs) and (all(v > 0 for v in signs) or all(v < 0 for v in signs))
+    return {
+        "windows": rows,
+        "sign_stable_across_windows": stable,
+        "verdict": ("the sign holds across every window tried" if stable else
+                    "the sign flips as the window moves, so no window here has "
+                    "measured anything"),
     }

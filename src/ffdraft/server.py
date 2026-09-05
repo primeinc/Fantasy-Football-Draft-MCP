@@ -2445,10 +2445,15 @@ def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
     claim and is not listed; `census` says how many were considered, so an empty
     list is readable as a quiet week rather than a broken pull.
 
-    **Read the labels.** Three of the four scores carry `unmeasured` in every
-    row: role change, projection lag and contingent value have no backtest, so
-    the ranking is by a quantity whose predictive value is unknown. Role entropy
-    carries its real result. `shape` marks the free-agent pool and the ownership
+    **Read the labels.** Projection lag and contingent value carry `unmeasured`
+    in every row: they have no backtest. Role entropy carries a real result, and
+    so, now, does role change — **a negative one**. Over 2022-2025 the top ten by
+    role change scored 6.4 to 10.1 fewer PPR points over the following four weeks
+    than the top ten by recent points per game from the same undrafted pool, in
+    every season and at every window tried. The list is still ordered by role
+    change; what should replace that ordering is a product decision that has not
+    been made, and until it is, the ordering is one the evidence is against and
+    every row says so. `shape` marks the free-agent pool and the ownership
     move `unverified-shape`: the capture these were written against was taken
     mid-draft, when ESPN reports every player as a free agent, so the split this
     selects on has not been exercised against a real in-season pull.

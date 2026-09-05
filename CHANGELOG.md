@@ -305,6 +305,92 @@ All notable changes to this project. Format follows
   disagree about what a week was worth. It returns None rather than zeros when
   the season has no rows, and None rather than raising when the source is
   unavailable.
+**Role change is measured, and the measurement is against it (#45 M3)**
+- `role_change_backtest` and `just rolechange [one|sweep|names]`. Every Tuesday
+  of 2022-2025 is one cohort: take the undrafted pool, rank it by role change and
+  by recent points per game, and compare what the top ten of each went on to
+  score over the next four weeks. Two blocks of alternating weeks per season —
+  alternating, not early against late, because a role change in week 5 is news
+  and the same change in week 13 is a fact everybody already has, so an
+  early/late split would measure the calendar and report it as harness noise.
+- **The result is negative and it is not close.** Top ten by role change against
+  top ten by recent points per game, points over the following four weeks:
+
+      season   blocks           effect   spread   blocks agree
+      2022     -10.59  -9.53    -10.06     1.06   yes
+      2023      -5.97  -6.84     -6.40     0.87   yes
+      2024      -9.31  -8.71     -9.01     0.60   yes
+      2025      -6.52  -7.00     -6.76     0.48   yes
+
+  Every block is negative and every spread is far smaller than the effect it
+  sits beside, which is the opposite of the bye result where the spread swallowed
+  the mean.
+- **Window sweep**, promised when the two-week/three-week choice was made, and
+  the sign does not depend on it. `(recent, prior)` against effect and worst
+  spread: (1,2) -8.61/7.05, (1,3) -8.62/10.50, (2,2) -8.34/3.65, **(2,3)
+  -8.06/1.06**, (2,4) -7.14/2.81, (3,3) -7.70/5.07, (3,4) -7.35/3.96, (4,4)
+  -8.21/3.30. Sixty-four blocks, all negative. The shipped 2/3 window is neither
+  the best nor the worst effect and has the tightest spread of the eight.
+- Requiring a prior window (`min_prior_games=1`) recovers 1.0 to 1.7 points and
+  changes no sign. So the zero-fill for a player with no prior window — his whole
+  recent share counts as a change — is a real but minor contributor, not the
+  mechanism. Measured rather than assumed: only 1 to 3 of each top ten had no
+  prior window.
+- **The first version of this measurement was wrong, in the flattering
+  direction, and reading the rows is what found it.** The pool was defined as
+  "outside the top N at his position by points scored so far this season", which
+  sounds like "unrostered" and is not: a star who misses five weeks has few
+  points to date. The 2024 week-10 "waiver pool" contained Puka Nacua, Christian
+  McCaffrey and T.J. Hockenson — rostered in every league in the country, all
+  returning from injury, all carrying a high recent points per game and a huge
+  four weeks ahead. That handed the points baseline a population of returning
+  stars. The pool is now "undrafted by the August consensus before the season"
+  (`adp.preseason_ecr`, ECR worse than 16x14), which is leak-free and cannot
+  select for missing games. Correcting it made the result *more* negative, not
+  less, so the confound was masking part of the effect rather than creating it.
+- Every number here is stable across a defect that changed the pool wholesale,
+  which is the only reason to report a magnitude at all. What it does not carry:
+  by November the best undrafted players have been claimed, and preseason rank
+  cannot know that. Those unavailable players are more likely to be picked by the
+  points ranking than by the role ranking, so the true gap for genuinely
+  claimable players is smaller than the headline. That check is not run here.
+- `evidence.role_change` in every claim row, `role_change_evidence` in every
+  frame row, and the `waiver_targets` docstring now carry the result instead of
+  `unmeasured`. A label saying "no evidence either way" would be a false
+  statement about a score whose evidence exists and is negative — worse than the
+  honest absence it replaced. Three tests that asserted `== UNMEASURED` were
+  updated to assert the measured value, not loosened.
+- **The ordering is not changed here.** `rank_claims` still orders by role change
+  with weight 1, and its docstring said the backtest was what licensed that
+  weight. The backtest has run and does not license it — but what replaces it
+  (rank by recent points, blend, keep role change as a tiebreak, drop it from the
+  ordering and leave it as a column) is a product decision with more than one
+  defensible answer, so it is escalated rather than settled unilaterally. What is
+  settled is that nobody may now call this ordering merely unmeasured.
+
+**A traded player was two players, and it crashed the tool (#45 M3)**
+- Found by the backtest, not by reading: Cam Akers occupied two of one ranked
+  ten. `role_change` grouped by `["player_id", "player_display_name",
+  "recent_team"]`, so a player traded inside a window produced one row per team —
+  6 players in 2024 week 10 alone, 1229 rows for 1223 players.
+- Not cosmetic. `rank_claims` does `by_name.loc[name]`, which returns a *frame*
+  for a duplicated label, and `float()` of a two-row Series raises. Reproduced:
+  `TypeError: float() argument must be a string or a real number, not 'Series'`.
+  `waiver_targets` would have crashed with a traceback the first time a traded
+  player sat on waivers, which is one of the commonest ways to end up there.
+- Fixed by joining team totals per `(team, week)` and grouping on `player_id`
+  alone, with an assertion on the way out that the frame holds one row per
+  player. The same join fixes a second defect it exposed: the denominator used to
+  be the team's whole window even in weeks the player did not play, so a man who
+  missed one game looked like his role had halved — measured at 0.130 against
+  0.231 on the fixture. That put availability inside a measure of role, which is
+  the one thing it must not contain.
+- **The first version of the regression test passed against the defect.** The
+  fixture moved the player at the start of the recent window, which gives him one
+  team per window and no duplicate at all. The control run — restore the defect,
+  require the tests to fail — is what found that, and all three now fail on it,
+  one with the production traceback.
+
 **`waiver_targets`: the claim list, wired to a tool that says what it does not know**
 - `waiver_targets(league_id, week)` and `just waivers <week>` (#45). The pool is
   `kona_player_info` with ownership, the settings are `mSettings`, and the

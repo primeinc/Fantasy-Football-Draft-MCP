@@ -1116,6 +1116,96 @@ waivers $week $league_id='' $limit='8':
     print("measured: role entropy only. role change, projection lag and contingent "
           "value are unmeasured; the pool shape is unverified until an in-season pull.")
 
+# Does a role change through week w predict points in w+1..w+4? ($what: one|sweep|names)
+[script]
+rolechange $what='one' $seasons='2022,2023,2024,2025' $recent='2' $prior='3' $blocks='2' $min_prior_games='0' $week='10':
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    from ffdraft import waivers
+
+    seasons = [int(s) for s in os.environ["seasons"].split(",") if s.strip()]
+    recent, prior = int(os.environ["recent"]), int(os.environ["prior"])
+    blocks = int(os.environ["blocks"])
+    min_prior = int(os.environ["min_prior_games"])
+
+    def say(msg):
+        print("  " + msg)
+
+    if os.environ["what"] == "names":
+        # The rows behind one Tuesday. A backtest whose rows cannot be read is a
+        # backtest nobody can find the defect in, and the number this one
+        # produces is decisive enough to deserve reading.
+        from ffdraft import sources
+
+        season = seasons[0]
+        week = int(os.environ.get("week") or 10)
+        row = waivers.role_change_cohort(sources.weekly_stats([season]),
+                                         sources.snap_counts([season]), season,
+                                         week, recent, prior,
+                                         min_prior_games=min_prior)
+        if row is None:
+            sys.exit(f"{season} week {week} is not scorable at this window")
+        print(f"{season} week {week}: pool {row['pool']}, "
+              f"role top scored {row['by_role_change']:.1f} over the next four, "
+              f"points top scored {row['by_recent_points']:.1f}, "
+              f"pool mean {row['pool_mean']:.1f}")
+        for label in ("top_by_role_change", "top_by_recent_points"):
+            print()
+            print(label)
+            hdr = (f"  {'player':<26}{'pos':<5}{'role':>7}{'ppg':>7}{'rec g':>7}"
+                   f"{'pri g':>7}{'next 4':>9}")
+            print(hdr)
+            print("  " + "-" * (len(hdr) - 2))
+            for r in row[label]:
+                print(f"  {str(r['name'])[:25]:<26}{str(r['position']):<5}"
+                      f"{r['role_change']:>7.3f}{r['recent_ppg']:>7.1f}"
+                      f"{r['recent_games']:>7.0f}{r['prior_games']:>7.0f}"
+                      f"{r['points_ahead']:>9.1f}")
+        sys.exit(0)
+
+    if os.environ["what"] == "sweep":
+        # Windows either side of the shipped 2/3, so a sign that only holds at
+        # one setting is visible as such rather than reported as a result.
+        grid = [(1, 2), (1, 3), (2, 2), (2, 3), (2, 4), (3, 3), (3, 4), (4, 4)]
+        out = waivers.window_sweep(seasons, grid, blocks=blocks,
+                                   min_prior_games=min_prior, progress=None)
+        hdr = (f"{'recent':>7}{'prior':>7}{'effect':>9}{'worst spread':>14}"
+               f"{'seasons agreeing':>18}")
+        print(hdr)
+        print("-" * len(hdr))
+        for row in out["windows"]:
+            eff = "-" if row["effect"] is None else f"{row['effect']:+.2f}"
+            spread = "-" if row["worst_block_spread"] is None \
+                else f"{row['worst_block_spread']:.2f}"
+            print(f"{row['recent_weeks']:>7}{row['prior_weeks']:>7}{eff:>9}{spread:>14}"
+                  f"{row['seasons_whose_blocks_agree']:>10}/{row['seasons_scored']}")
+        print()
+        print(out["verdict"])
+        sys.exit(0)
+
+    out = waivers.role_change_backtest(seasons, recent, prior, blocks=blocks,
+                                       min_prior_games=min_prior, progress=say)
+    print()
+    print(out["question"])
+    print(f"windows: {recent} recent weeks against the {prior} before them")
+    print(f"pool: {out['pool_definition']}")
+    print()
+    hdr = (f"{'season':>7}{'blocks':>28}{'effect':>9}{'spread':>9}{'agree':>7}"
+           f"{'cohorts':>9}")
+    print(hdr)
+    print("-" * len(hdr))
+    for s in out["seasons"]:
+        if "error" in s:
+            print(f"{s['season']:>7}  {s['error']}")
+            continue
+        per = " ".join(f"{v:+.2f}" for v in s["block_effects"])
+        print(f"{s['season']:>7}{per:>28}{s['effect']:>+9.2f}{s['block_spread']:>9.2f}"
+              f"{str(s['blocks_agree']):>7}{s['cohorts']:>9}")
+    print()
+    print(out["verdict"])
+
 # Probe every external data surface; see docs/data-sources.md
 [script]
 surfaces:

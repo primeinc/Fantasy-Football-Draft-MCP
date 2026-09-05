@@ -1138,10 +1138,16 @@ broken free-agent pull both produce `claims: []`, and those are the two most
 different answers this tool has; `status` tells them apart rather than leaving
 it to be inferred from a zero.
 
-**Three of the four scores are `unmeasured` and every row says so.** Role
-change, projection lag and contingent value have no backtest, so the ranking is
-by a quantity whose predictive value is unknown; `evidence.role_entropy` alone
-carries a real result. Ordering is role-movers by `role_change` first, then live
+**Role change has been measured and the result is against it.** Over 2022-2025
+the top ten by role change scored 6.4 to 10.1 fewer PPR points over the following
+four weeks than the top ten by recent points per game drawn from the same
+undrafted pool — every season, both blocks, and all eight `(recent, prior)`
+windows tried, 64 blocks in all. `just rolechange` reproduces it and
+`just rolechange names` prints the rows behind one Tuesday. Projection lag and
+contingent value remain `unmeasured`; `evidence.role_entropy` carries a positive
+result. The list is still ordered by role change, because what should replace
+that ordering is a product decision nobody has made yet — but every row now says
+what the evidence found rather than that there is none. Ordering is role-movers by `role_change` first, then live
 contingencies by `contingent_value` — weight 1 on one term and 0 on the rest,
 which is a stated policy about which question to read first, not a measurement.
 The four numbers stay in the row where a human can override them rather than

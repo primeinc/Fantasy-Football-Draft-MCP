@@ -98,8 +98,19 @@ class TestRoleChange:
         assert c["target_share_change"] == pytest.approx(0.0)
         assert c["snap_share_change"] == pytest.approx(0.0)
 
-    def test_every_role_change_row_says_it_is_unmeasured(self):
-        assert (changes()["role_change_evidence"] == waivers.UNMEASURED).all()
+    def test_every_role_change_row_carries_the_measured_result(self):
+        """It is measured now, and it went against the score.
+
+        This assertion used to read `== waivers.UNMEASURED` and was true when it
+        was written. The backtest is what changed it: a label saying "no evidence
+        either way" would now be a false statement about a score whose evidence
+        exists and is negative, which is worse than the honest absence it
+        replaced.
+        """
+        ev = changes()["role_change_evidence"]
+        assert (ev == waivers.ROLE_CHANGE_EVIDENCE).all()
+        assert (ev != waivers.UNMEASURED).all()
+        assert "NEGATIVE" in waivers.ROLE_CHANGE_EVIDENCE
 
     def test_a_player_with_no_prior_window_is_a_new_role_not_a_changed_one(self):
         w = weekly()
@@ -225,6 +236,67 @@ class TestFreeAgents:
         assert waivers.free_agents([]).empty
 
 
+class TestATradedPlayerIsOnePlayer:
+    """A player traded mid-window used to produce one row per team.
+
+    Found by the milestone-3 backtest rather than by reading: Cam Akers appeared
+    twice in one ranked ten. It is not a cosmetic duplicate. `rank_claims` does
+    `by_name.loc[name]`, which returns a FRAME for a duplicated label, and
+    `float()` of a two-row Series raises -- so `waiver_targets` crashed with a
+    traceback the first time a traded player sat on waivers, which is one of the
+    commonest ways to end up there. Six players in 2024 week 10 alone.
+    """
+
+    def weekly_with_a_trade(self):
+        w = weekly()
+        # The move must land INSIDE a window, not between two. A trade in the gap
+        # gives him one team per window and no duplicate at all: the first
+        # version of this fixture moved him at WEEK-1, which is the start of the
+        # recent window, and both tests passed against the defect. The control
+        # run is what found that, not the tests.
+        moved = (w["player_display_name"] == "Noise Guy") & (w["week"] >= WEEK)
+        w.loc[moved, "recent_team"] = "DDD"
+        # The new team needs team-mates, or his share of it is 1.0 by default.
+        extra = []
+        for wk in range(1, WEEK + 1):
+            extra.append({"player_id": "00-rest-DDD", "player_display_name": "Rest DDD",
+                          "recent_team": "DDD", "week": wk, "targets": 30, "carries": 20,
+                          "fantasy_points_ppr": 10.0, "season": SEASON,
+                          "season_type": "REG"})
+        return pd.concat([w, pd.DataFrame(extra)], ignore_index=True)
+
+    def test_a_trade_does_not_split_him_in_two(self):
+        c = waivers.role_change(self.weekly_with_a_trade(), snaps(), SEASON, WEEK)
+        assert len(c) == c["player_id"].nunique(), "one row per player"
+        assert (c["name"] == "Noise Guy").sum() == 1
+
+    def test_rank_claims_does_not_raise_on_him(self):
+        """The crash itself, at the surface that crashed."""
+        c = waivers.role_change(self.weekly_with_a_trade(), snaps(), SEASON, WEEK)
+        pool = pd.DataFrame([{"name": "Noise Guy", "position": "WR",
+                              "percent_owned": 1.0, "percent_change": 0.1}])
+        bench = pd.DataFrame({"name": ["Spare Guy"], "position": ["WR"],
+                              "proj_points": [40.0], "exp_games": [17.0],
+                              "injury_risk": [0.2], "bye_week": [np.nan]})
+        claims = waivers.rank_claims(pool, c, pd.DataFrame(), league(),
+                                     waivers.LeagueRules(), bench, bench, limit=5)
+        assert isinstance(claims, list)
+
+    def test_a_week_he_missed_does_not_shrink_his_role(self):
+        """The other half of the same fix: the denominator is now the team's
+        totals in the weeks he PLAYED, not the whole window. Counting the weeks
+        he was out put availability inside a measure of role, which is the one
+        thing it must not contain."""
+        w = weekly()
+        out_week = w[(w["player_display_name"] == "Breakout Guy")
+                     & (w["week"] == WEEK - 1)].index
+        played = waivers.role_change(w, snaps(), SEASON, WEEK).set_index("name")
+        missed = waivers.role_change(w.drop(index=out_week), snaps(), SEASON,
+                                     WEEK).set_index("name")
+        assert missed.loc["Breakout Guy", "recent_target_share"] == pytest.approx(
+            played.loc["Breakout Guy", "recent_target_share"], abs=1e-9)
+
+
 class TestRankedClaims:
     """The deliverable: the three fixture players ordered, qualified and dropped."""
 
@@ -302,7 +374,7 @@ class TestRankedClaims:
 
     def test_every_claim_says_what_is_measured_and_what_is_not(self):
         c = self.claims()[0]
-        assert c["evidence"]["role_change"] == waivers.UNMEASURED
+        assert c["evidence"]["role_change"] == waivers.ROLE_CHANGE_EVIDENCE
         assert c["evidence"]["projection_lag"] == waivers.UNMEASURED
         assert c["evidence"]["contingent_value"] == waivers.UNMEASURED
         assert c["evidence"]["roster_need"] == waivers.UNMEASURED
@@ -492,7 +564,8 @@ class TestTheTool:
         out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
         assert out["claims"], "the fixture week must produce a claim to label"
         ev = out["claims"][0]["evidence"]
-        assert ev["role_change"] == waivers.UNMEASURED
+        assert ev["role_change"] == waivers.ROLE_CHANGE_EVIDENCE
+        assert ev["projection_lag"] == waivers.UNMEASURED
         assert "0.381/0.529/0.707" in ev["role_entropy"]
         assert out["claims"][0]["shape"]["free_agent_pool"] == waivers.UNVERIFIED_SHAPE
 
