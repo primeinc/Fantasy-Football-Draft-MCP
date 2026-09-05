@@ -18,11 +18,20 @@ from ffdraft.model import (
 
 class TestDiscount:
     def test_a_discount_lowers_a_value_of_either_sign(self):
+        # A multiplier of 0.2 means "move this by 80% of its own size", applied
+        # by reflection below zero.
         out = _discount(pd.Series([10.0, -10.0]), pd.Series([0.2, 0.2]))
         assert abs(out[0] - 2.0) < 1e-9
-        assert abs(out[1] + 50.0) < 1e-9
+        assert abs(out[1] + 18.0) < 1e-9
         # Both moved down the list, which is what a discount has to mean.
         assert out[0] < 10.0 and out[1] < -10.0
+
+    def test_the_penalty_is_bounded(self):
+        # Dividing would be unbounded: need_mult bottoms out at 0.02, so a
+        # negative value could be inflated fiftyfold, which is invisible in a
+        # ranking and ruinous in replay's per-team sum of pick_regret.
+        out = _discount(pd.Series([-10.0, -10.0]), pd.Series([0.02, 0.0]))
+        assert all(abs(v) <= 20.0 for v in out)
 
     def test_a_boost_raises_a_value_of_either_sign(self):
         out = _discount(pd.Series([10.0, -10.0]), pd.Series([1.3, 1.3]))

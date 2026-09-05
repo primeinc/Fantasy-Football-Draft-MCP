@@ -395,11 +395,27 @@ All notable changes to this project. Format follows
   loss (0.416), which is the control — nothing that does not read pick_value
   moved. The case for the change is that the ordering was wrong, not that the
   blend got better.
-  One consequence to know: dividing inflates the magnitude of an already
-  negative pick_value (Cam Ward reads -892 where he read -1.43), so `replay`'s
-  `pick_regret` against a deeply negative actual pick is now a much larger
-  number. Ordering is what pick_value is for and it is now right; magnitudes on
-  the negative side are not comparable with earlier runs.
+  The first version of this divided, which expresses the same ordering but is
+  unbounded: `need_mult` bottoms out at 0.02, so a negative pick_value could be
+  inflated fiftyfold. Invisible in a ranking and ruinous in a sum — `replay`
+  sums `pick_regret` per team and `_team_totals` *sorts the team table on it*,
+  and one backup quarterback at pick 108 (Mac Jones, need 0.04) gave slot 12 a
+  summed regret of 8641 against 398 for the next worst, with `biggest_regrets`
+  showing that single row at 8494 instead of five informative ones. otto caught
+  it.
+  A multiplier of `m` is now read as "move this by (1 - m) of its own size" —
+  what multiplying already means above zero, applied by reflection below it as
+  `v * (2 - m)`. Bounded at twice the magnitude, so no single pick can take over
+  an aggregate. On the live board the worst team's summed regret is 400 against
+  359 for the next worst (1.1x, against 21x under division), and
+  `biggest_regrets` reads Mac Jones 254, KC Concepcion 152, Rashod Bateman 110,
+  Jadarian Price 96, Matthew Golden 88.
+  The ordering fix survives the bound: at pick 123 the backup quarterbacks that
+  multiplication put at ranks 15, 18, 19 and 20 (Justin Fields, Daniel Jones,
+  Tua Tagovailoa, Carson Wentz) sit at 141, 69, 108 and 295 of 577, and C.J.
+  Stroud — a starter the model rates — holds rank 8 under both. `DISCOUNT_CEILING`
+  guards the one place the reflection stops being monotone; nothing in
+  `recommend` approaches it (role caps at 1.3, need at 1.18).
 - Known limitation this exposed, not fixed here: `plan_my_draft`'s availability
   filter drops the pool to 9 rows by pick 189, all of them role-unknown, so its
   last three picks are forced rather than chosen and the scaling cannot change

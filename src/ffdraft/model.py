@@ -680,10 +680,11 @@ def score_special_teams(special: pd.DataFrame, board: pd.DataFrame,
     return out
 
 
-# No multiplier applied by _discount comes near zero -- need bottoms out at 0.02,
-# role at ROLE_FLOOR, bye at 0.5 -- but np.where evaluates both branches, so a
-# zero would emit a divide warning and put inf in a row the branch never picks.
-DISCOUNT_FLOOR = 1e-6
+# A multiplier above this would flip the sign of a negative pick_value rather
+# than push it further down. Nothing in `recommend` comes close -- role caps at
+# ROLE_CEILING 1.3, need at 1.18 -- but the reflection below is only monotone
+# while it holds.
+DISCOUNT_CEILING = 2.0
 
 
 def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
@@ -697,16 +698,26 @@ def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
     *toward* zero, so the ordering inside the negative half comes out inverted:
     with need_mult 0.04 for a second quarterback, the worse the backup the
     higher he ranked, and recommendation ranks 17 to 22 were six consecutive
-    backup QBs ordered by how bad they are. Dividing is the same penalty with
-    the sign the other way round.
+    backup QBs ordered by how bad they are.
 
-    Every multiplier in `recommend` goes through here, so the three of them
-    cannot drift apart on this.
+    A multiplier of `m` is read as "move this by (1 - m) of its own size", which
+    is what multiplying already means for a positive value and is applied by
+    reflection to a negative one: `v * (2 - m)`. Dividing would express the same
+    ordering, and was the first fix here, but it is unbounded -- `need_mult`
+    bottoms out at 0.02, so a negative value could be inflated fiftyfold. That
+    is invisible in a ranking and ruinous in a sum: `replay` sums `pick_regret`
+    per team and sorts the team table on it, and one backup quarterback at pick
+    108 gave his team a regret of 8641 against 398 for the next worst. The
+    reflection is bounded at twice the magnitude, so no single pick can take
+    over an aggregate.
+
+    Every multiplier in `recommend` goes through here, so they cannot drift
+    apart on this.
     """
     v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
     m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
-    m = np.where(np.abs(m) < DISCOUNT_FLOOR, DISCOUNT_FLOOR, m)
-    return np.where(v >= 0, v * m, v / m)
+    m = np.clip(m, 0.0, DISCOUNT_CEILING)
+    return np.where(v >= 0, v * m, v * (2.0 - m))
 
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
