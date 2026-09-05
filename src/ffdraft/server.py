@@ -136,10 +136,17 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         # market columns are joined again.
         stale_key = int(b["key_version"].iloc[0]) != names.KEY_VERSION \
             if "key_version" in b.columns and len(b) else True
-        if stale_key or (bd.espn_adp_configured() and "adp_source" in b.columns
-                         and (not (b["adp_source"] == "espn").any()
-                              or "espn_rank" not in b.columns
-                              or "adp_match" not in b.columns)):
+        # The market columns were derived by rules that may since have changed
+        # (attach_adp's join), which nothing else here would notice: a board
+        # cached by an older join still has adp_match and espn rows on every
+        # row, so every clause below passes and the stale prices survive.
+        stale_join = int(b["market_join_version"].iloc[0]) != bd.MARKET_JOIN_VERSION \
+            if "market_join_version" in b.columns and len(b) else True
+        repriced = bd.espn_adp_configured() and "adp_source" in b.columns and (
+            not (b["adp_source"] == "espn").any()
+            or "espn_rank" not in b.columns
+            or "adp_match" not in b.columns)
+        if stale_key or stale_join or repriced:
             b = _price_board(bd.strip_adp(b), league)
             changed = True
         if changed:

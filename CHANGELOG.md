@@ -169,6 +169,14 @@ All notable changes to this project. Format follows
   `alias` 2, `lastname_initial` 1, unpriced 9. Nothing lost its price; the two
   `key_only` rows (Riley Nowakowski, Max Bredeson — tight ends ESPN lists at
   RB) are now labelled honestly instead of counted as exact.
+- `board.MARKET_JOIN_VERSION`, stamped on every board by `attach_adp` and
+  checked by `server._build_board`, alongside `names.KEY_VERSION`. Without it
+  the join fix above would never have reached a board already on disk: a board
+  cached by the old join carries `adp_match` and ESPN-sourced rows, so every
+  other clause in the cache gate passes and the stale prices survive until
+  something unrelated forces a reprice. Bump it whenever `attach_adp` changes
+  what a row joins to. `market_join_report` now caps `alias_joined` and
+  `key_only` at `limit` like `unjoined`, and reports the untruncated totals.
 - `names.normalize` folds accents: nflverse "Audric Estimé" and ESPN "Audric
   Estime" keyed differently, so his ESPN ADP (169.99, undrafted) never joined
   and the synthetic fallback priced him at 110.7. The walk-forward ADP

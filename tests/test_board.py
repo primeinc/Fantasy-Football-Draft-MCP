@@ -166,6 +166,44 @@ class TestRepriceCachedBoard:
         assert int(pd.read_parquet(path)["key_version"].iloc[0]) == names.KEY_VERSION
         server._BOARDS.pop(league.cache_key(), None)
 
+    def test_board_joined_by_an_older_market_join_is_repriced(self, monkeypatch, tmp_path):
+        from ffdraft import server
+
+        monkeypatch.setenv("ESPN_LEAGUE_ID", "1")
+        monkeypatch.setenv("ESPN_SWID", "{A}")
+        monkeypatch.setenv("ESPN_S2", "s")
+        league, _ = server._settings()
+        path = tmp_path / "board.parquet"
+        # Nothing else in the cache gate can fire: the key version is current,
+        # adp_source is espn, espn_rank and adp_match are both present. Only
+        # the market-join version is old, and what it left behind is the
+        # collision -- a tight end wearing the ADP and rank of the running back
+        # who shares his name.
+        stale = pd.DataFrame({"name": ["Terry Case", "Terry Case"],
+                              "position": ["TE", "RB"], "team": ["GB", "MIN"],
+                              "pos_rank": [30, 40], "overall_rank": [200, 210],
+                              "bye_week": [5, 6], "adp": [88.0, 88.0],
+                              "adp_source": ["espn", "espn"],
+                              "adp_match": ["exact", "exact"],
+                              "adp_delta": [0.0, 0.0], "adp_format": ["ppr", "ppr"],
+                              "espn_rank": [70, 70],
+                              "key_version": [names.KEY_VERSION] * 2,
+                              "market_join_version": [board.MARKET_JOIN_VERSION - 1] * 2})
+        stale.to_parquet(path, index=False)
+        monkeypatch.setattr(server, "_board_path", lambda _l: path)
+        monkeypatch.setattr(board, "load_adp", lambda **_k: pd.DataFrame(
+            {"name": ["Terry Case", "Terry Case"], "position": ["TE", "RB"],
+             "adp": [140.0, 88.0], "_key": ["terry case", "terry case"],
+             "espn_rank": [150, 70], "source": ["espn_adp", "espn_adp"]}))
+        server._BOARDS.pop(league.cache_key(), None)
+
+        b = server._build_board().set_index("position")
+        assert b.loc["TE", "adp"] == 140.0 and b.loc["RB", "adp"] == 88.0
+        assert int(b.loc["TE", "espn_rank"]) == 150
+        saved = pd.read_parquet(path)
+        assert int(saved["market_join_version"].iloc[0]) == board.MARKET_JOIN_VERSION
+        server._BOARDS.pop(league.cache_key(), None)
+
 
 class TestTeamStrength:
     def test_ranks_best_lineups_and_counts_open_slots(self, tmp_path, monkeypatch):
@@ -368,6 +406,23 @@ class TestMarketJoin:
         assert out["adp_source"].iloc[0] == "espn"
         rep = board.market_join_report(out)
         assert rep["key_only"] == [{"name": "Trey Palmer", "position": "RB", "adp": 300.0}]
+
+    def test_alias_pass_survives_an_exact_pass_that_matched_nothing(self):
+        # Only the alias index can price this board, so the exact merge leaves
+        # espn_injury behind as an all-NaN float column. Writing a string into
+        # it has to go through a whole-column assignment, not a cell at a time.
+        b = pd.DataFrame({"name": ["Josh Palmer"], "position": ["WR"],
+                          "pos_rank": [50], "overall_rank": [200],
+                          "proj_points": [110.0]})
+        adp = pd.DataFrame({"name": ["Joshua Palmer"], "position": ["WR"],
+                            "adp": [150.0], "espn_rank": [140], "espn_proj": [120.0],
+                            "espn_injury": ["QUESTIONABLE"], "source": ["espn_adp"]})
+        adp["_key"] = adp["name"].map(board.norm_name)
+        out = board.attach_adp(b, adp)
+        assert out["adp_match"].iloc[0] == "alias"
+        assert out["adp"].iloc[0] == 150.0
+        assert out["espn_injury"].iloc[0] == "QUESTIONABLE"
+        assert out["espn_proj"].iloc[0] == 120.0
 
     def test_ambiguous_key_at_an_unlisted_position_is_not_priced(self):
         # Josh Allen the tight end is neither of the two the market knows, and

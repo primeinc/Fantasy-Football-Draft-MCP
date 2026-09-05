@@ -182,10 +182,10 @@ audit:
     print(f"market join: {mj['unjoined_total']} rows priced synthetically; strongest projections:")
     for u in mj["unjoined"]:
         print(f"  {u['name']:<26} {u['position']:<3} {u.get('team', '')!s:<4} proj {u['proj_points']:>6} synthetic adp {u['synthetic_adp']:>6}")
-    print(f"priced through an alias: {len(mj['alias_joined'])}")
+    print(f"priced through an alias: {mj['alias_joined_total']}")
     for a in mj["alias_joined"]:
         print(f"  {a['name']:<26} {a['position']:<3} {a['how']:<17} adp {a['adp']:>6}")
-    print(f"priced on the name alone (market lists another position): {len(mj['key_only'])}")
+    print(f"priced on the name alone (market lists another position): {mj['key_only_total']}")
     for a in mj["key_only"]:
         print(f"  {a['name']:<26} {a['position']:<3} adp {a['adp']:>6}")
 

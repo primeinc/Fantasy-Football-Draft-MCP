@@ -140,7 +140,8 @@ def espn_adp_configured() -> bool:
 def strip_adp(board: pd.DataFrame) -> pd.DataFrame:
     """The board without its market columns, ready for attach_adp again."""
     return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format",
-                                           "adp_match", "espn_proj", "espn_injury", "espn_rank")
+                                           "adp_match", "market_join_version",
+                                           "espn_proj", "espn_injury", "espn_rank")
                                if c in board.columns])
 
 
@@ -354,6 +355,12 @@ ALIAS_JOINS = ("alias", "lastname_initial")
 # plays.
 EXACT_JOIN = "exact"
 KEY_ONLY_JOIN = "key_only"
+# Bumped whenever attach_adp changes what a board row joins to. A cached board
+# stamped with an older version is repriced on load (server._build_board), for
+# the same reason names.KEY_VERSION exists: the projections in the parquet are
+# still good, but the market columns beside them were derived by rules that no
+# longer hold, and nothing else in the cache gate would notice.
+MARKET_JOIN_VERSION = 2
 
 
 def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
@@ -372,15 +379,22 @@ def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
     for u in unjoined:
         u.pop("adp", None)
     alias, key_only = [], []
+    alias_total = key_only_total = 0
     if "adp_match" in board.columns:
+        # Both lists are capped like `unjoined`: a market frame that labels
+        # positions differently across the board would otherwise print
+        # hundreds of rows into an audit meant to be read.
         al = board[board["adp_match"].isin(ALIAS_JOINS)]
+        alias_total = int(len(al))
         alias = [{"name": r["name"], "position": r["position"], "how": r["adp_match"],
-                  "adp": round(float(r["adp"]), 1)} for _, r in al.iterrows()]
+                  "adp": round(float(r["adp"]), 1)} for _, r in al.head(limit).iterrows()]
         ko = board[board["adp_match"] == KEY_ONLY_JOIN]
+        key_only_total = int(len(ko))
         key_only = [{"name": r["name"], "position": r["position"],
-                     "adp": round(float(r["adp"]), 1)} for _, r in ko.iterrows()]
-    return {"unjoined": unjoined, "unjoined_total": int(len(un)), "alias_joined": alias,
-            "key_only": key_only}
+                     "adp": round(float(r["adp"]), 1)} for _, r in ko.head(limit).iterrows()]
+    return {"unjoined": unjoined, "unjoined_total": int(len(un)),
+            "alias_joined": alias, "alias_joined_total": alias_total,
+            "key_only": key_only, "key_only_total": key_only_total}
 
 
 def _exact_market_join(b: pd.DataFrame, src: pd.DataFrame, extra: list[str]) -> pd.DataFrame:
@@ -439,6 +453,9 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
         # last-name-plus-initial hits at the same position are taken; fuzzy and
         # ambiguous hits would join the wrong player silently.
         missing = b.index[b["adp"].isna()]
+        hit_at: list[int] = []
+        hit_rows: list[pd.Series] = []
+        hit_how: list[str] = []
         if len(missing) and "position" in src.columns:
             idx = names.PlayerIndex(src)
             for i in missing:
@@ -449,10 +466,20 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
                     continue
                 if str(row.get("position")) != str(b.at[i, "position"]):
                     continue
-                b.at[i, "adp"] = row["adp"]
-                for c in extra:
-                    b.at[i, c] = row[c]
-                b.at[i, "adp_match"] = "alias" if how == "exact" else how
+                hit_at.append(int(i))
+                hit_rows.append(row)
+                hit_how.append("alias" if how == "exact" else how)
+        if hit_at:
+            # Whole-column assignment, for the same reason _exact_market_join
+            # uses it: an exact pass that matched nothing at all leaves
+            # espn_injury as an all-NaN float column, and writing strings into
+            # it one cell at a time is an incompatible-dtype set.
+            found = b.index.isin(hit_at)
+            for c in ("adp", *extra):
+                vals = pd.Series([r[c] for r in hit_rows], index=hit_at)
+                b[c] = b[c].where(~found, vals.reindex(b.index))
+            b["adp_match"] = b["adp_match"].where(
+                ~found, pd.Series(hit_how, index=hit_at).reindex(b.index))
         label = "espn" if "source" in adp.columns and (adp["source"] == "espn_adp").any() \
             else "consensus"
         b["adp_source"] = np.where(b["adp"].notna(), label, "modelled")
@@ -460,6 +487,7 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
         b["adp"] = np.nan
         b["adp_source"] = "modelled"
         b["adp_match"] = "none"
+    b["market_join_version"] = MARKET_JOIN_VERSION
 
     if "last_season" in b.columns:
         freshest = b["last_season"].max()
