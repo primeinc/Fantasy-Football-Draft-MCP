@@ -851,6 +851,18 @@ def expected_best_at_next_pick(avail: pd.DataFrame) -> dict[str, float]:
     Walks each position from the top down, accumulating the chance every better
     player is already gone. That product is the probability this player is the best
     one left, and the sum over players is the expected value of waiting.
+
+    A position expected to be empty contributes nothing, which is what the sum
+    above already says. It used to contribute its own *worst* remaining player
+    instead, and that manufactured urgency out of a bad tail: `marginal_value`
+    is `draft_score - fallback`, so a position with 265 receivers trailing down
+    to -145 showed a far larger margin than one with 32 defenses trailing to
+    -25 — tail length, not opportunity cost. It bit hardest with no next pick at
+    all, where every survival is 0 and every position's fallback was therefore
+    its floor: at the last pick of the recorded draft the top five were five
+    receivers, and with this term gone they are Meyers, the top defense, Deebo
+    and two more defenses. It also fires whenever a position is merely likely to
+    be exhausted, which is the general case of the same error.
     """
     out: dict[str, float] = {}
     for pos, chunk in avail.groupby("position"):
@@ -862,8 +874,7 @@ def expected_best_at_next_pick(avail: pd.DataFrame) -> dict[str, float]:
             p_all_gone *= (1 - p)
             if p_all_gone < 0.005:
                 break
-        # If the position empties out entirely, waiting is worth the worst on the board.
-        out[str(pos)] = expected + p_all_gone * float(chunk["draft_score"].min() if len(chunk) else 0)
+        out[str(pos)] = expected
     return out
 
 

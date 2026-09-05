@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -1382,6 +1383,80 @@ def defense_report(position: str = "RB", limit: int = 32) -> str:
     }, indent=2)
 
 
+def _unfilled_starters(league: LeagueSettings, roster: dict[str, int]) -> dict[str, int]:
+    """Required starting slots this roster has not filled yet, by position."""
+    return {pos: slots - roster.get(pos, 0)
+            for pos, slots in league.starters.items()
+            if slots and pos != "FLEX" and roster.get(pos, 0) < slots}
+
+
+def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
+               league: LeagueSettings, roster: dict[str, int],
+               state: bd.DraftState, picks_left: int) -> pd.DataFrame:
+    """Who is realistically still there at `pick`, for the plan's simulation.
+
+    Availability is the recommender's own survival model rather than the hard
+    `adp > pick - 1.1*sqrt(pick)` cut this used to apply, so the plan and
+    `who_should_i_pick` answer "is he available" the same way. Everyone here has
+    already been confirmed available *now*, so the question is conditional and
+    `survival_probability_vec` is exactly it.
+
+    The survival model is per player, and that is not sufficient on its own. It
+    is driven by ADP, and ESPN's ADP for kickers and defenses does not describe
+    a real room: every available K and D/ST has an ADP between 93 and 171, while
+    this room has taken one of each in 122 picks. Both the old cut and a
+    survival threshold therefore empty those positions completely from pick 189
+    on — 0 of 62 — so the plan could not fill a required K or D/ST slot at any
+    pick, and ended a 14-round draft with both empty.
+    That is a per-position question wearing a per-player answer. A position
+    cannot be emptied for you while more of its players remain than the rest of
+    the league can absorb, so for a required position the plan still has to fill
+    we keep candidates by counting rather than by ADP: skip the number the rest
+    of the league still needs, and take what is left. With 31 defenses on the
+    board and 15 teams still needing one, the plan is offered the sixteenth best
+    and not the first — an honest expectation from arithmetic, with no threshold
+    to choose.
+    """
+    pool = avail[~avail["_key"].isin(taken)]
+    if pool.empty:
+        return pool
+    survives = model.survival_probability_vec(pool["adp"].to_numpy(), from_pick, pick)
+    keep = pool[survives >= PLAN_SURVIVAL]
+    unfilled = _unfilled_starters(league, roster)
+    drafted_by_position = Counter(str(p.get("position")) for p in state.picks)
+    for pos, short in unfilled.items():
+        if (keep["position"] == pos).any():
+            continue
+        chunk = pool[pool["position"] == pos].sort_values("draft_score", ascending=False)
+        league_need = max(0, league.starters[pos] * league.teams
+                          - drafted_by_position.get(pos, 0))
+        if len(chunk) <= league_need:
+            continue  # the league really can exhaust this position; the filter stands
+        keep = pd.concat([keep, chunk.iloc[league_need:]])
+        _ = short
+
+    # With no more picks than empty required slots, every remaining pick has to
+    # fill one -- that is arithmetic, not a preference, and the recommender
+    # cannot see it because `draft_score` is value over replacement. The
+    # sixteenth-best kicker is worth about zero over a replacement kicker and
+    # about a hundred and forty points over the empty slot he would otherwise
+    # leave, and only the second comparison is the one available at the last
+    # pick. Without this the plan spent its final pick on a fifth receiver worth
+    # 22.8 over replacement, and started no kicker at all.
+    if unfilled and picks_left <= sum(unfilled.values()):
+        forced = keep[keep["position"].isin(unfilled)]
+        if not forced.empty:
+            return forced
+    return keep
+
+
+# A player the survival model puts below this is treated as gone by that pick.
+# "More likely than not to still be there" is the plainest reading of a
+# simulation that has to commit to one roster; the cut it replaces was
+# `adp > pick - 1.1*sqrt(pick)`, whose meaning nobody could state.
+PLAN_SURVIVAL = 0.5
+
+
 @mcp.tool()
 def plan_my_draft(strategy: str = "balanced") -> str:
     """Simulate your whole draft from your slot and return the projected lineup.
@@ -1409,9 +1484,10 @@ def plan_my_draft(strategy: str = "balanced") -> str:
 
     for i, pick in enumerate(my_picks):
         nxt = my_picks[i + 1] if i + 1 < len(my_picks) else None
-        pool = b[~b["_key"].isin(taken)].copy()
-        # Model who's realistically gone by this pick.
-        pool = pool[pool["adp"] > pick - 0.55 * pick ** 0.5 * 2]
+        # Who is realistically gone by this pick, on the recommender's own
+        # survival model rather than a separate ADP rule (see _plan_pool).
+        pool = _plan_pool(b, taken, state.on_the_clock, pick, league, roster, state,
+                          picks_left=len(my_picks) - i).copy()
         if pool.empty:
             break
         if strategy == "hero_rb" and i > 0 and roster.get("RB", 0) >= 1:

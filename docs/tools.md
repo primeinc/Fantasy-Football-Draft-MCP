@@ -541,6 +541,21 @@ Manual board management. `record_pick` accepts shorthand.
 Simulate every remaining pick from your slot. `strategy`: `balanced`, `zero_rb`,
 `hero_rb`, `robust_rb`. ADP-driven, so treat it as preparation rather than a script.
 
+Availability at each simulated pick comes from the same survival model
+`who_should_i_pick` uses, conditional on the player being on the board now, not
+from a separate ADP rule. That is necessary and not sufficient: the survival
+model is per player, and a kicker or defense carries an ADP in the middle of the
+draft that no per-player rule keeps alive to the last rounds, so both positions
+used to vanish from the pool entirely and a 14-round plan for a league starting
+both finished with neither. A position cannot be emptied for you while more of
+its players remain than the rest of the league can absorb, so for a required
+position the filter has emptied, candidates return by counting — skip the number
+the league still needs, take what is left. And with no more picks remaining than
+empty required slots, the pool is restricted to the positions that fill them:
+`draft_score` is value over replacement, so the last startable kicker scores
+about zero by construction, and only the comparison against an empty slot is the
+one available at the final pick.
+
 ## Research
 
 ### `player_report`

@@ -572,14 +572,68 @@ All notable changes to this project. Format follows
   synthetic curve gives them an early pseudo-ADP and the filter now reads them
   as already gone. That is the synthetic fallback's existing behaviour, applied
   to more rows; it is not new logic.
-- Known limitation, still true and stated rather than hidden: the plan ends with
-  no kicker and no defense although the league starts both. With no next pick,
-  `expected_best_at_next_pick` values waiting at the *worst* player left at that
-  position, so a position with a long bad tail (265 receivers down to a
-  draft_score of -145) shows a far larger marginal value than one with a short
-  tail (32 defenses down to -25). That is tail length, not opportunity cost, and
-  fixing it is a third change to the pick-value model that none of these entries
-  covers. Left undone deliberately.
+- This entry previously recorded a known limitation — that the plan ended with no
+  kicker and no defense — and attributed it to `expected_best_at_next_pick`
+  valuing an exhausted position at its worst remaining player. **That attribution
+  was wrong**, and it is corrected under "Every starting slot the league requires"
+  below. The plan failed at pick 196, which has a next pick, so the terminal case
+  never arose there; the cause was this same availability filter, applied to K
+  and D/ST whose ADPs are real but do not describe a real room.
+
+**Every starting slot the league requires**
+
+- `plan_my_draft` finished a 14-round plan for a league that starts a kicker and
+  a defense with neither, in every strategy. I had recorded the cause as the
+  terminal `expected_best_at_next_pick` fallback. Measuring it before starting
+  the fix showed that was wrong: the plan failed at pick 196, which *has* a next
+  pick, so the terminal case never arose, and `recommend` on the full board
+  already ranked the top defense first at 196 and at 221 with no change at all.
+  The valuation was never the problem.
+- The cause was the plan's own availability filter, `adp > pick - 1.1*sqrt(pick)`
+  — a second answer to the question `who_should_i_pick` answers with the survival
+  model. Every available K and D/ST has an ADP between 93 and 171, and the cut
+  passes 171 between pick 164 and pick 189, so from 189 onward **0 of 62** K/DST
+  rows survived it. The plan was squeezed: early, they are in the pool and
+  correctly lose to real players; late, they are gone from it. There was no pick
+  at which one could win.
+- Replacing the cut with `survival_probability_vec` — one model for both, which
+  is the right shape — does **not** fix it on its own, and the numbers say so:
+  at pick 189 the hard cut keeps 441 rows and 0 K/DST, a survival threshold of
+  0.5 keeps 437 and 0. Survival over a 66-pick horizon is ~0.00 for an ADP of 93
+  whatever the tail, and no single threshold works at every pick (0.2 keeps 45
+  at pick 189 and 0 at 221). A per-player model cannot answer the question the
+  plan is asking.
+- So `server._plan_pool` asks the per-position question too. A position cannot be
+  emptied for you while more of its players remain than the rest of the league
+  can absorb: 31 defenses on the board against 15 teams still needing one. For a
+  required position the filter has emptied, candidates come back by counting —
+  skip the number the league still needs and take what is left, which offers the
+  plan the sixteenth-best defense rather than the first. Arithmetic, with no
+  threshold to choose.
+- One more step was needed and is the honest part of the change. `draft_score` is
+  value over *replacement*, so the sixteenth-best kicker is worth about zero by
+  construction, and the plan preferred a fifth receiver worth 22.8 over
+  replacement — leaving the K slot empty, which scores nothing every week. With
+  no more picks left than empty required slots, every remaining pick must fill
+  one; that is arithmetic the recommender cannot see, so `_plan_pool` restricts
+  the pool at that point. Live result, all three strategies: 125 Meyers, 132
+  Deebo, 157 Woody Marks, 164 Alvin Kamara, 189 Pat Freiermuth, 196 New York
+  Jets D/ST, 221 Nick Folk — one kicker, one defense, every name a player ESPN
+  projects.
+- `expected_best_at_next_pick` no longer values an exhausted position at its own
+  worst remaining player. That was a real defect independent of the above, and
+  the general case of it: `marginal_value` is `draft_score - fallback`, so a
+  position with 265 receivers trailing to -145 showed a far larger margin than
+  one with 32 defenses trailing to -25 — tail length, not opportunity cost. It
+  is worst with no next pick, where every survival is 0 and every fallback was
+  therefore its floor: the last pick's top five were five receivers, and are now
+  Meyers, the top defense, Deebo and two more defenses. It also fixes a one-man
+  position, whose fallback used to be that man's own score, making the marginal
+  value of taking him ~0 when in fact losing him leaves nothing.
+- The replay barely exercises any of this and does not move: blend 3.182 both
+  ways, model 4.309 -> 4.310, survival Brier 0.131 -> 0.132, log loss
+  0.412 -> 0.414 over the same 119 scored picks. Stated rather than dressed up —
+  the evidence for this change is the plan and the last pick, not the replay.
 
 **The survival model's right tail**
 

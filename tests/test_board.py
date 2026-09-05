@@ -757,6 +757,88 @@ class TestSpecialTeams:
             {"DST": 1, "K": 0})["QB"]
 
 
+class TestPlanFillsEveryStartingSlot:
+    def _board(self):
+        rows = []
+        # Deep at the modelled positions, and a realistic K/D-ST shape: real ADPs
+        # in the middle of the draft that no filter keyed on them can keep alive
+        # to the last rounds, and value-over-replacement near zero once the top
+        # of the position is gone.
+        # ADPs run past the end of the draft at the modelled positions, as they do
+        # on a real board once the synthetic fallback prices the tail, so the late
+        # picks still have real candidates to choose from.
+        for pos, n, top in (("QB", 20, 300.0), ("RB", 60, 260.0),
+                            ("WR", 80, 250.0), ("TE", 30, 180.0)):
+            for i in range(n):
+                rows.append({"name": f"{pos}{i}", "position": pos, "team": "A",
+                             "proj_points": top - 2.0 * i, "draft_score": 90.0 - 2.0 * i,
+                             "adp": 5.0 + 6.0 * i, "pos_rank": i + 1,
+                             "consistency": 0.5, "adj_ppg": 10.0})
+        # Kickers and defenses: a mid-draft ADP that no per-player availability
+        # rule can keep alive to the last rounds, and value over replacement that
+        # runs out quickly. This is the shape the live board has.
+        for pos in ("K", "DST"):
+            for i in range(24):
+                rows.append({"name": f"{pos}{i}", "position": pos, "team": "A",
+                             "proj_points": 150.0 - 2.0 * i,
+                             "draft_score": 20.0 - 2.0 * i,
+                             "adp": 95.0 + 3.0 * i, "pos_rank": i + 1,
+                             "consistency": 0.5, "adj_ppg": 9.0})
+        b = pd.DataFrame(rows)
+        b["overall_rank"] = b["draft_score"].rank(ascending=False, method="min").astype(int)
+        b["_key"] = b["name"].map(board.norm_name)
+        return b
+
+    def test_a_fourteen_round_plan_starts_a_kicker_and_a_defense(self, tmp_path,
+                                                                 monkeypatch):
+        import json as _json
+
+        from ffdraft import server
+        from ffdraft.config import LeagueSettings, ModelWeights
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=12, rounds=14, draft_slot=4,
+                                starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1,
+                                          "FLEX": 0, "K": 1, "DST": 1})
+        state = board.DraftState(league)
+        monkeypatch.setattr(server, "_settings", lambda: (league, ModelWeights()))
+        monkeypatch.setattr(server, "_state", lambda: state)
+        monkeypatch.setattr(server, "_build_board", lambda force=False: self._board())
+
+        plan = _json.loads(server.plan_my_draft("balanced"))
+        taken = [row["position"] for row in plan["plan"]]
+        assert len(plan["plan"]) == league.rounds
+        # The league starts one of each, so a plan that fills fourteen rounds and
+        # starts neither has not simulated this league. Both used to be missing:
+        # every K and D/ST carries a mid-draft ADP, so any availability rule keyed
+        # on the player rather than the position empties those two positions
+        # entirely for the late picks.
+        assert "K" in taken, taken
+        assert "DST" in taken, taken
+        assert plan["final_roster"].get("K") == 1
+        assert plan["final_roster"].get("DST") == 1
+        # And it does not overshoot into a second one.
+        assert taken.count("K") == 1 and taken.count("DST") == 1
+
+    def test_a_league_without_those_slots_never_takes_one(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from ffdraft import server
+        from ffdraft.config import LeagueSettings, ModelWeights
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=12, rounds=10, draft_slot=4,
+                                starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1})
+        state = board.DraftState(league)
+        monkeypatch.setattr(server, "_settings", lambda: (league, ModelWeights()))
+        monkeypatch.setattr(server, "_state", lambda: state)
+        monkeypatch.setattr(server, "_build_board", lambda force=False: self._board())
+
+        plan = _json.loads(server.plan_my_draft("balanced"))
+        taken = [row["position"] for row in plan["plan"]]
+        assert "K" not in taken and "DST" not in taken, taken
+
+
 class TestJsonPayloads:
     def test_nan_never_reaches_the_wire(self):
         # ESPN files no injury status for a team defense, so the value is NaN.
