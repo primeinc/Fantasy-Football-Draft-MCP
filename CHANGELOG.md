@@ -8,6 +8,28 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**A test file that replayed the whole draft to check its punctuation (#56)**
+- `test_json_payloads.py` was **28.5 s** of a 38 s suite; it is now **9.4 s**,
+  with four more tests than before. The cost was `draft_replay` (5.46 s) and
+  `predict_pick` (2.68 s) inside three loops over every tool, each replaying the
+  developer's own 134-pick draft through `model.recommend` once per pick — 405
+  calls to prove `json.loads` accepts the output.
+- The file now builds the draft it replays: 26 picks, two of them on the board.
+  The shapes do not depend on the length — against this five-row board the
+  walk-forward scored exactly **one** of the 134 real picks, and scores **two** of
+  the 26. Both slow tools stay in `TOOLS`, because the control names them.
+- **It was also a dependency nobody had declared.** The tests replayed whichever
+  draft happened to be on the machine, so their cost and their coverage both
+  moved with it. With a draft the file owns, the control found a **third** tool
+  that emits a bare constant with sanitising off — `plan_my_draft` — which had
+  been true all along and never exercised. The control now asserts the tools by
+  name, so the docstring's claim is checked rather than remembered.
+- The bound against creep is a **call count, not a stopwatch**: 82 calls to
+  `model.recommend`, ceiling `4 * FIXTURE_PICKS`. Wall clock was tried first and
+  measured 2.72 s to 7.41 s for the same two calls on a loaded machine — a 2.7x
+  spread with nothing changed, so any threshold loose enough not to flake was too
+  loose to catch a doubling. A count cannot flake and names the actual failure.
+
 **An answer nobody can read (#52)**
 - `stream_kdst(week=1)` returned **69,512 characters** on the live league and the
   client showed the user nothing at all. A result over the limit is not truncated,

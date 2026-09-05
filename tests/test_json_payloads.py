@@ -6,27 +6,34 @@ from outside it: every conforming client rejects the response.
 
 `_jsonable` already existed and guarded exactly one of the 83 `json.dumps` calls
 in `server.py` — the one payload someone had already been burned by. The other
-82 were one new column away from the same bug, and two of them were already
-there: with sanitising disabled, `predict_pick` and `draft_replay` both emit a
-bare constant on the board built below. `default=str` does not help, because
-`json.dumps` writes the float itself and never consults `default`.
+82 were one new column away from the same bug, and three of them were already
+there: with sanitising disabled, `predict_pick`, `draft_replay` and
+`plan_my_draft` all emit a bare constant on the board built below. `default=str`
+does not help, because `json.dumps` writes the float itself and never consults
+`default`.
 
-Three tests, and the third is the point of the other two. A round-trip test that
-cannot fail proves nothing, so `test_the_round_trip_would_catch_a_regression`
-turns the sanitising off and asserts that at least one tool does emit a bare
-constant. If that test ever passes with nothing found, the board below has
-stopped carrying holes and the test above it has gone vacuous.
+The control is the point of the round trip. A round-trip test that cannot fail
+proves nothing, so `test_the_round_trip_would_catch_a_regression` turns the
+sanitising off and asserts which tools emit a bare constant — by name, so the
+claim above is checked rather than remembered. If it ever finds nothing, the
+board below has stopped carrying holes and the test above it has gone vacuous.
+
+The file also owns the draft it replays (#56). It used to read whichever draft
+was on the developer's machine, which cost 27 of its 28.5 seconds and made its
+coverage depend on data nobody declared — `plan_my_draft` was the third tool
+that breaks all along, and no run had ever gone down that path.
 """
 import ast
 import json
 import pathlib
+import time
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from ffdraft import board as bd
-from ffdraft import server
+from ffdraft import model, server
 
 SERVER_PY = pathlib.Path(server.__file__)
 
@@ -54,13 +61,32 @@ def _reject(constant: str) -> None:
     raise AssertionError(f"payload carried a bare {constant} literal, which is not JSON")
 
 
+# Picks in the fixture draft. Two board players so the walk-forward predictors
+# have something to fit and then score, the rest off-board, which is what a
+# five-row board makes of any real draft anyway.
+#
+# This file is about payload SHAPE under holes, and draft length is incidental
+# to that. It used to read the developer's own recorded draft -- 134 picks -- and
+# `model.recommend` ran once per pick per replay, twice per tool, in three tests:
+# 27 of the file's 28.5 seconds to prove `json.loads` accepts the output. The
+# shapes do not depend on the length: at 134 picks the walk-forward scored
+# exactly ONE of them against this board, and at 26 it scores two (#56).
+FIXTURE_PICKS = 26
+
+
 @pytest.fixture
-def poisoned_board(monkeypatch):
-    """A board with a hole in every column a payload is built from.
+def poisoned_board(monkeypatch, tmp_path):
+    """A board with a hole in every column a payload is built from, and a short
+    draft to replay it against.
 
     Holes, not absences: the column exists and one row's value is missing, which
     is what ESPN actually returns — no injury status for a team defense, no team
     for a player it does not carry, no ADP for someone nobody drafts.
+
+    The draft is built here rather than read from `~/.ffdraft`. That is what
+    makes the file cheap, and it also removes a dependency nobody declared: these
+    tests were replaying whichever draft happened to be on the machine, so their
+    cost and their coverage both moved with it.
     """
     league, _ = server._settings()
     b = pd.DataFrame({
@@ -85,6 +111,19 @@ def poisoned_board(monkeypatch):
     b["_key"] = b["name"].map(bd.norm_name)
     key = league.cache_key()
     monkeypatch.setitem(server._BOARDS, key, b)
+
+    monkeypatch.setattr(bd, "STATE_DIR", tmp_path)
+    state = bd.DraftState(league)
+    on_the_board = {0: "Ja Chase", 1: "Bijan Robinson"}
+    for i in range(FIXTURE_PICKS):
+        state.record(on_the_board.get(i, f"Other Guy {i}"), i + 1,
+                     (i % league.teams) + 1,
+                     position=None if i in on_the_board else "RB")
+    state.save()
+    # Three board rows are left undrafted on purpose. With none available
+    # `choice.forecast` reduces over an empty array and raises `ValueError:
+    # zero-size array to reduction operation maximum`, which is a real hole in
+    # `choice.probabilities` but not this file's subject.
     return b
 
 
@@ -149,9 +188,15 @@ def test_the_round_trip_would_catch_a_regression(poisoned_board, monkeypatch):
 
     Without this, a board that stopped carrying holes would leave the test above
     green and empty, which is the same silent pass the whole file exists to
-    prevent. Measured when written: `predict_pick` and `draft_replay` are the
-    two that break, because they build rows from `espn_rank` and per-pick model
-    output rather than through `_rows`.
+    prevent.
+
+    Three tools break: `predict_pick`, `draft_replay` and `plan_my_draft`. The
+    first two build rows from `espn_rank` and per-pick model output rather than
+    through `_rows`. `plan_my_draft` was found by the fixture draft this file
+    now builds for itself (#56) -- the developer's own recorded draft never took
+    it down that path, so the control had been passing on two tools while a
+    third was equally unsanitised and nobody knew. Which is the argument for a
+    fixture the test owns over one it happens to find.
     """
     monkeypatch.setattr(server, "_emit", lambda payload, **kw: json.dumps(payload, **kw))
     broke = []
@@ -165,6 +210,62 @@ def test_the_round_trip_would_catch_a_regression(poisoned_board, monkeypatch):
         "round-trip test above cannot fail and is proving nothing; give the "
         "poisoned_board fixture a hole that reaches a payload"
     )
+    # The docstring above names which two, so it is checked rather than
+    # remembered. A comment saying "measured when written" rots silently; this
+    # fails and prints the new list, which is what a reader needs anyway.
+    assert set(broke) == {"predict_pick", "draft_replay", "plan_my_draft"}, (
+        f"the tools that break with sanitising off are now {sorted(broke)}, not "
+        f"the two this test's docstring names. Update the docstring to match, "
+        f"and check the change was deliberate")
+
+
+def test_the_two_expensive_tools_stay_cheap(poisoned_board, monkeypatch):
+    """The bound, so the cost cannot creep back (#56).
+
+    `draft_replay` and `predict_pick` are the only tools here that replay the
+    whole draft, and both must stay in `TOOLS` because the control below names
+    them among the tools that break. So the cost is bounded rather than avoided.
+
+    THE BOUND IS A CALL COUNT, NOT A STOPWATCH, and that is a change from how
+    this was first written. The cost is `model.recommend` once per pick per
+    replay, so the thing that can creep back is replaying more picks than the
+    fixture records -- which is countable exactly. Wall clock measures that plus
+    the machine: timing the same two calls ten times on this box gave 2.72 s to
+    7.41 s, a 2.7x spread with nothing changed, so any threshold loose enough
+    not to flake was too loose to catch a doubling. A count cannot flake and
+    names the actual failure.
+
+    Measured: **82** calls here. On the 134-pick draft this file used to read off
+    the developer's disk, `draft_replay` alone made 270 and `predict_pick`
+    another 135. In seconds that was 5.46 and 2.68, against 1.04 and 0.52 now.
+    The ceiling is `4 * FIXTURE_PICKS`, 27% above the real number: it can only
+    move if a tool starts replaying the draft an extra time, which is exactly
+    the regression, and restoring the full draft overshoots it fivefold.
+
+    The wall-clock check stays as a smoke test at a deliberately silly threshold.
+    It is there to catch something pathological, not to measure anything.
+    """
+    calls = {"n": 0}
+    real = model.recommend
+
+    def counted(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(model, "recommend", counted)
+    start = time.perf_counter()
+    server.draft_replay()
+    server.predict_pick()
+    spent = time.perf_counter() - start
+
+    # Two replays inside `draft_replay`, one inside `predict_pick`, each one
+    # recommendation per recorded pick, plus the pick on the clock.
+    ceiling = 4 * FIXTURE_PICKS
+    assert calls["n"] <= ceiling, (
+        f"the replay tools called model.recommend {calls['n']} times for a "
+        f"{FIXTURE_PICKS}-pick fixture draft, over the {ceiling} this bounds. "
+        f"Something is replaying more of the draft than the fixture records")
+    assert spent < 30.0, f"the two replay tools took {spent:.1f}s, which is absurd"
 
 
 class TestThePayloadCap:
