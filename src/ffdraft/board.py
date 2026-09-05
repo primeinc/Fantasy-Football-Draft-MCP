@@ -793,7 +793,9 @@ class DraftState:
 
     @property
     def on_the_clock(self) -> int:
-        return len(self.picks) + 1
+        # The highest overall taken plus one, not the count: a hand-logged
+        # board can carry gaps, and a synced one is contiguous, so both agree.
+        return max((int(p["overall"]) for p in self.picks), default=0) + 1
 
     def my_picks(self) -> list[int]:
         return self.league.picks_for_slot(self.my_slot)

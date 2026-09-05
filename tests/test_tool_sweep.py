@@ -61,3 +61,15 @@ def test_on_the_clock_skips_sync_under_a_watch(monkeypatch):
     out = json.loads(server.on_the_clock(platform="espn", league_id="L"))
     assert calls == []
     assert "watch is running" in json.dumps(out)
+
+
+def test_on_the_clock_is_the_highest_overall_plus_one():
+    from ffdraft import board, config
+    state = board.DraftState(config.LeagueSettings(teams=16, draft_slot=4), "sweep-probe")
+    state.save = lambda: None
+    state.record("Ja'Marr Chase")
+    state.record("Nobody Realperson", overall=7)
+    assert state.on_the_clock == 8
+    assert state.summary()["my_next_pick"] == 29  # pick 4 has passed
+    state.undo()
+    assert state.on_the_clock == 2
