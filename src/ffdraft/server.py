@@ -5,6 +5,7 @@ Run with:  python -m ffdraft.server
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter
 from pathlib import Path
@@ -45,9 +46,16 @@ try:  # mcp SDK >= 2.0
             low.add_request_handler("server/discover", _types.RequestParams, discover)
 
         async def run_stdio_async(self) -> None:
+            import asyncio as _asyncio
+
             from mcp.server.lowlevel.server import NotificationOptions
             from mcp.server.stdio import stdio_server
 
+            # Started as a task, not awaited, so a slow ESPN join never delays the
+            # handshake. The point of resuming is that the socket is live again
+            # within seconds of the process starting, which does not require the
+            # client to have finished connecting.
+            _asyncio.create_task(resume_watches(), name="ffdraft-resume-watches")
             async with stdio_server() as (read_stream, write_stream):
                 await self._lowlevel_server.run(
                     read_stream, write_stream,
@@ -64,7 +72,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import adp as adp_mod
 from . import board as bd
-from . import features, model, names, sources, trade
+from . import features, model, names, sources, trade, watchstore
 from .config import (
     CURRENT_SEASON,
     DATA_DIR,
@@ -766,8 +774,13 @@ def draft_audit(limit: int = 10) -> str:
 
 
 @mcp.tool()
-def draft_status() -> str:
+def draft_status(ctx: Context = None) -> str:
     """Where the draft stands and what your roster looks like."""
+    # Stays sync: `on_the_clock` calls this directly, and making it a coroutine
+    # would break that call rather than await it. Taking a `ctx` does not require
+    # async, and `_attach_session` is safe with or without a running loop.
+    if ctx is not None:
+        _attach_session(ctx.session)
     state = _state()
     b = _mark_drafted(_build_board(), state)
     mine = [p for p in state.picks if p["slot"] == state.my_slot]
@@ -1793,6 +1806,11 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
                            "traceback": traceback.format_exc()})
     task = asyncio.create_task(w.run(), name=f"draft-watch-{league_id}")
     _WATCHES[league_id] = (w, task)
+    _attach_session(session)
+    # Written after the watch is live, so a record only ever describes a watch
+    # that actually started.
+    watchstore.save(watchstore.WatchRecord(
+        league_id=league_id, team_id=int(ctx_info["my_team_id"]), season=season))
     return _emit({
         "watching": league_id, "team_id": ctx_info["my_team_id"],
         "draft_slot": ctx_info["draft_slot"], "league_name": ctx_info["league_name"],
@@ -1847,6 +1865,71 @@ def _watch_or_error(league_id: str):
 # after INIT on the 2026-09-05 join. Ten gives that a wide margin without
 # leaving a caller hanging, and the refusal is what happens if it never comes.
 QUEUE_ECHO_WAIT_SECONDS = 10.0
+
+# A session to push channel events through, and anything said before there was
+# one. There is NO session at server start: sessions are built per request and
+# what outlives them is the connection's standalone channel, which a session
+# object holds a handle to. So a resume that happens before any client request
+# has nowhere to speak, and its message waits here until a tool call hands over
+# a session. This is a property of the protocol, not a policy: the watch's
+# socket is live from the moment it resumes either way, and only the telling is
+# deferred.
+_SESSION: Any = globals().get("_SESSION")
+_PENDING_CHANNEL: list[tuple[str, dict]] = globals().get("_PENDING_CHANNEL", [])
+_log = logging.getLogger(__name__)
+
+
+def _attach_session(session: Any) -> Any:
+    """Adopt a session for later channel pushes and flush anything waiting.
+
+    Returns the flush task, or None when there was nothing to flush or no loop to
+    flush on. Returned rather than fired and forgotten so a caller that needs the
+    flush finished can await the handle instead of guessing how many scheduler
+    turns it takes.
+
+    Callable from a sync tool, which FastMCP may run off the event loop: with no
+    running loop there is nothing to schedule on, so the messages stay queued for
+    the next attach that has one. Raising here would fail a tool call over an
+    undelivered notification.
+    """
+    global _SESSION
+    _SESSION = session
+    if not _PENDING_CHANNEL:
+        return None
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    return loop.create_task(_flush_channel(), name="ffdraft-flush-channel")
+
+
+async def _flush_channel() -> None:
+    pending, _PENDING_CHANNEL[:] = list(_PENDING_CHANNEL), []
+    for content, meta in pending:
+        await _channel(content, meta)
+
+
+async def _channel(content: str, meta: dict[str, str]) -> None:
+    """Push one channel event, or hold it until a session exists.
+
+    Failures are held rather than raised: this is called from the watch's socket
+    loop and from startup, and neither may die because a notification could not
+    be delivered.
+    """
+    from mcp import types as _types
+
+    if _SESSION is None:
+        _PENDING_CHANNEL.append((content, dict(meta)))
+        return
+    try:
+        await _SESSION.send_notification(_types.Notification[dict[str, Any], str](
+            method="notifications/claude/channel",
+            params={"content": content, "meta": meta}))
+    except Exception:
+        _log.exception("could not send a channel event; holding it")
+        _PENDING_CHANNEL.append((content, dict(meta)))
 
 
 async def _await_first_echo(w, timeout: float | None = None) -> list[int] | None:
@@ -1978,6 +2061,9 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
     # intent instead of the outcome is the defect this tool exists to end.
     kept = [pid for pid in accepted if pid in set(existing or []) and pid not in set(ids)]
     removed = [pid for pid in (existing or []) if pid not in set(accepted)]
+    # What ESPN accepted, so a resume after a restart re-sends the queue that is
+    # actually live rather than the one this server started with.
+    watchstore.update_queue(league_id, accepted, from_user=len(kept))
     return _emit({
         "mode": "replace" if replace else "merge",
         "sent": _queue_rows(w, send),
@@ -1991,9 +2077,14 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
 
 
 @mcp.tool()
-async def draft_room(league_id: str, chat_limit: int = 10) -> str:
+async def draft_room(league_id: str, chat_limit: int = 10, ctx: Context = None) -> str:
     """Who is in the ESPN draft room right now and the latest room chat, from the
     running watch's socket. Names come from the league's member list."""
+    # Takes a session for the channel. A watch resumed at server start has no
+    # session to speak through -- there is none until a client sends something --
+    # so its "resumed" message waits for the first tool call that brings one.
+    if ctx is not None:
+        _attach_session(ctx.session)
     entry = _WATCHES.get(league_id)
     if entry is None:
         return _emit({"error": "no active watch for this league; call watch_draft first"})
@@ -2460,6 +2551,9 @@ async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_S
 @mcp.tool()
 async def stop_watch(league_id: str) -> str:
     """Stop the draft-room watch for a league."""
+    # Cleared even when no watch is running here: the record may have been left
+    # by a process that has since died, and this is the user saying stop.
+    watchstore.mark_stopped(league_id)
     entry = _WATCHES.pop(league_id, None)
     if entry is None:
         return _emit({"stopped": False, "watching": sorted(_WATCHES)})
@@ -2478,7 +2572,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers")
+                "trade", "waivers", "watchstore")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
@@ -2577,6 +2671,84 @@ async def reload_code(ctx: Context = None) -> str:
         await ctx.session.send_tool_list_changed()
         result["notified"] = "notifications/tools/list_changed"
     return _emit(result, indent=2)
+
+
+async def resume_watch(record: watchstore.WatchRecord) -> dict:
+    """Bring one persisted watch back: join the room, then re-send its queue.
+
+    The queue goes through `set_draft_queue`'s merge path, not straight down the
+    socket, so anything the user has queued in the ESPN app since the old process
+    died is kept. That path waits for ESPN's own echo first, which is the whole
+    reason it is safe to re-send a queue nobody has looked at in minutes.
+
+    Returns what happened. Nothing here raises: this runs at server start, and a
+    league that cannot be resumed must not stop the server or the other leagues.
+    """
+    import asyncio
+    import os
+
+    from . import watch as watch_mod
+
+    out: dict = {"league_id": record.league_id, "resumed": False}
+    swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
+    if not (swid and espn_s2):
+        return {**out, "why": "ESPN_SWID and ESPN_S2 are not set"}
+    try:
+        ctx_info = bd.espn_league_context(record.league_id, record.season, swid, espn_s2)
+        ok, why = watchstore.resumable(record, draft_complete=bool(ctx_info.get("drafted")))
+        if not ok:
+            return {**out, "why": why}
+        league, weights = _settings()
+        directory = bd.espn_league_directory(record.league_id, record.season, swid, espn_s2)
+        w = watch_mod.DraftWatch(
+            record.league_id, record.season, record.team_id, swid, espn_s2,
+            league, _build_board(), _channel, directory=directory,
+            bye_weight=weights.bye,
+            refresh=lambda: (_build_board(), _settings()[1].bye))
+        task = asyncio.create_task(w.run(), name=f"draft-watch-{record.league_id}")
+        _WATCHES[record.league_id] = (w, task)
+        await w.ready.wait()
+    except Exception as exc:
+        _log.exception("could not resume the watch for league %s", record.league_id)
+        return {**out, "why": f"{type(exc).__name__}: {exc}"}
+
+    summary = w.state.summary()
+    out.update({"resumed": True, "picks_made": summary["picks_made"],
+                "my_next_pick": summary["my_next_pick"]})
+    if record.queue:
+        names_csv = ", ".join(
+            bd._espn_player_name(pid, w.espn_map) for pid in record.queue)
+        try:
+            sent = json.loads(await set_draft_queue(record.league_id, names_csv))
+            out["queue"] = {"entries": len(sent.get("accepted") or []),
+                            "from_the_user": len(sent.get("kept_from_the_users_queue") or []),
+                            "error": sent.get("error")}
+        except Exception as exc:
+            _log.exception("could not re-send the queue for league %s", record.league_id)
+            out["queue"] = {"error": f"{type(exc).__name__}: {exc}"}
+    await _channel(_resume_message(out), {"league": record.league_id, "event": "resumed"})
+    return out
+
+
+def _resume_message(out: dict) -> str:
+    """The one line the user gets. Says what came back and what it cost them."""
+    head = (f"watch resumed after restart: {out['picks_made']} picks made, "
+            f"your next pick is {out['my_next_pick']}")
+    queue = out.get("queue")
+    if queue is None:
+        return head + "; no queue to re-send"
+    if queue.get("error"):
+        return head + f"; the queue was NOT re-sent ({queue['error']})"
+    return (head + f"; queue re-sent, {queue['entries']} entries, "
+            f"{queue['from_the_user']} of them yours")
+
+
+async def resume_watches() -> list[dict]:
+    """Resume every persisted watch. Reported, never raised."""
+    out = []
+    for record in watchstore.load_all():
+        out.append(await resume_watch(record))
+    return out
 
 
 def main() -> None:

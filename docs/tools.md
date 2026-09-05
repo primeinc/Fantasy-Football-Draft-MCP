@@ -706,6 +706,30 @@ that connection's first real echo. `draft_queue` returns those checks as
 runs and the question can be settled on data rather than on one decode. A
 disagreement would surface before anything depended on it.
 
+### Watch resume across a server restart
+Every `/mcp` reconnect starts a new server process, and the old one's socket,
+watch and merged queue die with it. `watch_draft` now records its intent under
+`~/.ffdraft/watch/<league_id>.json` (or `$FFDRAFT_WATCH`): league, team, season,
+the queue as ESPN last accepted it, and a resume flag. The next process rejoins
+every recorded room before anyone asks.
+
+The queue is re-sent through `set_draft_queue`'s **merge** path, so anything the
+user has queued in the ESPN app since the old process died is kept. That path
+waits for ESPN's own echo first, which is what makes re-sending a minutes-old
+queue safe.
+
+It does **not** resume when `stop_watch` cleared the flag, when `mDraftDetail`
+says the draft is complete, or when the record is more than 24 hours old. The
+record is kept rather than deleted on stop: "the user stopped it" and "we have
+never seen this league" are different answers.
+
+One channel event reports it: `watch resumed after restart: N picks made, your
+next pick is P; queue re-sent, K entries, M of them yours`. **It arrives with the
+first tool call, not at start.** There is no session at server start — sessions
+are built per request, and what outlives them is the connection's standalone
+channel — so the message is held until one exists. The socket is live from the
+moment it resumes either way; only the telling waits.
+
 ### `make_pick`
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
 watch's socket, exactly what the draft room sends, and waits up to ten seconds

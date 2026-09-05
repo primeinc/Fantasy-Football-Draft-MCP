@@ -1541,6 +1541,25 @@ All notable changes to this project. Format follows
   the simulator did not have, and no test of this module alone would have shown
   it. The simulation is self-consistent; it is wrong only relative to a week
   nobody had told it about.
+
+**The watch survives a server restart**
+- `watch.py` intent is persisted to `~/.ffdraft/watch/<league_id>.json`
+  (`watchstore.py`, `$FFDRAFT_WATCH`), and a new server process rejoins every
+  recorded draft room before anyone asks. Every `/mcp` reconnect starts a fresh
+  process, and the socket, the watch and the merged queue died with the old one.
+- The queue is re-sent through `set_draft_queue`'s merge path, so entries the
+  user added in the ESPN app while the server was gone are kept.
+- No resume for a draft `mDraftDetail` reports complete, a record `stop_watch`
+  cleared, or one older than 24 hours. The record survives a stop rather than
+  being deleted: a stopped watch and an unknown league are different facts.
+- `espn_league_context` now returns `drafted` and `draft_in_progress`, which is
+  the only place ESPN says whether a draft is over.
+- The resume message arrives with the first tool call rather than at start. There
+  is no session at server start -- sessions are per request and the standalone
+  channel is what outlives them -- so it is held until one exists. The socket is
+  live from the moment it resumes regardless.
+
+>>>>>>> 5b68799 (Bring the watch and its queue back after a server restart)
 **Pick queue: merge, do not replace**
 - `set_draft_queue` merges by default. ESPN's `DRAFT_LIST` carries the whole
   queue rather than a change, and the queue has two authors, so a call that sent

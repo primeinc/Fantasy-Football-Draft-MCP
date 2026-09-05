@@ -10,7 +10,11 @@ from pathlib import Path
 CACHE_DIR = Path(os.environ.get("FFDRAFT_CACHE", Path.home() / ".ffdraft" / "cache"))
 DATA_DIR = Path(os.environ.get("FFDRAFT_DATA", Path.home() / ".ffdraft" / "data"))
 STATE_DIR = Path(os.environ.get("FFDRAFT_STATE", Path.home() / ".ffdraft" / "state"))
-for _d in (CACHE_DIR, DATA_DIR, STATE_DIR):
+# One file per league saying a watch was running and should come back. Separate
+# from STATE_DIR because this is intent rather than draft state: the picks are
+# the draft's, this is "the user asked for a watch and the process died".
+WATCH_DIR = Path(os.environ.get("FFDRAFT_WATCH", Path.home() / ".ffdraft" / "watch"))
+for _d in (CACHE_DIR, DATA_DIR, STATE_DIR, WATCH_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # Seasons pulled for the 5-year lookback. Override with FFDRAFT_SEASONS=2021,2022,...

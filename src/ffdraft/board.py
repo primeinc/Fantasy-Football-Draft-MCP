@@ -1210,9 +1210,10 @@ def espn_league_context(league_id: str, season: int = CURRENT_SEASON,
         target = swid.strip("{}")
         my_team = next((t for t in teams if target in [o.strip("{}") for o in t.get("owners", [])]),
                        None)
+    detail = data.get("draftDetail") or {}
     draft_slot = None
     if my_team is not None:
-        picks = (data.get("draftDetail") or {}).get("picks") or []
+        picks = detail.get("picks") or []
         mine = sorted([p for p in picks if p.get("teamId") == my_team["id"]],
                       key=lambda p: p.get("overallPickNumber", 0))
         if mine:
@@ -1226,6 +1227,11 @@ def espn_league_context(league_id: str, season: int = CURRENT_SEASON,
         "rounds": max(1, roster_slots),
         "my_team_id": my_team["id"] if my_team is not None else None,
         "draft_slot": draft_slot,
+        # Straight from `draftDetail`, which is the only place ESPN says whether
+        # the draft is over. Anything deciding whether to join a draft room needs
+        # it: rejoining a finished draft takes a connection slot for nothing.
+        "drafted": bool(detail.get("drafted")),
+        "draft_in_progress": bool(detail.get("inProgress")),
     }
 
 
