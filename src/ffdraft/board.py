@@ -519,14 +519,16 @@ def parse_pasted_board(text: str) -> list[str]:
     comma-separated runs, and raw one-per-line names.
     """
     names = []
+    # 'Round 3, Pick 7' contains a comma, so it must go before the comma split.
+    text = re.sub(r"round\s*\d+\s*,?\s*pick\s*\d+\s*[-–—:]?", "", text, flags=re.I)
     for chunk in re.split(r"[\n,;]+", text):
         s = chunk.strip()
         if not s:
             continue
-        s = re.sub(r"^\s*(?:R?\d+[.):]|\d+\.\d+|round\s*\d+[,\s]*pick\s*\d+)\s*[-–—:]?\s*", "",
-                   s, flags=re.I)
+        s = re.sub(r"^\s*(?:R?\d+[.):]|\d+\.\d+)\s*[-–—:]?\s*", "", s)
         s = re.sub(r"\s*[-–—(]\s*(QB|RB|WR|TE|K|D/?ST|DEF)\b.*$", "", s, flags=re.I)
         s = re.sub(r"\s+[A-Z]{2,3}$", "", s).strip()
-        if len(s) > 2 and re.search(r"[A-Za-z]{2,}\s+[A-Za-z]{2,}", s):
+        # First token may be dotted initials: A.J. Brown, T.J. Hockenson, J.K. Dobbins.
+        if len(s) > 2 and re.search(r"[A-Za-z.']{2,}\s+[A-Za-z]{2,}", s):
             names.append(s)
     return names

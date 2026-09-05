@@ -45,3 +45,20 @@ class TestIdCrosswalk:
         monkeypatch.setattr(sources, "weekly_rosters", lambda: rosters)
 
         assert board._id_crosswalk().empty
+
+
+class TestParsePastedBoard:
+    def test_keeps_dotted_initials(self):
+        # A real 110-pick ESPN draft room paste lost A.J. Brown, T.J. Hockenson and
+        # J.K. Dobbins, which shifted every later pick's overall number and
+        # attributed the wrong players to the user's slot.
+        text = "Drake London\nA.J. Brown\nT.J. Hockenson\nJ.K. Dobbins\nKyle Monangai"
+        assert board.parse_pasted_board(text) == [
+            "Drake London", "A.J. Brown", "T.J. Hockenson", "J.K. Dobbins", "Kyle Monangai",
+        ]
+
+    def test_strips_numbering_and_position_tags(self):
+        text = "1. Jahmyr Gibbs - RB\n2) Bijan Robinson (RB)\nRound 1, Pick 3 - Jonathan Taylor"
+        assert board.parse_pasted_board(text) == [
+            "Jahmyr Gibbs", "Bijan Robinson", "Jonathan Taylor",
+        ]
