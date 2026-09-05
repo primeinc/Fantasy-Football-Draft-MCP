@@ -124,7 +124,7 @@ replay $picks='0':
     if pr["picks_unscored"]:
         print("  these log losses are over the scored picks only -- comparing two runs that "
               "scored different picks is not a comparison")
-    for name, s in out["predictors"]["predictors"].items():
+    for name, s in pr["predictors"].items():
         print(f"  {name:<10} log loss {s['log_loss']!s:>6}  top1 {s['top1']!s:>6}  top3 {s['top3']!s:>6}  "
               f"top5 {s['top5']!s:>6}  median rank {s['median_rank']}")
     fc = out.get("forecast")
