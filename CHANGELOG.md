@@ -44,8 +44,12 @@ All notable changes to this project. Format follows
   `explain` says so.
 - New weight `bye` (`model_settings(bye_weight=...)`, default 0): cuts a
   candidate's pick_value by that fraction per same-position player you hold on
-  the same bye and half that per other player. Supplied belief, not backtested;
-  a stacked bye costs a week of a starter, about 1/14 of a season.
+  the same bye and half that per other player. A stacked bye costs a week of a
+  starter, about 1/14 of a season.
+- `bye_backtest`: paired mock drafts with and without the penalty, scored on
+  weekly best lineups from real box scores (`adp.weekly_lineup_points`,
+  `adp.best_weekly_lineup`). The mock-draft trial loop is shared
+  (`adp._draft_trial`).
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 

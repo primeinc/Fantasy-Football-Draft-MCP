@@ -846,6 +846,22 @@ def mock_draft(season: int, n_trials: int = 30, top_n: int = 5) -> str:
 
 
 @mcp.tool()
+def bye_backtest(seasons: str = "2022,2023,2024,2025", n_trials: int = 20,
+                 bye_weight: float = 0.08) -> str:
+    """Backtest: does the bye-week stacking penalty win more weekly lineup points?
+
+    Paired mock drafts per season and seed, once with bye_weight 0 and once with
+    the given weight, identical bots and noise, scored as the best legal lineup
+    each regular-season week on real box scores. Positive improvement means the
+    penalty earns its keep and belongs in model_settings for this league.
+    """
+    league, weights = _settings()
+    yrs = [int(s) for s in seasons.split(",") if s.strip()]
+    return json.dumps(adp_mod.bye_backtest(league, weights, yrs, n_trials=n_trials,
+                                           bye_weight=bye_weight), indent=2, default=str)
+
+
+@mcp.tool()
 def champion_strategies(league_id: str, seasons: str = "2020,2021,2022,2023,2024,2025") -> str:
     """What actually won your ESPN league, season by season, and which specific
     pick made the difference.

@@ -59,6 +59,30 @@ def test_weight_penalises_stack_and_explains_it():
     assert "bye week 11 stacks with Mine WR, Mine RB" in model.explain(stacked)
 
 
+def test_best_weekly_lineup_fills_fixed_slots_then_flex():
+    from ffdraft.adp import best_weekly_lineup
+
+    starters = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DST": 1}
+    positions = {"qb": "QB", "rb1": "RB", "rb2": "RB", "rb3": "RB", "wr1": "WR", "wr2": "WR",
+                 "te": "TE"}
+    points = {"qb": 20.0, "rb1": 15.0, "rb2": 12.0, "rb3": 9.0, "wr1": 14.0, "wr2": 8.0,
+              "te": 7.0}
+    total, empty = best_weekly_lineup(points, positions, starters, ["RB", "WR", "TE"])
+    # QB 20 + RB 15+12 + WR 14+8 + TE 7 + FLEX rb3 9
+    assert total == 85.0 and empty == 0
+
+
+def test_best_weekly_lineup_counts_empty_slots_on_a_bye():
+    from ffdraft.adp import best_weekly_lineup
+
+    starters = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 0, "K": 1, "DST": 1}
+    positions = {"qb": "QB", "rb1": "RB", "wr1": "WR"}
+    # rb2, wr2 and te have no row this week: on bye or inactive
+    points = {"qb": 20.0, "rb1": 15.0, "wr1": 14.0}
+    total, empty = best_weekly_lineup(points, positions, starters, ["RB", "WR", "TE"])
+    assert total == 49.0 and empty == 3
+
+
 def test_no_bye_column_is_a_no_op():
     board = _board().drop(columns=["bye_week"])
     mine = board[board["drafted"]]

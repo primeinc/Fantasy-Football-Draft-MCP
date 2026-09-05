@@ -121,6 +121,14 @@ cut a candidate's pick value by 8% per same-position player on the same bye and
 4% per other player. Default 0. Kickers and defenses are not modelled, so their
 byes are yours to check.
 
+### `bye_backtest`
+Does the bye-week stacking penalty win more weekly lineup points? For each season
+and seed, one mock draft with `bye_weight` 0 and one with the given weight, same
+bots and noise, scored as the best legal lineup each regular-season week on real
+box scores. Season totals cannot see a bye; weekly lineups can. `improvement` is
+weekly points gained per season; `empty_slots` counts starter slots nothing could
+fill. Run it before trusting a nonzero `bye_weight` in a league.
+
 ### `draft_queue` / `set_draft_queue`
 Your ESPN pick queue, the list autopick draws from if you miss the clock.
 `set_draft_queue(league_id, "Name, Name, ...")` replaces it in that order over the

@@ -784,6 +784,185 @@ _MOCK_BOT_CAPS = {"QB": 3, "RB": 6, "WR": 7, "TE": 3}  # loose -- realism comes 
                                                         # a degenerate all-one-position bot
 
 
+def _sim_rounds(league) -> int:
+    """K/DST aren't modelled, so only the skill-position rounds are simulated."""
+    return max(1, league.rounds - league.starters.get("K", 0) - league.starters.get("DST", 0))
+
+
+def _draft_trial(board: pd.DataFrame, league, rng, top_n: int = 5,
+                 bye_weight: float = 0.0) -> list[tuple[int, str]]:
+    """One simulated draft: recommend() at the user's slot, ADP bots with
+    reach/fall noise everywhere else. Returns the user's picks as (round, name)."""
+    from . import board as bd
+    from . import model
+
+    teams = league.teams
+    my_slot = league.draft_slot
+    total_picks = _sim_rounds(league) * teams
+
+    def slot_for_pick(overall: int) -> int:
+        rnd = (overall - 1) // teams + 1
+        idx = (overall - 1) % teams + 1
+        return (teams - idx + 1) if (league.snake and rnd % 2 == 0) else idx
+
+    state = bd.DraftState(league, name=f"_mockdraft_scratch_{id(league)}_{id(rng)}")
+    state.reset()
+    rosters: dict[int, dict[str, int]] = {s: {} for s in range(1, teams + 1)}
+    mine: list[tuple[int, str]] = []
+
+    for overall in range(1, total_picks + 1):
+        slot = slot_for_pick(overall)
+        b = board.copy()
+        b.loc[b["_key"].isin(state.taken_keys()), "drafted"] = True
+        pool = b[~b["drafted"]]
+        if pool.empty:
+            break
+
+        if slot == my_slot:
+            roster = state.my_roster(b)
+            nxt = state.next_pick_for_me()
+            on_clock = state.on_the_clock
+            current = nxt if (nxt is not None and nxt > on_clock) else on_clock
+            after = state.pick_after_next() if nxt == current else nxt
+            recs = model.recommend(pool, league, current_pick=current, next_pick=after,
+                                   roster=roster, top_n=top_n, mine=state.my_rows(b),
+                                   bye_weight=bye_weight)
+            if recs.empty:
+                break
+            chosen = recs.iloc[0]["name"]
+            mine.append(((overall - 1) // teams + 1, chosen))
+        else:
+            r = rosters[slot]
+            avail = pool[pool["position"].map(
+                lambda p, r=r: r.get(p, 0) < _MOCK_BOT_CAPS.get(p, 99))]
+            if avail.empty:
+                avail = pool
+            sigma = np.maximum(3.0, 0.25 * avail["adp"].to_numpy())
+            noisy = avail["adp"].to_numpy() + rng.normal(0, sigma)
+            best = avail.iloc[int(np.argmin(noisy))]
+            chosen = best["name"]
+            rosters[slot][best["position"]] = rosters[slot].get(best["position"], 0) + 1
+
+        state.record(chosen, overall)
+
+    state.path.unlink(missing_ok=True)
+    return mine
+
+
+def best_weekly_lineup(points: dict[str, float], positions: dict[str, str],
+                       starters: dict[str, int], flex_eligible) -> tuple[float, int]:
+    """Best legal lineup from one week's points: fill each fixed slot with the best
+    at that position, then flex from what is left. Returns (points, empty_slots).
+    A player with no row that week (bye, inactive) is simply absent from `points`."""
+    used: set[str] = set()
+    total, empty = 0.0, 0
+    by_pos: dict[str, list[tuple[float, str]]] = {}
+    for name, pts in points.items():
+        by_pos.setdefault(positions.get(name, ""), []).append((pts, name))
+    for pos in by_pos:
+        by_pos[pos].sort(reverse=True)
+    for pos, n in starters.items():
+        if pos in ("FLEX", "K", "DST"):
+            continue
+        cands = [c for c in by_pos.get(pos, []) if c[1] not in used][:n]
+        for pts, name in cands:
+            total += pts
+            used.add(name)
+        empty += n - len(cands)
+    flex = [c for pos in flex_eligible for c in by_pos.get(pos, []) if c[1] not in used]
+    flex.sort(reverse=True)
+    for pts, name in flex[:starters.get("FLEX", 0)]:
+        total += pts
+        used.add(name)
+    empty += max(0, starters.get("FLEX", 0) - min(len(flex), starters.get("FLEX", 0)))
+    return total, empty
+
+
+def weekly_lineup_points(names: list[str], season: int, league, weeks: int = 14) -> dict:
+    """Sum of best weekly lineups over regular-season weeks 1..weeks for a roster,
+    on real box scores. `empty_slots` counts starter slots nothing could fill."""
+    from . import features
+    from .names import normalize as norm_name
+
+    w = sources.weekly_stats([season])
+    w = w[(w["season_type"] == "REG") & (w["week"] <= weeks)].copy()
+    w["fp"] = features.fantasy_points(w, league.scoring, getattr(league, "te_premium_bonus", 0.0))
+    w["_key"] = w["player_display_name"].map(norm_name)
+    keys = {norm_name(n): n for n in names}
+    mine = w[w["_key"].isin(keys)]
+    positions = {k: str(p) for k, p in zip(mine["_key"], mine["position"])}
+    total, empty = 0.0, 0
+    for week in range(1, weeks + 1):
+        rows = mine[mine["week"] == week]
+        pts = {k: float(v) for k, v in zip(rows["_key"], rows["fp"])}
+        t, e = best_weekly_lineup(pts, positions, league.starters, league.flex_eligible)
+        total += t
+        empty += e
+    return {"points": round(total, 1), "empty_slots": empty}
+
+
+def bye_backtest(league, weights, seasons: list[int], n_trials: int = 20,
+                 bye_weight: float = 0.08, top_n: int = 5, seed: int = 0) -> dict:
+    """Does penalising bye-week stacks win more weekly lineup points?
+
+    Paired Monte Carlo: for each season and seed, one mock draft with
+    bye_weight=0 and one with `bye_weight`, identical bots and noise, scored on
+    real weekly box scores as the best legal lineup each regular-season week.
+    Season totals cannot see a bye; weekly lineups can. Improvement > 0 means
+    the penalty earns its keep; empty_slots shows how often a starter slot went
+    unfilled.
+    """
+    from . import board as bd
+    from . import features, model
+
+    sc_label = "ppr" if float(league.scoring.rec) >= 0.9 else \
+               "half_ppr" if float(league.scoring.rec) >= 0.35 else "standard"
+    per_season = []
+    for season in seasons:
+        tbl = model.build_player_table(league, weights, season=season)
+        proj = model.project(tbl, league, weights)
+        adp = bd.load_adp(season=season, superflex=bool(getattr(league, "superflex", 0)))
+        board = bd.convert_adp_format(bd.attach_adp(proj, adp), sc_label)
+        board["drafted"] = False
+        board["bye_week"] = board["team"].map(features.team_bye_weeks(season))
+        try:
+            sources.weekly_stats([season])
+        except RuntimeError:
+            per_season.append({"season": season, "error": "no box scores for this season"})
+            continue
+
+        base, tuned = [], []
+        for trial in range(n_trials):
+            names_a = [n for _, n in _draft_trial(board, league, np.random.default_rng(seed + trial),
+                                                  top_n, bye_weight=0.0)]
+            names_b = [n for _, n in _draft_trial(board, league, np.random.default_rng(seed + trial),
+                                                  top_n, bye_weight=bye_weight)]
+            base.append(weekly_lineup_points(names_a, season, league))
+            tuned.append(weekly_lineup_points(names_b, season, league))
+        pa = np.array([x["points"] for x in base])
+        pb = np.array([x["points"] for x in tuned])
+        per_season.append({
+            "season": season, "n_trials": n_trials,
+            "weekly_points_no_penalty": round(float(pa.mean()), 1),
+            "weekly_points_with_penalty": round(float(pb.mean()), 1),
+            "improvement": round(float((pb - pa).mean()), 1),
+            "trials_improved": int((pb > pa).sum()),
+            "empty_slots_no_penalty": round(float(np.mean([x["empty_slots"] for x in base])), 2),
+            "empty_slots_with_penalty": round(float(np.mean([x["empty_slots"] for x in tuned])), 2),
+        })
+
+    valid = [s for s in per_season if "error" not in s]
+    return {
+        "bye_weight": bye_weight,
+        "seasons": per_season,
+        "overall_improvement": (round(float(np.mean([s["improvement"] for s in valid])), 1)
+                                if valid else None),
+        "interpretation": ("improvement is mean weekly-lineup points gained per season by "
+                           "the penalty over identical drafts without it; positive means "
+                           "the penalty earns its keep"),
+    }
+
+
 def mock_draft(league, weights, season: int, n_trials: int = 30,
                top_n: int = 5, seed: int = 0) -> dict:
     """Monte Carlo mock draft: the live algorithm at your slot against n_trials
@@ -851,63 +1030,15 @@ def mock_draft(league, weights, season: int, n_trials: int = 30,
                 return float(r["points"])
         return 0.0
 
-    teams = league.teams
     my_slot = league.draft_slot
-    sim_rounds = max(1, league.rounds - league.starters.get("K", 0)
-                     - league.starters.get("DST", 0))
-    total_picks = sim_rounds * teams
-
-    def slot_for_pick(overall: int) -> int:
-        rnd = (overall - 1) // teams + 1
-        idx = (overall - 1) % teams + 1
-        return (teams - idx + 1) if (league.snake and rnd % 2 == 0) else idx
+    sim_rounds = _sim_rounds(league)
 
     trial_totals = []
     round_picks: dict[int, list[tuple[str, float]]] = {r: [] for r in range(1, sim_rounds + 1)}
 
     for trial in range(n_trials):
         rng = np.random.default_rng(seed + trial)
-        state = bd.DraftState(league, name=f"_mockdraft_scratch_{id(league)}")
-        state.reset()
-        rosters: dict[int, dict[str, int]] = {s: {} for s in range(1, teams + 1)}
-        my_picks_this_trial = []
-
-        for overall in range(1, total_picks + 1):
-            slot = slot_for_pick(overall)
-            b = board.copy()
-            b.loc[b["_key"].isin(state.taken_keys()), "drafted"] = True
-            pool = b[~b["drafted"]]
-            if pool.empty:
-                break
-
-            if slot == my_slot:
-                roster = state.my_roster(b)
-                nxt = state.next_pick_for_me()
-                on_clock = state.on_the_clock
-                current = nxt if (nxt is not None and nxt > on_clock) else on_clock
-                after = state.pick_after_next() if nxt == current else nxt
-                recs = model.recommend(pool, league, current_pick=current, next_pick=after,
-                                       roster=roster, top_n=top_n)
-                if recs.empty:
-                    break
-                chosen = recs.iloc[0]["name"]
-                rnd = (overall - 1) // teams + 1
-                my_picks_this_trial.append((rnd, chosen))
-            else:
-                r = rosters[slot]
-                avail = pool[pool["position"].map(
-                    lambda p, r=r: r.get(p, 0) < _MOCK_BOT_CAPS.get(p, 99))]
-                if avail.empty:
-                    avail = pool
-                sigma = np.maximum(3.0, 0.25 * avail["adp"].to_numpy())
-                noisy = avail["adp"].to_numpy() + rng.normal(0, sigma)
-                best = avail.iloc[int(np.argmin(noisy))]
-                chosen = best["name"]
-                rosters[slot][best["position"]] = rosters[slot].get(best["position"], 0) + 1
-
-            state.record(chosen, overall)
-
-        state.path.unlink(missing_ok=True)
+        my_picks_this_trial = _draft_trial(board, league, rng, top_n)
 
         trial_total = 0.0
         for rnd, name in my_picks_this_trial:
