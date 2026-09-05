@@ -44,12 +44,17 @@ try:  # mcp SDK >= 2.0
             low.add_request_handler("server/discover", _types.RequestParams, discover)
 
         async def run_stdio_async(self) -> None:
+            from mcp.server.lowlevel.server import NotificationOptions
             from mcp.server.stdio import stdio_server
 
             async with stdio_server() as (read_stream, write_stream):
                 await self._lowlevel_server.run(
                     read_stream, write_stream,
                     self._lowlevel_server.create_initialization_options(
+                        # tools.listChanged: reload_code re-registers tools and
+                        # sends notifications/tools/list_changed; Claude Code
+                        # refreshes the tool list without a reconnect.
+                        notification_options=NotificationOptions(tools_changed=True),
                         experimental_capabilities=dict(self.CHANNEL_CAPS)),
                 )
 except ImportError:  # mcp SDK 1.x
@@ -85,14 +90,17 @@ mcp = _Server(
         "board current."
     ),
 )
+# Process state survives reload_code: importlib.reload re-executes this module
+# in the same namespace, and a running draft watch must not be dropped by a
+# code reload. `globals().get` keeps the existing objects on a re-execution.
 # Background draft-room watchers keyed by league id (see watch.py).
-_WATCHES: dict[str, Any] = {}
+_WATCHES: dict[str, Any] = globals().get("_WATCHES", {})
 
-_CACHE: dict[str, Any] = {"league": None, "weights": None, "adp_csv": {}}
+_CACHE: dict[str, Any] = globals().get("_CACHE", {"league": None, "weights": None, "adp_csv": {}})
 # Boards are keyed by the settings that actually change them, so a 10-team full-PPR
 # league and a 13-team half-PPR league each keep their own and switching between
 # them is instant rather than an eight-second rebuild.
-_BOARDS: dict[str, pd.DataFrame] = {}
+_BOARDS: dict[str, pd.DataFrame] = globals().get("_BOARDS", {})
 
 
 def _scoring_label(league: LeagueSettings) -> str:
@@ -1587,6 +1595,87 @@ async def stop_watch(league_id: str) -> str:
     task.cancel()
     return json.dumps({"stopped": True, "league": league_id, "picks_seen": w.picks_seen,
                        "last_line": w.last_line[:80]})
+
+
+# Package modules in dependency order, so a reload of each sees reloaded
+# dependencies. server.py itself is reloaded last, in place.
+RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
+                "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
+                "watch")
+
+
+def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
+    """Make the running server's tool registry match a freshly imported one:
+    every tool re-registered from the new function objects, tools that no
+    longer exist removed. The running server object is what the transport
+    holds; a re-executed module builds a new one that nothing serves."""
+    live_names = {t.name for t in live._tool_manager.list_tools()}
+    fresh_tools = fresh._tool_manager.list_tools()
+    fresh_names = {t.name for t in fresh_tools}
+    for name in sorted(live_names - fresh_names):
+        live.remove_tool(name)
+    for t in fresh_tools:
+        if t.name in live_names:
+            live.remove_tool(t.name)
+        live.add_tool(t.fn, name=t.name, title=t.title, description=t.description,
+                      annotations=t.annotations, icons=t.icons, meta=t.meta)
+    return {"added": sorted(fresh_names - live_names),
+            "removed": sorted(live_names - fresh_names),
+            "reloaded": sorted(fresh_names & live_names)}
+
+
+def reload_package() -> dict[str, Any]:
+    """Re-import every ffdraft module from disk, this one last, and point the
+    module's `mcp` back at the server object the transport is serving, with
+    its tools replaced by the reloaded functions. Watches, caches and boards
+    persist (see the globals().get guards above). Returns what changed and
+    any module that failed to import, which leaves the previous code in place
+    for that module."""
+    import importlib
+    import sys
+
+    live = mcp
+    errors: dict[str, str] = {}
+    for name in RELOAD_ORDER:
+        module = sys.modules.get(f"ffdraft.{name}")
+        if module is None:
+            continue
+        try:
+            importlib.reload(module)
+        except Exception as exc:
+            errors[name] = f"{type(exc).__name__}: {exc}"
+    me = sys.modules[__name__]
+    try:
+        importlib.reload(me)
+    except Exception as exc:
+        errors["server"] = f"{type(exc).__name__}: {exc}"
+        return {"errors": errors, "tools": None}
+    # The module namespace, not attribute access: the re-executed module bound
+    # a fresh server object here, and the transport serves `live`.
+    changes = _sync_tools(live, me.__dict__["mcp"])
+    me.__dict__["mcp"] = live
+    return {"errors": errors, "tools": changes}
+
+
+@mcp.tool()
+async def reload_code(ctx: Context = None) -> str:
+    """Reload this server's code from disk without a reconnect: every ffdraft
+    module is re-imported, the tool list is rebuilt from the new functions,
+    and `notifications/tools/list_changed` is sent so Claude Code refreshes
+    it. The running draft watch, its socket and your ESPN queue survive; the
+    watch calls the reloaded model on its next recommendation. A module that
+    fails to import keeps its previous code and is reported."""
+    import traceback
+
+    try:
+        result = reload_package()
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}",
+                           "traceback": traceback.format_exc()})
+    if result["tools"] is not None and ctx is not None:
+        await ctx.session.send_tool_list_changed()
+        result["notified"] = "notifications/tools/list_changed"
+    return json.dumps(result, indent=2)
 
 
 def main() -> None:

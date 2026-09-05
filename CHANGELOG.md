@@ -81,6 +81,14 @@ All notable changes to this project. Format follows
   `role_mult` and `p_available_next`; overall adds log loss and survival
   calibration by round and by position.
 
+**Hot reload**
+- `reload_code`: re-imports every `ffdraft` module, rebuilds the served tool
+  registry from the new functions and sends `notifications/tools/list_changed`;
+  the server declares `tools.listChanged`. Watches, sockets, queues, boards
+  and settings survive (module globals are guarded with `globals().get` so a
+  re-execution keeps them). Ends the reconnect-drops-the-watch cycle for code
+  changes.
+
 **Walk-forward choice model**
 - `choice.py`: four conditional-logit predictors of what the room takes
   (ESPN list order, ADP order, the model's order, and a blend with roster

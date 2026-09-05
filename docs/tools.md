@@ -236,6 +236,19 @@ session. Logs every event to `~/.ffdraft/state/watch_<league>.log` and keeps the
 pick state current so `who_should_i_pick` is right when you come back. Pauses if
 you open the draft room, like the tool.
 
+### `reload_code`
+Reload the server's code from disk without a reconnect. Every `ffdraft`
+module is re-imported in dependency order, `server.py` last and in place;
+the tool registry the transport serves is rebuilt from the reloaded
+functions (`server._sync_tools`), and `notifications/tools/list_changed` is
+sent, which Claude Code honours by refreshing the tool list. The server
+declares `tools.listChanged` for that. Process state survives: the running
+draft watch and its socket, the ESPN queue it holds, cached boards and
+settings. The watch picks up reloaded model code on its next recommendation.
+A module that fails to import keeps its previous code and is named in the
+result. A reconnect is still needed for a change to the server's process
+environment or the `.mcp.json` registration.
+
 ### `dump_draft` / `just dump <league_id> [out_dir]`
 Everything ESPN reports about the league's draft, written under
 `<out_dir>/espn_dump_<league>_<season>_<stamp>/` (default `out_dir` is the
