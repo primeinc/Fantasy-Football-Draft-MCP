@@ -1390,6 +1390,32 @@ def _unfilled_starters(league: LeagueSettings, roster: dict[str, int]) -> dict[s
             if slots and pos != "FLEX" and roster.get(pos, 0) < slots}
 
 
+def _absorbed_by(pos: str, league: LeagueSettings, drafted: Counter, from_pick: int,
+                 pick: int) -> int:
+    """How many of `pos` the rest of the league has taken by `pick`, counted into
+    a board that already excludes the ones taken so far.
+
+    Anchored on what has actually happened rather than projected from the start
+    of the draft: the league needs `starters * teams` of the position, `drafted`
+    of them are gone, and the remainder is absorbed evenly over the picks left.
+    At `from_pick` this is 0 — the best one on the board really is available
+    now — and it rises to the whole remainder by the last pick, so it is
+    non-decreasing in `pick` by construction, which is the property #32 wants.
+
+    The board it indexes into is the *available* pool, which is why `drafted` is
+    subtracted rather than added: those players are not in the list to be
+    skipped over a second time. Measured on the live board, 32 defenses exist,
+    31 are available and 1 is taken.
+    """
+    total_need = league.starters.get(pos, 0) * league.teams
+    remaining = max(0, total_need - drafted.get(pos, 0))
+    picks_left_in_draft = league.teams * league.rounds - from_pick
+    if picks_left_in_draft <= 0 or remaining <= 0:
+        return 0
+    elapsed = min(1.0, max(0.0, (pick - from_pick) / picks_left_in_draft))
+    return int(remaining * elapsed)
+
+
 def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
                league: LeagueSettings, roster: dict[str, int],
                state: bd.DraftState, picks_left: int) -> pd.DataFrame:
@@ -1408,33 +1434,45 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
     survival threshold therefore empty those positions completely from pick 189
     on — 0 of 62 — so the plan could not fill a required K or D/ST slot at any
     pick, and ended a 14-round draft with both empty.
-    That is a per-position question wearing a per-player answer. A position
-    cannot be emptied for you while more of its players remain than the rest of
-    the league can absorb, so for a required position the plan still has to fill
-    we keep candidates by counting rather than by ADP: skip the number the rest
-    of the league still needs, and take what is left. With 31 defenses on the
-    board and 15 teams still needing one, the plan is offered the sixteenth best
-    and not the first — an honest expectation from arithmetic, with no threshold
-    to choose.
+    That is a per-position question wearing a per-player answer, so a required
+    position is answered by counting instead. The rest of the league still needs
+    `starters * teams` of it and has taken some already; the remainder is
+    absorbed over the picks that are left, so by the target pick it has taken
 
-    The count of what the league has already taken comes from the recorded
-    picks' own positions, so a pick logged without one makes this rule more
-    conservative, not less: `league_need` rises toward `starters * teams` and
-    the position is left to the availability filter that just emptied it. That
-    is why `record_pick` has to store the position it resolves, which it did
-    not until lena's 053290b.
+        (total_need - taken_so_far) * (pick - from_pick) / (last_pick - from_pick)
 
-    Known and not yet fixed (#32, otto's finding): the two mechanisms hand over
-    discontinuously. While the filter still keeps a defense the counting rule
-    does not fire and the plan is offered the *best* one; the turn the filter
-    empties the position, the rule fires and offers the *sixteenth*. On the live
-    board that is picks 157 and 189, so the offered player jumps from #1 to #16
-    between consecutive turns — the wrong direction for a quantity that should
-    decay as the draft goes on. It does not bite here, because defenses lose to
-    real players at 157 either way, but a board that priced the top defense
-    above them at that turn would have the plan draft a defense it could never
-    have had. Until then: the early answer is still ADP's, and only the late one
-    is arithmetic.
+    of what is on the board now, and the plan is offered the best one after
+    those. No ADP, no threshold, no fitted constant — the two inputs are
+    `league.starters[pos] * league.teams` and the recorded picks' own positions.
+
+    This is applied at *every* turn, which is #32 and otto's finding. It used to
+    apply only once the availability filter had emptied the position, so what the
+    plan was offered depended on ADP until the filter gave up and on counting
+    afterwards. Offered index across a live slot's seven remaining picks, roster
+    held fixed:
+
+        DST   before  0, 1, 5, 9, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
+        K     before  0, 0, 7, 8, 15, 15, 15     after  0, 1, 5, 6, 9, 10, 14
+
+    Two things that are easy to get wrong about those numbers, both of which I
+    did get wrong before measuring. The before column is already monotone on this
+    board, so the "#1 to #16 between consecutive turns" that motivated the task
+    describes the mechanism rather than this record; what counting at every turn
+    buys here is smaller steps and no ADP dependence, plus the guarantee on a
+    board that would show the jump. And the change makes the mid-draft offer
+    *better*, not worse — index 9 to index 6 at pick 164 — because the survival
+    filter is biased against exactly the defenses worth having: "best defense"
+    and "earliest ADP" are the same players, so they are the first it discards.
+    The filter no longer decides required positions at all, which is what otto's
+    threshold table showed it was never usefully doing.
+
+    The count of what the league has taken comes from the recorded picks' own
+    positions, so a pick logged without one makes this more conservative, not
+    less: `taken_so_far` falls, the remainder to absorb rises, and the plan is
+    offered someone deeper. That is why `record_pick` has to store the position
+    it resolves, which it did not until lena's 053290b — without it the anchor
+    reads zero for every position and this silently reverts to projecting from
+    the start of the draft.
     """
     pool = avail[~avail["_key"].isin(taken)]
     if pool.empty:
@@ -1444,14 +1482,16 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
     unfilled = _unfilled_starters(league, roster)
     drafted_by_position = Counter(str(p.get("position")) for p in state.picks)
     for pos in unfilled:
-        if (keep["position"] == pos).any():
-            continue
         chunk = pool[pool["position"] == pos].sort_values("draft_score", ascending=False)
-        league_need = max(0, league.starters[pos] * league.teams
-                          - drafted_by_position.get(pos, 0))
-        if len(chunk) <= league_need:
+        if chunk.empty:
+            continue
+        absorbed = _absorbed_by(pos, league, drafted_by_position, from_pick, pick)
+        if absorbed >= len(chunk):
             continue  # the league really can exhaust this position; the filter stands
-        keep = pd.concat([keep, chunk.iloc[league_need:]])
+        # Replace whatever the per-player filter said about this position: for a
+        # slot the plan is required to fill, counting is the answer at every
+        # turn, not a fallback once the filter has emptied it.
+        keep = pd.concat([keep[keep["position"] != pos], chunk.iloc[absorbed:]])
 
     # With no more picks than empty required slots, every remaining pick has to
     # fill one -- that is arithmetic, not a preference, and the recommender

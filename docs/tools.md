@@ -548,10 +548,16 @@ model is per player, and a kicker or defense carries an ADP in the middle of the
 draft that no per-player rule keeps alive to the last rounds, so both positions
 used to vanish from the pool entirely and a 14-round plan for a league starting
 both finished with neither. A position cannot be emptied for you while more of
-its players remain than the rest of the league can absorb, so for a required
-position the filter has emptied, candidates return by counting — skip the number
-the league still needs, take what is left. And with no more picks remaining than
-empty required slots, the pool is restricted to the positions that fill them:
+its players remain than the rest of the league can absorb, so a required position
+is answered by counting at every turn rather than by the filter: the league needs
+`starters * teams`, some are gone already, and the remainder is absorbed evenly
+over the picks that are left, so the plan is offered the best one after those.
+That count is anchored on what has actually happened, so it is exact at the
+current pick and rises monotonically — the offered player can never improve as
+the draft goes on, which it used to do, jumping from the best defense to the
+sixteenth the turn the filter emptied the position. And with no more picks
+remaining than empty required slots, the pool is restricted to the positions that
+fill them:
 `draft_score` is value over replacement, so the last startable kicker scores
 about zero by construction, and only the comparison against an empty slot is the
 one available at the final pick.
