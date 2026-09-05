@@ -185,8 +185,18 @@ class TestUnpricedRosterSlot:
         # row as it stands. So a row the board carries WITHOUT a position is
         # counted at RB and priced at "", and the halves disagree again.
         #
-        # Enumerated rather than argued: of the five ways a pick can relate to
-        # the board, this and its NaN twin are the two that still disagree.
+        # CORRECTION. An earlier version of this comment said the NaN case was
+        # "its twin" and that the two behave alike. They do not, and I had not
+        # measured it: NaN is truthy, so `idx.get(...) or p.get("position")`
+        # returns the NaN and never reaches the fallback. `my_roster` then
+        # returns a float key in a dict[str, int], which is not a split -- it is
+        # a crash in anything that sorts those keys, which the note does. otto
+        # found it by re-running the enumeration I had written down instead of
+        # reading it, and it is fixed separately at the three sites that shared
+        # the idiom.
+        #
+        # The empty string is genuinely falsy and genuinely reaches the fallback,
+        # so this case stands on its own and is the one pinned here.
         b = _board([
             _row("Real Back", "RB", 100.0, 400.0),
             _row("Other Back", "RB", 99.0, 401.0),

@@ -1590,6 +1590,18 @@ All notable changes to this project. Format follows
     row, so a hand-logged pick of an unpriced player remains invisible to both.
     ESPN's `mRoster` view carries the position and is fetched by `espn_dump` but
     parsed nowhere; wiring it is the fix for that case and is not in this change.
+  - **Retracted, one row of the enumeration this shipped with.** The commit
+    message for the note reconciliation listed five ways a pick can relate to
+    the board and called a NaN position the twin of an empty one, both merely
+    splitting the two counts. That is wrong, and it was never measured: my probe
+    built the row with `None` and labelled it NaN, and the answer turned out to
+    depend on how the frame was constructed rather than on the code. A real NaN
+    is **truthy**, so `idx.get(...) or p.get("position")` returns it and never
+    reaches the fallback — `my_roster` yields a float key in a `dict[str, int]`,
+    which is not a split but a crash in anything that sorts those keys. otto
+    found it by re-running the enumeration rather than reading it, and it is
+    fixed at the three sites that shared the idiom. The empty-string case is
+    real and stands; it is the one the test pins.
 - `attach_adp` joins through the alias index after the exact key ("Josh
   Palmer" / "Joshua Palmer"), alias and last-name-plus-initial hits at the
   same position only; `adp_match` records how each row joined. `draft_audit`
