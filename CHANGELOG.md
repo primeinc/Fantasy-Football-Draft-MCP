@@ -6,6 +6,23 @@ All notable changes to this project. Format follows
 
 ## [Unreleased]
 
+### Added
+
+**`submit_lineup`: the lineup write (#59)**
+- `weekly_lineup` recommends; `submit_lineup` sets. Dry run by default: the
+  moves, each slot before and after, and the exact transaction, nothing sent.
+  `dry_run=false` sends one `ROSTER` transaction of `LINEUP` items to
+  `lm-api-writes` and re-reads the roster, reporting `espn_holds` and
+  `mismatches` rather than the request that was made.
+- The request shape is ESPN's own: read from the fantasy web client's bundle
+  (`_next/static/commons/main-8f4fae007004824a918c.js`, 2026-09-05), not from
+  a community client. Host, path, headers, body fields and the `EXECUTE`
+  default all come from there and are cited in `lineup_write.py`.
+- Refuses on an ineligible slot, a locked player, or a player without an ESPN
+  id; injured reserve is never moved. `rosters.entry_facts` now carries
+  `eligible_slots` and `lineup_locked`, the latter `None` when ESPN did not say.
+- Unverified against a populated roster until the draft completes.
+
 ### Fixed
 
 **One `drafted_at: null` carried three different meanings (#66)**

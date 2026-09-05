@@ -613,6 +613,25 @@ A player added after the draft is not on the record yet. Naming a player on the
 wrong roster, or one with no board row, stops the evaluation and says which: a
 trade scored without one of its own pieces is a different trade.
 
+### `submit_lineup`
+
+The write `weekly_lineup` is not. `submit_lineup(league_id, week, dry_run=true)`
+computes the same lineup and returns the moves, every player's slot before and
+after, and the exact transaction it would send, with nothing sent. `dry_run=false`
+sends one `ROSTER` transaction of `LINEUP` items to ESPN's writes host, the
+request ESPN's own web client makes, read from its bundle rather than from a
+community port, then re-reads the roster and reports the slots ESPN holds under
+`espn_holds`, with `mismatches` naming any player whose slot is not what was asked.
+
+Refuses, and sends nothing, when a move targets a slot the player is not eligible
+for, when ESPN reports a player's slot locked, or when a roster player carries no
+ESPN id. Injured reserve is never touched. `memberId` in the returned transaction
+is redacted; it is the SWID.
+
+Not yet run against a populated roster: ESPN withholds rosters until the draft
+completes. The first real send is a bench-to-bench move the user approves, read
+back afterwards.
+
 ### `league_rules`
 The ESPN league's rules as ESPN states them, from the `mSettings` view: draft
 type, rounds and clock, starting slots, bench and IR, position limits, every

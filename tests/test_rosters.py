@@ -44,7 +44,8 @@ class TestEntryFacts:
     def test_reads_the_fields_the_board_shape_needs(self):
         f = rosters.entry_facts(_entry(3001, "Real Back", 2, slot=2), POSITIONS)
         assert f == {"espn_id": "3001", "name": "Real Back", "position": "RB",
-                     "lineup_slot": 2, "espn_injury": None, "injured": False}
+                     "lineup_slot": 2, "espn_injury": None, "injured": False,
+                     "eligible_slots": None, "lineup_locked": None}
 
     def test_an_injury_status_is_carried_as_espn_files_it(self):
         f = rosters.entry_facts(

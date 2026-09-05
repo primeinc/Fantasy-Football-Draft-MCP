@@ -80,6 +80,13 @@ def entry_facts(entry: dict, positions: dict[str, str]) -> dict:
         "lineup_slot": entry.get("lineupSlotId"),
         "espn_injury": player.get("injuryStatus"),
         "injured": bool(player.get("injured", False)),
+        # The two facts a lineup write needs and a lineup read does not: where
+        # ESPN allows him, and whether ESPN has locked him for the period.
+        # `eligibleSlots` is the player's own list (cwendt94/espn-api reads the
+        # same key); `lineupLocked` sits on the pool entry and is carried as
+        # None when absent, so "unknown" and "unlocked" stay distinct.
+        "eligible_slots": list(player.get("eligibleSlots") or []) or None,
+        "lineup_locked": (entry.get("playerPoolEntry") or {}).get("lineupLocked"),
     }
 
 

@@ -2505,7 +2505,7 @@ def _lineup_inputs(league_id: str, week: int, season: int):
         raise RuntimeError("no team in this league is owned by ESPN_SWID")
     mine = rosters.rosters_by_team(teams, board, bd._ESPN_POSITION_NAMES)[team_id]
     weekly = rosters.fetch_weekly_projections(league_id, season, week)
-    return league, lineup.week_value(mine, week, weekly), len(weekly)
+    return league, lineup.week_value(mine, week, weekly), len(weekly), team_id
 
 
 @mcp.tool()
@@ -2540,7 +2540,7 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
     from . import lineup, rosters
 
     try:
-        league, priced, weekly_seen = _lineup_inputs(league_id, week, season)
+        league, priced, weekly_seen, _team_id = _lineup_inputs(league_id, week, season)
     except Exception as exc:
         return _emit({"error": f"could not read the roster for week {week}: "
                                f"{type(exc).__name__}: {exc}"}, indent=2)
@@ -2618,6 +2618,87 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
         "priced_by": priced[lineup.WEEK_BASIS].value_counts().to_dict(),
         "shape": rosters.UNVERIFIED_SHAPE,
     }), indent=2)
+
+
+@mcp.tool()
+def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
+                  dry_run: bool = True) -> str:
+    """Set this week's ESPN lineup to the one `weekly_lineup` recommends.
+
+    The write `weekly_lineup` is not. By default (`dry_run=true`) it sends
+    nothing and returns the moves it would make, each player's slot before and
+    after, and the exact transaction, so the change can be read before it is
+    made. `dry_run=false` sends one ROSTER transaction of LINEUP items to ESPN's
+    writes host, the same request ESPN's own web client makes, then re-reads
+    the roster and reports the slots ESPN holds afterwards under `espn_holds`,
+    with `mismatches` naming any player whose slot is not what was asked.
+
+    It refuses, and sends nothing, when a move would put a player in a slot
+    ESPN does not list him as eligible for, when ESPN reports a player's slot
+    locked, or when a roster player carries no ESPN id. Injured reserve is
+    never touched. `memberId` in the returned transaction is redacted: it is
+    the SWID.
+    """
+    import os
+
+    from . import lineup, lineup_write, rosters
+
+    swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
+    if not (swid and espn_s2):
+        return _emit({"error": "submit_lineup needs ESPN_SWID and ESPN_S2"})
+    try:
+        league, priced, weekly_seen, team_id = _lineup_inputs(league_id, week, season)
+    except Exception as exc:
+        return _emit({"error": f"could not read the roster for week {week}: "
+                               f"{type(exc).__name__}: {exc}"}, indent=2)
+    if priced.empty:
+        return _emit({"error": f"no roster to set a week {week} lineup from: ESPN "
+                               f"returned no players for your team."}, indent=2)
+    starters, _bench = lineup.starting_lineup(priced, league, value=lineup.WEEK_VALUE)
+    plan = lineup_write.plan_moves(starters, priced)
+
+    def slot_name(s):
+        return None if s is None else bd._ESPN_SLOT_NAMES.get(str(s), str(s))
+
+    id_to_name = {str(r.get("espn_id")): str(r["name"]) for _, r in priced.iterrows()}
+    payload = lineup_write.lineup_transaction(team_id, swid, week, plan["items"])
+    out: dict[str, Any] = {
+        "week": week, "season": season, "team_id": team_id, "sent": False,
+        "moves": [{"player": id_to_name.get(str(i["playerId"]), str(i["playerId"])),
+                   "from": slot_name(i["fromLineupSlotId"]),
+                   "to": slot_name(i["toLineupSlotId"])} for i in plan["items"]],
+        "slots": {n: {"before": slot_name(plan["before"][n]),
+                      "after": slot_name(plan["after"][n])} for n in plan["before"]},
+        "refusals": plan["refusals"],
+        "lock_status_unknown_for": plan["lock_status_unknown_for"],
+        "transaction": {**payload, "memberId": "<SWID>"},
+        "espn_weekly_projections_seen": weekly_seen,
+    }
+    if plan["refusals"]:
+        out["why_not_sent"] = "refusals above; nothing is sent while any stand"
+        return _emit(out, indent=2)
+    if not plan["items"]:
+        out["why_not_sent"] = "ESPN already holds this lineup; there is nothing to move"
+        return _emit(out, indent=2)
+    if dry_run:
+        out["why_not_sent"] = "dry run; pass dry_run=false to send this transaction"
+        return _emit(out, indent=2)
+    result = lineup_write.send(league_id, season, payload, swid, espn_s2)
+    out["sent"] = True
+    out["espn_response"] = result
+    try:
+        teams = rosters.fetch_roster_teams(league_id, season, week, swid, espn_s2)
+        mine = rosters.rosters_by_team(teams, _build_board(), bd._ESPN_POSITION_NAMES)[team_id]
+        holds = {str(r["name"]): (None if pd.isna(r.get("lineup_slot"))
+                                  else int(r.get("lineup_slot")))
+                 for _, r in mine.iterrows()}
+        out["espn_holds"] = {n: slot_name(s) for n, s in holds.items()}
+        out["mismatches"] = sorted(n for n, want in plan["after"].items()
+                                   if n in holds and holds[n] != want)
+    except Exception as exc:
+        out["espn_holds"] = None
+        out["read_back_error"] = f"{type(exc).__name__}: {exc}"
+    return _emit(out, indent=2)
 
 
 @mcp.tool()
@@ -2993,7 +3074,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "watchstore")
+                "trade", "waivers", "watchstore", "lineup_write")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
