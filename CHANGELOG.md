@@ -13,9 +13,13 @@ All notable changes to this project. Format follows
   `survives_to_next_pick` 0.55 for Woody Marks under the headline "Take Woody
   Marks", and that was read back as "he does not come back" — the reverse of
   what 0.55 means. Reproduced on the live record before changing anything:
-  survival 0.55, `marginal_value` 3.89. The same candidate at pick 157 is
-  sharper still — survival 0.78 and marginal **-1.16**, so the model's own
-  arithmetic preferred waiting while the tool said "Take".
+  survival 0.55, `marginal_value` 3.89.
+- **The sharper case is one pick later and nobody had looked at it.** At pick
+  157 the same candidate headlines with survival **0.78** and marginal
+  **-1.16**: the tool said "Take" while its own arithmetic said waiting was
+  worth more. Found by re-running the neighbouring picks rather than only the
+  one that was reported, and it is the case that carries the fix — it needs no
+  threshold at all, since any threshold ≥ 0 catches a negative marginal.
 - Every row now carries the four numbers the recommendation is made of:
   `value_now`, `expected_best_at_next_pick`, `marginal_now_vs_wait` and
   `survival`, plus `why_now`, which states them in words and never leaves the
@@ -27,10 +31,20 @@ All notable changes to this project. Format follows
   the live incident the headline is now exactly that.
 - `NO_URGENCY_MARGINAL` is 5.0 points and is policy, stated as policy: under a
   third of a point a week over a 17-game season, inside the model's own noise.
-  It was chosen for what the number means per week, not to make the incident
-  flip — sensitivity across the top six at pick 132 is 1 candidate flagged at
-  thresholds 1.0/2.0/3.0 and 2 at 5.0/8.0, and the pick-157 case needs no
-  threshold at all because its marginal is negative.
+  The decisive argument is what a headline is for — it recommends spending a
+  pick, and a gain that size over a season is not a reason to spend one.
+  Sensitivity across the top six at pick 132: 1 candidate flagged at thresholds
+  1.0/2.0/3.0 and 2 at 5.0/8.0; at 157 every threshold from 1.0 flags five of
+  six; at 164 none, survival 0.33.
+- 5.0 is also the value at which the motivating incident changes behaviour, which
+  is indistinguishable from a fitted constant read from outside, so two things
+  are guaranteed instead of argued. The sharper half of the incident does not
+  depend on it (a negative marginal is caught at any threshold), and the label
+  can never stand in for the numbers: whenever the gate downgrades a pick,
+  `why_now` prints both the survival and the marginal, so a reader always holds
+  what they would need to disagree. Both are tested, including that the three
+  cases `why_now` cannot fully state are exactly the three the gate declines to
+  fire on.
 - `roster_note` and per-row `roster_slot_note` surface #40's second cause where
   it applies: a pick the board cannot price still fills its slot in
   `my_roster`'s count, so `need_mult` sees the position as filled while

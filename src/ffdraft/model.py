@@ -1123,11 +1123,20 @@ def _positional_need(league: LeagueSettings, roster: dict[str, int]) -> dict[str
 # Below this, taking a candidate now instead of waiting for the position is
 # worth less than a third of a point a week across a 17-game season, which is
 # inside the noise of any projection this model makes. Policy, and stated as
-# policy: it is not fitted. It was chosen for what the number means per week,
-# not to make any particular recommendation flip -- the incident that prompted
-# it (#39, Woody Marks at pick 132) sits at marginal 3.89, and the same
-# candidate at pick 157 sits at -1.16, where waiting is worth more than taking
-# and no threshold at all is needed to say so.
+# policy: it is not fitted.
+#
+# The decisive argument is what a headline is for. It recommends spending a
+# pick, and a gain of this size over a whole season is not a reason to spend
+# one. That is why the threshold sits where it does rather than lower.
+#
+# Two honesty notes, because 5.0 is also the value at which the incident that
+# prompted it changes behaviour, and that is indistinguishable from a fitted
+# constant when read from outside. First, the sharper half of the same incident
+# needs no threshold at all: the same candidate one pick later sits at marginal
+# -1.16, where waiting is plainly worth more and any threshold >= 0 catches it.
+# Second, nothing here can hide behind the label -- `urgency_note` prints the
+# survival and the marginal on every row the gate fires on, so a reader always
+# has the two numbers needed to disagree with the verdict. Both are tested.
 NO_URGENCY_MARGINAL = 5.0
 
 

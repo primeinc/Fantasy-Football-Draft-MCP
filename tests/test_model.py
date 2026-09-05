@@ -431,6 +431,31 @@ class TestUrgencyPhrasing:
         line = headline("Woody Marks", "RB12", 0.33, 0.5)
         assert line.startswith("Take Woody Marks")
 
+    def test_the_no_urgency_label_never_hides_the_numbers_it_rests_on(self):
+        """The condition the threshold decision was taken on: whenever the
+        headline downgrades a pick to "No urgency", `why_now` prints both the
+        survival and the marginal, so the label can never stand in for the
+        numbers a reader would use to disagree with it.
+
+        It holds by construction rather than by luck -- the gate requires both
+        to be finite, and `urgency_note` prints every finite one it is given --
+        but that is an argument, and this is the check.
+        """
+        cases = [(0.55, 3.89, 157), (0.78, -1.16, 164), (0.51, 4.99, 157),
+                 (0.99, 0.0, 200), (1.0, -50.0, 300)]
+        for survival, marginal, nxt in cases:
+            line = headline("X", "why", survival, marginal)
+            assert line.startswith("No urgency"), (survival, marginal)
+            note = urgency_note(survival, marginal, nxt)
+            assert f"{survival:.0%}" in note, (note, survival)
+            assert f"{abs(marginal):.1f}" in note, (note, marginal)
+
+    def test_where_a_number_is_missing_the_pick_is_never_downgraded(self):
+        # The three cases `why_now` cannot fully state are exactly the three the
+        # gate declines to fire on, which is why the invariant above holds.
+        for survival, marginal in ((None, 1.0), (0.9, None), (0.0, 40.0)):
+            assert headline("X", "why", survival, marginal).startswith("Take X")
+
     def test_a_missing_survival_estimate_does_not_suppress_the_take(self):
         assert headline("X", "why", None, 0.1).startswith("Take X")
         assert headline("X", "why", 0.9, None).startswith("Take X")
