@@ -301,6 +301,27 @@ def _jsonable(value: Any) -> Any:
         return value
 
 
+def _emit(payload: Any, **dumps_kwargs: Any) -> str:
+    """The single JSON exit for every tool in this module.
+
+    `_jsonable` existed and guarded exactly one of the 83 `json.dumps` calls
+    here, which is the shape of the bug rather than a fix for it: the one
+    payload someone had already been burned by. Every other handler that builds
+    a dict from board values could still emit a bare `NaN`, and a payload is
+    only ever one new column away from carrying one.
+
+    `default=str` cannot stand in for this. `json.dumps` writes a float NaN
+    itself and never consults `default`, so the sites that pass it were no
+    safer than the sites that do not.
+
+    Keyword arguments pass through untouched, so `indent` and `default` still
+    mean what they meant at each call site; the only change is that the payload
+    is sanitised first. `TestEveryPayloadLeavesThroughEmit` is what keeps a new
+    handler from going around it.
+    """
+    return json.dumps(_jsonable(payload), **dumps_kwargs)
+
+
 def _rows(df: pd.DataFrame, cols: list[str], n: int) -> list[dict]:
     out = []
     for _, r in df.head(n).iterrows():
@@ -339,7 +360,7 @@ def configure_league(name: str = "default", teams: int = 12, draft_slot: int = 6
     (0 = pure upside, 1 = pure floor).
     """
     if not 1 <= draft_slot <= teams:
-        return json.dumps({"error": f"draft_slot {draft_slot} is outside a {teams}-team league"})
+        return _emit({"error": f"draft_slot {draft_slot} is outside a {teams}-team league"})
 
     starters = {"QB": qb, "RB": rb, "WR": wr, "TE": te, "FLEX": flex, "K": 1, "DST": 1}
     league = LeagueSettings(
@@ -357,7 +378,7 @@ def configure_league(name: str = "default", teams: int = 12, draft_slot: int = 6
 
     known, _ = cfg_list_leagues()
     reused = _board_path(league).exists()
-    return json.dumps({
+    return _emit({
         "league": name, "active": True, "teams": teams, "your_slot": draft_slot,
         "scoring": scoring, "superflex": superflex,
         "your_picks": league.picks_for_slot()[:rounds],
@@ -383,7 +404,7 @@ def list_leagues() -> str:
             "your_slot": lg.draft_slot, "superflex": lg.superflex,
             "picks_recorded": len(state.picks),
         })
-    return json.dumps({"active": active, "leagues": out}, indent=2)
+    return _emit({"active": active, "leagues": out}, indent=2)
 
 
 @mcp.tool()
@@ -391,11 +412,11 @@ def switch_league(name: str) -> str:
     """Make a different league active. Its board and draft resume where you left them."""
     if not set_active(name):
         known, _ = cfg_list_leagues()
-        return json.dumps({"error": f"no league named '{name}'", "available": known})
+        return _emit({"error": f"no league named '{name}'", "available": known})
     league, weights = load_settings(name)
     _CACHE.update({"league": league, "weights": weights})
     state = bd.DraftState(league)
-    return json.dumps({
+    return _emit({
         "active": name, "teams": league.teams, "your_slot": league.draft_slot,
         "scoring": ("ppr" if league.scoring.rec >= 1 else
                     "standard" if league.scoring.rec == 0 else "half_ppr"),
@@ -410,14 +431,14 @@ def remove_league(name: str) -> str:
     other leagues with the same format may share it."""
     if not delete_league(name):
         known, _ = cfg_list_leagues()
-        return json.dumps({"error": f"no league named '{name}'", "available": known})
+        return _emit({"error": f"no league named '{name}'", "available": known})
     p = STATE_DIR / f"draft_{re.sub(r'[^A-Za-z0-9_-]', '_', name)}.json"
     if p.exists():
         p.unlink()
     if (_CACHE.get("league") or LeagueSettings()).name == name:
         _CACHE.update({"league": None, "weights": None})
     known, active = cfg_list_leagues()
-    return json.dumps({"removed": name, "remaining": known, "active": active}, indent=2)
+    return _emit({"removed": name, "remaining": known, "active": active}, indent=2)
 
 
 @mcp.tool()
@@ -430,7 +451,7 @@ def refresh_data(force_download: bool = False) -> str:
     features.clear_derived_cache()
     _BOARDS.clear()
     b = _build_board(force=True)
-    return json.dumps({
+    return _emit({
         "players_modelled": len(b),
         "by_position": b["position"].value_counts().to_dict(),
         "seasons": sorted(int(s) for s in sources.weekly_stats()["season"].unique()),
@@ -458,7 +479,7 @@ def best_available(position: str | None = None, limit: int = 15,
     cols = ["name", "position", "team", "bye_week", "overall_rank", "pos_rank", "adp",
             "adp_delta", "proj_points", "adj_ppg", "consistency", "startable_rate",
             "injury_risk", "vor"]
-    return json.dumps({"sorted_by": key, "players": _rows(avail, cols, limit)}, indent=2)
+    return _emit({"sorted_by": key, "players": _rows(avail, cols, limit)}, indent=2)
 
 
 @mcp.tool()
@@ -542,7 +563,7 @@ def who_should_i_pick(limit: int = 6) -> str:
                               if pd.notna(r.get("bye_conflicts")) else "") or "",
             "why": model.explain(r),
         })
-    return json.dumps(_jsonable({
+    return _emit(_jsonable({
         "evaluating_pick": current,
         "round": (current - 1) // league.teams + 1,
         "your_next_pick_after_this": after,
@@ -574,7 +595,7 @@ def record_pick(player_name: str, overall_pick: int | None = None,
     # for anyone not auto-syncing.
     pick = state.record(resolved, overall_pick, team_slot,
                         position=(str(row["position"]) if row is not None else None))
-    return json.dumps({
+    return _emit({
         "recorded": pick,
         "matched_to": resolved if row is not None else "no model match (logged as typed)",
         "position": (row["position"] if row is not None else None),
@@ -596,7 +617,7 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
     """
     entry = _WATCHES.get(str(league_id))
     if entry is not None and entry[0].connected:
-        return json.dumps({"error": "a draft watch is connected for this league and keeps the "
+        return _emit({"error": "a draft watch is connected for this league and keeps the "
                                     "board current; stop_watch first if you really want a resync",
                            **entry[0].state.summary()})
     state = _state()
@@ -606,19 +627,19 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
 
     if platform == "sleeper":
         if not draft_id:
-            return json.dumps({"error": "draft_id required for Sleeper"})
+            return _emit({"error": "draft_id required for Sleeper"})
         picks = bd.sync_sleeper(draft_id)
     elif platform == "espn":
         if not league_id:
-            return json.dumps({"error": "league_id required for ESPN"})
+            return _emit({"error": "league_id required for ESPN"})
         picks = bd.sync_espn(league_id, season)
     elif platform == "paste":
         if not pasted_board:
-            return json.dumps({"error": "pasted_board text required"})
+            return _emit({"error": "pasted_board text required"})
         names = bd.parse_pasted_board(pasted_board)
         picks = [{"overall": i + 1, "slot": None, "name": n} for i, n in enumerate(names)]
     else:
-        return json.dumps({"error": f"unknown platform '{platform}'"})
+        return _emit({"error": f"unknown platform '{platform}'"})
 
     state.reset()
     unmatched = []
@@ -635,7 +656,7 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
                      position=(str(row["position"]) if row is not None
                                else (str(p["position"]) if p.get("position") else None)))
     audit = bd.audit_state(b, state)
-    return json.dumps({
+    return _emit({
         "platform": platform, "picks_synced": len(picks),
         "unmatched_names": unmatched[:20],
         **state.summary(),
@@ -650,7 +671,7 @@ def league_rules(league_id: str, season: int = CURRENT_SEASON) -> str:
     seeding, waiver mode and timing, trade rules, lineup lock, tiebreakers, plus
     the season's bye-week topology (teams on bye per week, byes inside the
     playoffs). First-party: read from the league settings, never assumed."""
-    return json.dumps(bd.espn_league_rules(league_id, season), indent=2, default=str)
+    return _emit(bd.espn_league_rules(league_id, season), indent=2, default=str)
 
 
 @mcp.tool()
@@ -672,7 +693,7 @@ def draft_audit(limit: int = 10) -> str:
     # Board rows the market join could not price are the Estimé shape: a
     # synthetic ADP where a real one may exist under another spelling.
     out["market_join"] = bd.market_join_report(b, limit)
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -691,7 +712,7 @@ def draft_status() -> str:
             "position": (r["position"] if r is not None else None),
             "proj_points": (round(float(r["proj_points"]), 1) if r is not None else None),
         })
-    return json.dumps({**state.summary(), "my_team": detail,
+    return _emit({**state.summary(), "my_team": detail,
                        "roster_counts": state.my_roster(b)}, indent=2)
 
 
@@ -700,7 +721,7 @@ def undo_pick() -> str:
     """Remove the most recent pick — for when someone mis-enters the board."""
     state = _state()
     removed = state.undo()
-    return json.dumps({"removed": removed, **state.summary()}, indent=2)
+    return _emit({"removed": removed, **state.summary()}, indent=2)
 
 
 @mcp.tool()
@@ -708,7 +729,7 @@ def reset_draft() -> str:
     """Clear all recorded picks and start fresh."""
     state = _state()
     state.reset()
-    return json.dumps({"reset": True, **state.summary()}, indent=2)
+    return _emit({"reset": True, **state.summary()}, indent=2)
 
 
 @mcp.tool()
@@ -744,7 +765,7 @@ def separation_report(position: str = "WR", player_name: str | None = None,
     prof = sep_mod.separation_profile()
     prof = prof[prof["qualified"]]
     if prof.empty:
-        return json.dumps({"error": "no qualified players"})
+        return _emit({"error": "no qualified players"})
 
     league, _ = _settings()
     dfn = features.defense_ratings(sc=league.scoring)
@@ -764,7 +785,7 @@ def separation_report(position: str = "WR", player_name: str | None = None,
                 "rec_targets", "rec_yards", "routes_est", "sep_score"]
         if "matchup_z" in hist.columns:
             cols.append("matchup_z")
-        return json.dumps({
+        return _emit({
             "player": player_name,
             "by_season": _rows(hist, cols, 6),
         }, indent=2, default=str)
@@ -777,7 +798,7 @@ def separation_report(position: str = "WR", player_name: str | None = None,
         cur = cur.merge(sos[sos_cols], on="team", how="left").rename(columns={sos_col: "matchup_z"})
         cols.append("matchup_z")
     cur = cur.sort_values("sep_score", ascending=False)
-    return json.dumps({
+    return _emit({
         "season": recent, "position": pos, "schedule_season": CURRENT_SEASON,
         "note": "sep_score is a within-season z-score blending separation, YPRR, TPRR "
                 "and YAC over expected -- players are ranked by this. matchup_z is "
@@ -813,7 +834,7 @@ def value_picks(limit: int = 20, direction: str = "undervalued") -> str:
     out = avail.sort_values("market_gap", ascending=asc)
     cols = ["name", "position", "team", "adp", "overall_rank", "pos_rank", "market_gap",
             "proj_points", "consistency", "injury_risk", "sep_score"]
-    return json.dumps({
+    return _emit({
         "direction": direction,
         "adp_source": str(avail["adp_source"].mode().iloc[0]) if "adp_source" in avail else "n/a",
         "note": "market_gap > 0 means the model likes him more than his draft cost",
@@ -841,7 +862,7 @@ def on_the_clock(platform: str, league_id: str | None = None, draft_id: str | No
     """
     sync = json.loads(sync_draft(platform, league_id, draft_id, pasted_board, season))
     if "error" in sync:
-        return json.dumps({"step": "sync_draft", **sync}, indent=2)
+        return _emit({"step": "sync_draft", **sync}, indent=2)
 
     status = json.loads(draft_status())
     rec = json.loads(who_should_i_pick(limit=limit))
@@ -869,7 +890,7 @@ def on_the_clock(platform: str, league_id: str | None = None, draft_id: str | No
         result["separation_report"] = json.loads(
             separation_report(position=picks[0]["position"], player_name=picks[0]["player"]))
 
-    return json.dumps(result, indent=2)
+    return _emit(result, indent=2)
 
 
 @mcp.tool()
@@ -885,9 +906,9 @@ def draft_value_history(seasons: str = "2021,2022,2023,2024", group_by: str = "d
     yrs = [int(s) for s in seasons.split(",") if s.strip()]
     hist = adp_mod.value_history(yrs, league.scoring)
     if hist.empty:
-        return json.dumps({"error": "no ECR history available"})
+        return _emit({"error": "no ECR history available"})
     rates = adp_mod.hit_rates(hist, group_by)
-    return json.dumps({
+    return _emit({
         "seasons": yrs,
         "players_analysed": int((hist["ecr"] <= adp_mod.DRAFTABLE_ECR_CUTOFF).sum()),
         "definitions": {"hit": "scored >=115% of the points that draft slot returned",
@@ -918,7 +939,7 @@ def matchup_backtest(seasons: str = "2021,2022,2023,2024", position: str = "WR",
     yrs = [int(s) for s in seasons.split(",") if s.strip()]
     hist = adp_mod.matchup_value_backtest(yrs, position.upper(), league.scoring)
     if hist.empty:
-        return json.dumps({"error": "no matchup backtest data available for those seasons"})
+        return _emit({"error": "no matchup backtest data available for those seasons"})
     summary = adp_mod.matchup_backtest_summary(hist, top_n)
 
     swing = hist.copy()
@@ -927,7 +948,7 @@ def matchup_backtest(seasons: str = "2021,2022,2023,2024", position: str = "WR",
                  "matchup_adjusted_score", "points", "finish_pos_rank"]
     biggest_swings = swing.sort_values("swing", ascending=False)
 
-    return json.dumps({
+    return _emit({
         "position": position.upper(),
         "summary": summary,
         "interpretation": (
@@ -967,7 +988,7 @@ def redzone_shift_backtest(seasons: str = "2022,2023,2024,2025", position: str =
     yrs = [int(s) for s in seasons.split(",") if s.strip()]
     hist = adp_mod.redzone_shift_backtest(yrs, position.upper(), league.scoring)
     if hist.empty:
-        return json.dumps({"error": "no red zone shift backtest data available for those seasons"})
+        return _emit({"error": "no red zone shift backtest data available for those seasons"})
     summary = adp_mod.matchup_backtest_summary(hist, top_n)
 
     swing = hist.copy()
@@ -976,7 +997,7 @@ def redzone_shift_backtest(seasons: str = "2022,2023,2024,2025", position: str =
                  "matchup_adjusted_score", "points", "finish_pos_rank"]
     biggest_swings = swing.sort_values("swing", ascending=False)
 
-    return json.dumps({
+    return _emit({
         "position": position.upper(),
         "summary": summary,
         "interpretation": (
@@ -1014,7 +1035,7 @@ def draft_backtest(league_id: str, season: int, top_n: int = 3) -> str:
     actual pick only, same as everywhere else. Only ESPN is supported.
     """
     out = adp_mod.draft_backtest(league_id, season, top_n=top_n)
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1050,7 +1071,7 @@ def mock_draft(season: int, n_trials: int = 30, top_n: int = 5) -> str:
     """
     league, weights = _settings()
     out = adp_mod.mock_draft(league, weights, season, n_trials=n_trials, top_n=top_n)
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1082,7 +1103,7 @@ def bye_backtest(seasons: str = "2022,2023,2024,2025", n_trials: int = 20,
     out = adp_mod.bye_backtest(league, weights, yrs, n_trials=n_trials,
                                bye_weight=bye_weight, blocks=blocks, progress=progress)
     out["progress"] = lines
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1111,7 +1132,7 @@ def champion_strategies(league_id: str, seasons: str = "2020,2021,2022,2023,2024
     """
     yrs = [int(s) for s in seasons.split(",") if s.strip()]
     out = adp_mod.champion_strategies(league_id, yrs)
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1126,11 +1147,11 @@ def persistent_value_players(seasons: str = "2021,2022,2023,2024",
     yrs = [int(s) for s in seasons.split(",") if s.strip()]
     hist = adp_mod.value_history(yrs, league.scoring)
     if hist.empty:
-        return json.dumps({"error": "no ECR history available"})
+        return _emit({"error": "no ECR history available"})
     rep = adp_mod.repeat_value_players(hist, min_seasons)
     cols = ["name", "position", "seasons", "hits", "busts", "hit_rate",
             "avg_value_ratio", "avg_ecr", "avg_games"]
-    return json.dumps({
+    return _emit({
         "min_seasons": min_seasons,
         "best_value": _rows(rep, cols, limit),
         "worst_value": _rows(rep.tail(limit).iloc[::-1], cols, limit),
@@ -1153,12 +1174,12 @@ def rookie_report(limit: int = 20, position: str | None = None) -> str:
     if position:
         r = r[r["position"] == position.upper()]
     if r.empty:
-        return json.dumps({"error": "no rookies on the board — draft class may not be published yet"})
+        return _emit({"error": "no rookies on the board — draft class may not be published yet"})
     r = r.sort_values("draft_score", ascending=False)
     cols = ["name", "position", "team", "pick", "draft_round", "college", "adp",
             "overall_rank", "proj_points", "adj_ppg", "exp_games", "consistency",
             "drafted"]
-    return json.dumps({
+    return _emit({
         "rookies": len(r),
         "note": "pick is NFL draft position; adp is fantasy market cost",
         "players": _rows(r, [c for c in cols if c in r.columns], limit),
@@ -1185,7 +1206,7 @@ def resolve_names(names_csv: str) -> str:
             "team": (str(row["team"]) if row is not None else None),
             "match_type": how,
         })
-    return json.dumps({
+    return _emit({
         "resolved": sum(1 for o in out if o["resolved_to"]),
         "of": len(out),
         "results": out,
@@ -1233,7 +1254,7 @@ def prewarm(verbose: bool = True) -> str:
     if verbose:
         out["step_seconds"] = timings
         out["disk_cache"] = sources.cache_status()
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1242,7 +1263,7 @@ def player_report(player_name: str) -> str:
     b = _build_board()
     r = bd.match_player(player_name, b)
     if r is None:
-        return json.dumps({"error": f"no match for '{player_name}'"})
+        return _emit({"error": f"no match for '{player_name}'"})
     fields = ["name", "position", "team", "age", "overall_rank", "pos_rank", "adp", "adp_delta",
               "proj_points", "adj_ppg", "baseline_ppg", "exp_games",
               "consistency", "startable_rate", "spike_rate", "floor", "ceiling", "fp_cv",
@@ -1261,7 +1282,7 @@ def player_report(player_name: str) -> str:
               "m_separation", "m_td_luck", "m_coverage_trend", "vor"]
     out = _rows(pd.DataFrame([r]), [f for f in fields if f in r.index], 1)[0]
     out["summary"] = model.explain(r)
-    return json.dumps(out, indent=2)
+    return _emit(out, indent=2)
 
 
 @mcp.tool()
@@ -1274,12 +1295,12 @@ def compare_players(names: str) -> str:
         if r is not None:
             rows.append(r)
     if not rows:
-        return json.dumps({"error": "no matches"})
+        return _emit({"error": "no matches"})
     df = pd.DataFrame(rows)
     cols = ["name", "position", "team", "adp", "proj_points", "adj_ppg", "consistency",
             "startable_rate", "spike_rate", "injury_risk", "exp_games", "vor", "draft_score"]
     best = df.sort_values("draft_score", ascending=False).iloc[0]
-    return json.dumps({
+    return _emit({
         "players": _rows(df.sort_values("draft_score", ascending=False), cols, 4),
         "verdict": f"{best['name']} — {model.explain(best)}",
     }, indent=2)
@@ -1334,7 +1355,7 @@ def team_context(team: str) -> str:
             if not rz_shift.empty else rz_shift,
             ["season", "neutral_pass_rate", "rz_pass_rate", "shift"], 1),
     }
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1348,13 +1369,13 @@ def defense_report(position: str = "RB", limit: int = 32) -> str:
     pos = position.upper()
     col = f"fpa_{pos}"
     if col not in dfn.columns:
-        return json.dumps({"error": f"no data for position {pos}"})
+        return _emit({"error": f"no data for position {pos}"})
     recent = int(dfn["season"].max())
     cur = dfn[dfn["season"] == recent][["team", col, f"{col}_rank", "def_epa_play", "def_rank"]]
     multi = dfn.groupby("team")[col].mean().rename(f"{col}_5yr_avg").reset_index()
     multi[f"{col}_5yr_rank"] = multi[f"{col}_5yr_avg"].rank(method="min").astype(int)
     out = cur.merge(multi, on="team").sort_values(f"{col}_5yr_rank")
-    return json.dumps({
+    return _emit({
         "position": pos, "recent_season": recent,
         "note": "rank 1 = allows fewest fantasy points = toughest matchup",
         "defenses": _rows(out, list(out.columns), limit),
@@ -1416,7 +1437,7 @@ def plan_my_draft(strategy: str = "balanced") -> str:
         })
 
     total = sum(float(p["proj_points"]) for p in plan)
-    return json.dumps({
+    return _emit({
         "strategy": strategy, "your_slot": state.my_slot,
         "projected_starters_points": round(total, 1),
         "final_roster": roster, "plan": plan,
@@ -1479,7 +1500,7 @@ def model_settings(consistency_weight: float | None = None, injury_weight: float
     p = _board_path(league)
     if p.exists():
         p.unlink()
-    return json.dumps({"league": league.name, "weights": weights.__dict__,
+    return _emit({"league": league.name, "weights": weights.__dict__,
                        "board": "will rebuild on next query"}, indent=2)
 
 
@@ -1507,11 +1528,11 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
 
     swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
     if not (swid and espn_s2):
-        return json.dumps({"error": "watch_draft needs ESPN_SWID and ESPN_S2"})
+        return _emit({"error": "watch_draft needs ESPN_SWID and ESPN_S2"})
     try:
         ctx_info = bd.espn_league_context(league_id, season, swid, espn_s2)
         if ctx_info["my_team_id"] is None:
-            return json.dumps({"error": "no team owned by ESPN_SWID in this league"})
+            return _emit({"error": "no team owned by ESPN_SWID in this league"})
         league, weights = _settings()
         board_df = _build_board()
         # The session outlives this request; a notification with no related request
@@ -1532,11 +1553,11 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
                              refresh=lambda: (_build_board(), _settings()[1].bye))
     except Exception as exc:
         # The MCP SDK hides tool tracebacks behind "Error executing tool".
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}",
+        return _emit({"error": f"{type(exc).__name__}: {exc}",
                            "traceback": traceback.format_exc()})
     task = asyncio.create_task(w.run(), name=f"draft-watch-{league_id}")
     _WATCHES[league_id] = (w, task)
-    return json.dumps({
+    return _emit({
         "watching": league_id, "team_id": ctx_info["my_team_id"],
         "draft_slot": ctx_info["draft_slot"], "league_name": ctx_info["league_name"],
         "note": "picks arrive as channel messages; stop with stop_watch",
@@ -1559,29 +1580,29 @@ async def make_pick(league_id: str, player_name: str) -> str:
         return err
     espn_id, resolved = bd.resolve_espn_id(player_name, _build_board(), w.espn_map)
     if espn_id is None:
-        return json.dumps({"error": resolved})
+        return _emit({"error": resolved})
     s = w.state.summary()
     if s["on_the_clock"] != s["my_next_pick"]:
-        return json.dumps({"error": f"not your turn: pick {s['on_the_clock']} is on the clock, "
+        return _emit({"error": f"not your turn: pick {s['on_the_clock']} is on the clock, "
                                     f"yours is {s['my_next_pick']}"})
     try:
         accepted = await w.select(int(espn_id))
     except TimeoutError:
-        return json.dumps({"error": "ESPN did not confirm the pick within 10s; check the room"})
+        return _emit({"error": "ESPN did not confirm the pick within 10s; check the room"})
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}",
+        return _emit({"error": f"{type(exc).__name__}: {exc}",
                            "traceback": traceback.format_exc()})
-    return json.dumps({"picked": accepted, "resolved": resolved, "resolved_from": player_name,
+    return _emit({"picked": accepted, "resolved": resolved, "resolved_from": player_name,
                        **w.state.summary()}, indent=2)
 
 
 def _watch_or_error(league_id: str):
     entry = _WATCHES.get(league_id)
     if entry is None:
-        return None, json.dumps({"error": "no active watch for this league; call watch_draft first"})
+        return None, _emit({"error": "no active watch for this league; call watch_draft first"})
     w, _task = entry
     if not w.connected:
-        return None, json.dumps({"error": "draft watch is not connected right now"})
+        return None, _emit({"error": "draft watch is not connected right now"})
     return w, None
 
 
@@ -1598,10 +1619,10 @@ async def draft_queue(league_id: str) -> str:
     if err:
         return err
     if w.queue is None:
-        return json.dumps({"source": "none", "queue": [],
+        return _emit({"source": "none", "queue": [],
                            "note": "ESPN has not sent a DRAFT_LIST on this connection; "
                                    "set_draft_queue returns the authoritative list"})
-    return json.dumps({"source": "socket", "queue": _queue_rows(w, w.queue)}, indent=2)
+    return _emit({"source": "socket", "queue": _queue_rows(w, w.queue)}, indent=2)
 
 
 @mcp.tool()
@@ -1623,12 +1644,12 @@ async def set_draft_queue(league_id: str, player_names: str) -> str:
         else:
             ids.append(pid)
     if unresolved:
-        return json.dumps({"error": "unresolved names; nothing sent", "unresolved": unresolved})
+        return _emit({"error": "unresolved names; nothing sent", "unresolved": unresolved})
     try:
         accepted = await w.set_queue(ids)
     except TimeoutError:
-        return json.dumps({"error": "ESPN did not echo the queue within 10s", "sent": _queue_rows(w, ids)})
-    return json.dumps({"sent": _queue_rows(w, ids), "accepted": _queue_rows(w, accepted)}, indent=2)
+        return _emit({"error": "ESPN did not echo the queue within 10s", "sent": _queue_rows(w, ids)})
+    return _emit({"sent": _queue_rows(w, ids), "accepted": _queue_rows(w, accepted)}, indent=2)
 
 
 @mcp.tool()
@@ -1637,9 +1658,9 @@ async def draft_room(league_id: str, chat_limit: int = 10) -> str:
     running watch's socket. Names come from the league's member list."""
     entry = _WATCHES.get(league_id)
     if entry is None:
-        return json.dumps({"error": "no active watch for this league; call watch_draft first"})
+        return _emit({"error": "no active watch for this league; call watch_draft first"})
     w, _task = entry
-    return json.dumps(w.room(chat_limit), indent=2, default=str)
+    return _emit(w.room(chat_limit), indent=2, default=str)
 
 
 @mcp.tool()
@@ -1664,12 +1685,12 @@ def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
     else:
         root = roomstats.find_dump(dump_dir or ".")
         if root is None:
-            return json.dumps({"error": "no watch for this league and no espn_dump_* directory; "
+            return _emit({"error": "no watch for this league and no espn_dump_* directory; "
                                         "call watch_draft or dump_draft first, or pass dump_dir"})
         log = roomstats.from_dump(root)
     stats = roomstats.room_stats(log)
     stats["table"] = roomstats.format_table(stats)
-    return json.dumps(stats, indent=2)
+    return _emit(stats, indent=2)
 
 
 @mcp.tool()
@@ -1698,7 +1719,7 @@ def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> st
     drift = replay.room_drift(b, state)["shift"]
     snapshots = watch.snapshot_dir(league_id) if league_id else None
     if as_of and snapshots is None:
-        return json.dumps({"error": "as_of needs league_id: snapshots are filed per league "
+        return _emit({"error": "as_of needs league_id: snapshots are filed per league "
                                     "under ~/.ffdraft/state/snapshots_<league>/"})
     out = replay.replay_draft(b, state, league, adp_shift=drift,
                               as_of=as_of, snapshots=snapshots)
@@ -1711,7 +1732,7 @@ def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> st
             t["team"] = labels.get(t["slot"], f"slot {t['slot']}")
     if picks:
         out["picks"] = out["picks"][-picks:]
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1752,7 +1773,7 @@ def draft_counterfactual(slot: int = 0, league_id: str = "", policy: str = "argm
         team_of_slot = {s: t for t, s in w.slot_of.items()}
         if slot in team_of_slot:
             out["team"] = w.team_label(team_of_slot[slot])
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1782,7 +1803,7 @@ def predict_pick(league_id: str = "", slot: int = 0) -> str:
         team_of_slot = {s: t for t, s in w.slot_of.items()}
         if slot in team_of_slot:
             out["team"] = w.team_label(team_of_slot[slot])
-    return json.dumps(out, indent=2, default=str)
+    return _emit(out, indent=2, default=str)
 
 
 @mcp.tool()
@@ -1799,7 +1820,7 @@ def draft_strength(league_id: str = "") -> str:
         w, _task = entry
         labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
     tbl = bd.team_strength(b, state, labels)
-    return json.dumps({"picks_made": len(state.picks), "my_slot": state.my_slot,
+    return _emit({"picks_made": len(state.picks), "my_slot": state.my_slot,
                        "teams": tbl.to_dict(orient="records")}, indent=2)
 
 
@@ -1830,7 +1851,7 @@ async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_S
         team_id = info["my_team_id"]
     manifest = await asyncio.to_thread(
         espn_dump.dump_draft, league_id, out_dir, season, None, None, init_b64, lines, team_id)
-    return json.dumps(manifest, indent=2)
+    return _emit(manifest, indent=2)
 
 
 @mcp.tool()
@@ -1838,12 +1859,12 @@ async def stop_watch(league_id: str) -> str:
     """Stop the draft-room watch for a league."""
     entry = _WATCHES.pop(league_id, None)
     if entry is None:
-        return json.dumps({"stopped": False, "watching": sorted(_WATCHES)})
+        return _emit({"stopped": False, "watching": sorted(_WATCHES)})
     w, task = entry
     task.cancel()
     # as_of_snapshots next to picks_seen on purpose: "picks_seen 122,
     # as_of_snapshots 0" is the one line that says the market was never recorded.
-    return json.dumps({"stopped": True, "league": league_id, "picks_seen": w.picks_seen,
+    return _emit({"stopped": True, "league": league_id, "picks_seen": w.picks_seen,
                        "as_of_snapshots": len(w.snapshots),
                        "snapshot_write_failures": w.snapshot_failures,
                        "last_line": w.last_line[:80]})
@@ -1922,12 +1943,12 @@ async def reload_code(ctx: Context = None) -> str:
     try:
         result = reload_package()
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}",
+        return _emit({"error": f"{type(exc).__name__}: {exc}",
                            "traceback": traceback.format_exc()})
     if result["tools"] is not None and ctx is not None:
         await ctx.session.send_tool_list_changed()
         result["notified"] = "notifications/tools/list_changed"
-    return json.dumps(result, indent=2)
+    return _emit(result, indent=2)
 
 
 def main() -> None:
