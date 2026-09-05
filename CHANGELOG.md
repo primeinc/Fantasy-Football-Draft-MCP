@@ -1552,9 +1552,17 @@ All notable changes to this project. Format follows
 - A merge with no echo yet on the connection is refused rather than guessed: the
   queue ESPN holds is unknown, and sending anyway is exactly how a queue gets
   overwritten with nobody able to say what was in it.
-- `DraftWatch.queue_echoes` records every echo with a timestamp and `draft_queue`
-  returns them, so "when did this player leave my queue" has an answer. Comparing
-  consecutive echoes is the only way to get one from a protocol with no diff.
+- `DraftWatch.queue_echoes` records every echo with a timestamp and a connection
+  number, and `draft_queue` returns them, so "when did this player leave my
+  queue" has an answer. Comparing consecutive echoes is the only way to get one
+  from a protocol with no diff, and the connection number is what stops a list
+  that shrank across a reconnect being read as somebody editing it.
+- The queue is per connection. `run()` reconnects and ESPN drops the queue when a
+  session ends, so the watch clears it on every connect; otherwise the refusal
+  meant "no echo ever on this watch object" while saying "on this connection".
+- `removed` and `kept_from_the_users_queue` are computed from ESPN's echo, never
+  from what was sent. ESPN drops ids it rejects, so a merge that intended to
+  remove nothing can still lose one of the user's players.
 - The watch's own `DRAFT_LIST` parse now goes through `espn_live.queue_from_lines`
   rather than repeating the lstrip-then-`isdigit` test that accepts `--5` and
   then raises inside the live session.

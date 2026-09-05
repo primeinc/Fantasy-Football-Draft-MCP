@@ -1854,18 +1854,21 @@ async def draft_queue(league_id: str) -> str:
     w, err = _watch_or_error(league_id)
     if err:
         return err
-    history = [{"at_ms": ts, "size": len(ids), "queue": _queue_rows(w, ids)}
-               for ts, ids in w.queue_echoes]
+    history = [{"at_ms": ts, "connection": conn, "size": len(ids),
+                "queue": _queue_rows(w, ids)} for ts, conn, ids in w.queue_echoes]
     if w.queue is None:
         return _emit({"source": "none", "queue": [], "echoes": history,
+                      "connection": w.connection,
                       "note": "ESPN has not sent a DRAFT_LIST on this connection, so "
                               "the queue it holds is unknown; set_draft_queue will "
-                              "refuse to merge into it"}, indent=2)
+                              "refuse to merge into it. ESPN normally echoes within "
+                              "seconds of joining."}, indent=2)
     # Every echo, not just the latest: ESPN sends the whole list rather than a
     # change, so the only way to answer "when did X leave my queue" is to compare
-    # consecutive echoes.
+    # consecutive echoes. Each row carries its connection, because a list that
+    # shrank across a reconnect was not necessarily edited by anyone.
     return _emit({"source": "socket", "queue": _queue_rows(w, w.queue),
-                  "echoes": history}, indent=2)
+                  "connection": w.connection, "echoes": history}, indent=2)
 
 
 @mcp.tool()
@@ -1906,30 +1909,35 @@ async def set_draft_queue(league_id: str, player_names: str, replace: bool = Fal
     existing = list(w.queue) if w.queue is not None else None
     if not replace and existing is None:
         return _emit({
-            "error": "the queue ESPN holds is unknown, so nothing was sent",
-            "why": ("ESPN has not echoed a DRAFT_LIST on this connection, and its "
-                    "protocol sends the whole queue rather than a change. Sending now "
-                    "would replace whatever the user has queued in the app without "
-                    "either of us seeing what was lost."),
-            "do": ("open the draft room's queue and change it once so ESPN echoes it, "
-                   "then call this again; or pass replace=True to send only these "
-                   "players and accept losing the rest"),
+            "error": ("no queue echo on this connection yet; pass replace=True to send "
+                      "yours, which overwrites whatever the user holds in the app"),
+            "why": ("ESPN's protocol sends the whole queue rather than a change, so "
+                    "merging into a queue nobody has seen means guessing at it. "
+                    "Sending now would replace what the user built without either of "
+                    "us being able to say what was lost."),
+            "do": ("ESPN normally echoes the queue within seconds of joining, so "
+                   "waiting a moment and calling again is usually enough; otherwise "
+                   "the user can touch the queue in the app to force an echo"),
             "would_send": _queue_rows(w, ids)}, indent=2)
 
     if replace:
         send = ids
-        removed = [pid for pid in (existing or []) if pid not in set(ids)]
     else:
         # Ours first, in the order asked for, then everything the user already had
         # that we are not already sending.
         send = ids + [pid for pid in (existing or []) if pid not in set(ids)]
-        removed = []
     try:
         accepted = await w.set_queue(send)
     except TimeoutError:
         return _emit({"error": "ESPN did not echo the queue within 10s",
                       "sent": _queue_rows(w, send)}, indent=2)
+    # Both of these read ESPN's echo, not what we meant to send. A merge intends
+    # to remove nothing, but ESPN drops ids it rejects -- an already-drafted
+    # player is the ordinary case -- and reporting the intent would say
+    # `removed: []` while one of the user's players was gone. Describing our own
+    # intent instead of the outcome is the defect this tool exists to end.
     kept = [pid for pid in accepted if pid in set(existing or []) and pid not in set(ids)]
+    removed = [pid for pid in (existing or []) if pid not in set(accepted)]
     return _emit({
         "mode": "replace" if replace else "merge",
         "sent": _queue_rows(w, send),

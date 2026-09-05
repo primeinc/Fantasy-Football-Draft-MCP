@@ -191,12 +191,21 @@ class DraftWatch:
         self.own_pick: asyncio.Future | None = None
         # Our pick queue as ESPN last echoed it (DRAFT_LIST line); None until seen.
         self.queue: list[int] | None = None
-        # Every echo, (epoch ms, ids), oldest first. The queue is the one piece of
-        # draft state with two authors -- the user in the ESPN app and this server
-        # -- and ESPN sends no diff, only the whole list. Without the history,
-        # "who took X out of my queue" has no answer at all; with it, the echo
-        # before a player disappeared says whether he was there and when he went.
-        self.queue_echoes: list[tuple[int, list[int]]] = []
+        # Every echo, (epoch ms, connection, ids), oldest first. The queue is the
+        # one piece of draft state with two authors -- the user in the ESPN app
+        # and this server -- and ESPN sends no diff, only the whole list. Without
+        # the history, "who took X out of my queue" has no answer at all; with it,
+        # the echo before a player disappeared says whether he was there and when
+        # he went.
+        #
+        # The connection number is on each row because the history outlives the
+        # socket: a gap in the series is a quiet period within one connection and
+        # a reconnect between two, and those mean different things. ESPN drops the
+        # queue when a session ends, so a list that shrinks across a connection
+        # boundary was not necessarily edited by anyone.
+        self.queue_echoes: list[tuple[int, int, list[int]]] = []
+        # Incremented per socket session; 0 until the first connect.
+        self.connection = 0
         self.queue_echo: asyncio.Future | None = None
 
     # -- socket loop
@@ -236,6 +245,29 @@ class DraftWatch:
                     f"reconnecting, attempt {failures + 1} of {MAX_FAILED_SESSIONS}",
                     {"league": self.league_id, "event": "disconnect"})
 
+    def _reset_for_connection(self) -> None:
+        """Clear the state that belongs to one socket session.
+
+        `queue` is here for the same reason `ready` and `bumped` are.
+        `set_draft_queue` refuses to merge into a queue it has not seen echoed
+        *on this connection*; leaving the previous connection's list in place
+        made the code mean "ever on this watch object", and `run()` reconnects,
+        so the refusal could be skipped in exactly the case it was written for.
+        ESPN also drops the queue when a client session ends, so the stale list
+        can describe a queue that is no longer there.
+
+        Clearing costs nothing: ESPN sends a DRAFT_LIST unprompted a few seconds
+        after INIT -- 3.7s on the 2026-09-05 join -- so a live connection fills
+        this back in almost at once.
+
+        A separate method because `_session` needs a live socket and this
+        invariant should be testable without one.
+        """
+        self.ready.clear()
+        self.bumped = False
+        self.queue = None
+        self.connection += 1
+
     async def _session(self) -> None:
         token = espn_live.draft_security_token(self.league_id, self.season, self.team_id,
                                                self.swid, self.espn_s2)
@@ -244,8 +276,7 @@ class DraftWatch:
                f"&6=false&7=false&8=KONA&nocache={random.randint(0, 10**6)}")
         headers = {"Cookie": f"SWID={self.swid}; espn_s2={self.espn_s2}",
                    "Origin": "https://fantasy.espn.com"}
-        self.ready.clear()
-        self.bumped = False
+        self._reset_for_connection()
         async with connect(uri, additional_headers=headers, user_agent_header="Mozilla/5.0",
                            open_timeout=15) as ws:
             self.connected = True
@@ -369,7 +400,8 @@ class DraftWatch:
             parsed = espn_live.queue_from_lines([line])
             if parsed is not None:
                 self.queue = parsed
-                self.queue_echoes.append((int(time.time() * 1000), list(parsed)))
+                self.queue_echoes.append(
+                    (int(time.time() * 1000), self.connection, list(parsed)))
                 if self.queue_echo and not self.queue_echo.done():
                     self.queue_echo.set_result(list(parsed))
         elif kind == "ERROR":

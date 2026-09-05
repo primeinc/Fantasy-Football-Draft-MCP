@@ -664,13 +664,36 @@ behaviour and now has to be asked for; its result names every player removed.
 
 With no echo yet on this connection the queue ESPN holds is **unknown**, and a
 merge is refused rather than guessed — sending anyway is how a queue the user
-built gets overwritten with nobody able to say what was in it. The refusal says
-how to get an echo, and `replace=True` still works because it was asked for.
+built gets overwritten with nobody able to say what was in it. The error carries
+the way out and its cost in one sentence, and `replace=True` still works because
+it was asked for.
 
-`draft_queue` reads the last echo and also returns `echoes`, every echo this
-connection has seen with a timestamp. Since ESPN sends the whole list rather
-than a change, comparing consecutive echoes is the only way to answer "when did
-this player leave my queue".
+**The INIT snapshot's `draft_list` is empty**, so the queue does not arrive with
+the join frame. It arrives as a `DRAFT_LIST` echo shortly afterwards, unprompted:
+3.7 seconds after INIT on the 2026-09-05 join. So the refusal is a brief window
+at the start of a connection rather than a state a caller sits in, and waiting a
+moment is usually the whole fix.
+
+The queue belongs to **one connection**. `run()` reconnects, and ESPN drops the
+queue when a client session ends, so the watch clears it on every connect and
+`draft_queue` reports which connection each echo came from. A list that shrank
+across a connection boundary was not necessarily edited by anyone.
+
+`draft_queue` reads the last echo and also returns `echoes`, every echo seen with
+a timestamp and a connection number. Since ESPN sends the whole list rather than
+a change, comparing consecutive echoes is the only way to answer "when did this
+player leave my queue".
+
+`removed` and `kept_from_the_users_queue` are both computed from what ESPN
+echoed back, never from what was sent. ESPN drops ids it rejects — an
+already-drafted player is the ordinary case — so a merge that intended to remove
+nothing can still lose one of the user's players, and the report says so.
+
+Measured aside, not currently relied on: the INIT payload does carry this team's
+queue, in order, under `nomination_list` rather than `draft_list` — ten entries
+matching the first echo exactly on the 2026-09-05 join, in a snake draft. Seeding
+from it would close the refusal window entirely. It is one observation of a field
+named for auction nominations, so nothing reads it yet.
 
 ### `make_pick`
 ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
