@@ -607,6 +607,39 @@ All notable changes to this project. Format follows
   never arose there; the cause was this same availability filter, applied to K
   and D/ST whose ADPs are real but do not describe a real room.
 
+**Measured and not adopted: counting-consistent survival (#35)**
+
+- `_plan_pool` decides whether a required position is reachable by counting, with
+  no ADP; `recommend` then prices that same player's urgency from ADP survival.
+  The two disagree about one defense at one pick — the count says "you can have
+  him", ADP says he survives to your next turn with probability 0.14 — and #33
+  closed by naming that as the thing to fix rather than the absorption curve.
+- Making them consistent is worse than the inconsistency, and by the same
+  mechanism #33 found. Under counting, the player at index `i` survives to pick
+  P exactly when `i >= absorbed_by(P)`; since the count strictly increases
+  between your turns, the best defense the pool offers **never** survives to your
+  next pick. Measured at 132 (next 157): `p_available_next` 0.142 → 0.000,
+  fallback 22.17 → 16.15 (the count says waiting gets you the sixth-best, where
+  the ADP mixture still holds out hope of better), marginal 4.67 → 10.69. Both
+  terms move the same way, and the defense goes from losing at 132 to winning it
+  with a pick_value of 12.61 against the shipped top pick's 7.37 — round 9 of 14,
+  the same absurdity the accurate absorption curve produced.
+- The reason is that a **count is not a certainty**. `absorbed_by` is an
+  expectation, and the step function treats it as fact, so the player at the
+  boundary gets survival 0 where the truth is nearer a coin flip. Fixing that
+  needs a distribution over the absorbed count rather than a point estimate —
+  which makes pool membership probabilistic too, and needs a spread parameter
+  fitted from pick-by-pick position records across many drafts. This repo has
+  one draft with two K/D-ST picks in it; nflverse carries outcomes, not fantasy
+  draft order. So the honest fix needs a data source that is not on hand, and
+  every cheap version of it reintroduces the fitted constant the counting rule
+  exists to avoid.
+- Left as it is, and worth being explicit that the inconsistency errs in the safe
+  direction: ADP survival is *less* urgent than counting survival here, so the
+  plan fills the slot later than a consistent model would, which is the correct
+  behaviour when the supply is genuinely deep. Scope for a real fix is recorded
+  above rather than attempted.
+
 **Measured and not adopted: a data-derived K/D-ST absorption curve (#33)**
 
 - `_absorbed_by` assumes the league takes a required position evenly across the
