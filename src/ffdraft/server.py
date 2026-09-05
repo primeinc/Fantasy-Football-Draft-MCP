@@ -1639,7 +1639,11 @@ async def stop_watch(league_id: str) -> str:
         return json.dumps({"stopped": False, "watching": sorted(_WATCHES)})
     w, task = entry
     task.cancel()
+    # as_of_snapshots next to picks_seen on purpose: "picks_seen 122,
+    # as_of_snapshots 0" is the one line that says the market was never recorded.
     return json.dumps({"stopped": True, "league": league_id, "picks_seen": w.picks_seen,
+                       "as_of_snapshots": len(w.snapshots),
+                       "snapshot_write_failures": w.snapshot_failures,
                        "last_line": w.last_line[:80]})
 
 

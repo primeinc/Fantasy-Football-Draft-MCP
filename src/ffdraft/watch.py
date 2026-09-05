@@ -77,12 +77,25 @@ def write_snapshot(board_df: pd.DataFrame | None, taken: set[str], league_id: st
         return None
 
 
+def resolve_snapshots(league_id_or_dir: str | Path) -> Path:
+    """Where to read snapshots from. A `Path`, or a string that names a
+    directory, is the directory itself -- a replay can be pointed at a copied
+    set. Anything else is a league id. The string case matters because
+    `draft_replay` takes its argument over MCP, where every value is a string,
+    so a caller passing a path must not be sent down the league-id branch and
+    silently read nothing."""
+    if isinstance(league_id_or_dir, Path):
+        return league_id_or_dir
+    text = str(league_id_or_dir)
+    candidate = Path(text)
+    if candidate.is_dir() or "/" in text or "\\" in text:
+        return candidate
+    return snapshot_dir(text)
+
+
 def read_snapshot(league_id_or_dir: str | Path, pick: int) -> pd.DataFrame | None:
-    """One pick's snapshot, or None when it was never written. Takes a league id
-    or the directory itself, so a replay can be pointed at a copied set."""
-    root = (Path(league_id_or_dir) if isinstance(league_id_or_dir, Path)
-            else snapshot_dir(str(league_id_or_dir)))
-    path = root / f"{pick}.parquet"
+    """One pick's snapshot, or None when it was never written."""
+    path = resolve_snapshots(league_id_or_dir) / f"{pick}.parquet"
     if not path.is_file():
         return None
     try:
@@ -90,6 +103,26 @@ def read_snapshot(league_id_or_dir: str | Path, pick: int) -> pd.DataFrame | Non
     except Exception:
         log.exception("could not read the as-of snapshot at %s", path)
         return None
+
+
+def drop_snapshots_above(league_id: str, pick: int) -> list[int]:
+    """Delete the snapshots for picks after `pick` and return what went. Called
+    on UNDONE: a rolled-back pick's file describes a board state that no longer
+    happened, and leaving it would let a later as-of replay price a pick from a
+    world the draft backed out of."""
+    root = snapshot_dir(league_id)
+    gone: list[int] = []
+    if not root.is_dir():
+        return gone
+    for path in root.glob("*.parquet"):
+        if not path.stem.isdigit() or int(path.stem) <= pick:
+            continue
+        try:
+            path.unlink()
+            gone.append(int(path.stem))
+        except OSError:
+            log.exception("could not remove the stale as-of snapshot at %s", path)
+    return sorted(gone)
 
 Notify = Callable[[str, dict[str, str]], Awaitable[None]]
 
@@ -141,8 +174,10 @@ class DraftWatch:
         # the only timestamped pick record ESPN lets anyone keep.
         self.lines: list[tuple[int, str]] = []
         self.init_b64: str | None = None
-        # Pick numbers whose as-of market snapshot this watch has written.
+        # Pick numbers whose as-of market snapshot this watch has written, and
+        # how many writes have failed in a row (0 once one succeeds again).
         self.snapshots: list[int] = []
+        self.snapshot_failures = 0
         # Set once the INIT snapshot has been applied; callers wait on this.
         self.ready = asyncio.Event()
         # `LEFT <team> <swid> 2` for our own team precedes a duplicate-connection close.
@@ -246,7 +281,7 @@ class DraftWatch:
                                   position=bd._espn_player_position(p["player_id"], self.pos_map))
             self.picks_seen = len(picks)
             self.ready.set()
-            self._snapshot()
+            await self._snapshot()
             s = self.state.summary()
             await self.notify(
                 f"draft room joined: {s['picks_made']} picks made, pick {s['on_the_clock']} "
@@ -267,15 +302,26 @@ class DraftWatch:
             self.state.record(name, overall, self.slot_of.get(team_id),
                               position=bd._espn_player_position(pid, self.pos_map))
             self.picks_seen += 1
-            self._snapshot()
+            await self._snapshot()
             if team_id == self.team_id and self.own_pick and not self.own_pick.done():
                 self.own_pick.set_result({"overall": overall, "player_id": pid, "name": name})
             await self._announce_pick(overall, team_id, name)
+        elif kind == "SELECTING" and len(fields) >= 2:
+            # ESPN naming the team that has just gone on the clock: the event the
+            # as-of snapshot actually wants, rather than a state inferred after
+            # SELECTED. It also arrives when the clock reopens after an UNDONE,
+            # so the rewrite self-corrects. Rewriting the same pick is harmless.
+            await self._snapshot()
         elif kind == "UNDONE" and len(fields) >= 2:
             keep = int(fields[1])
             self.state.picks = [p for p in self.state.picks if p["overall"] <= keep]
             self.state.save()
-            await self.notify(f"pick {keep + 1} undone; board rolled back to {keep} picks.",
+            # A rolled-back pick's snapshot describes a board state that no
+            # longer happened; the reopened pick's is rewritten on SELECTING.
+            dropped = drop_snapshots_above(self.league_id, keep)
+            self.snapshots = [p for p in self.snapshots if p <= keep]
+            await self.notify(f"pick {keep + 1} undone; board rolled back to {keep} picks."
+                              + (f" {len(dropped)} as-of snapshots dropped." if dropped else ""),
                               {"league": self.league_id, "event": "undone"})
         elif kind == "JOINED" and len(fields) >= 3:
             team = int(fields[1])
@@ -301,15 +347,41 @@ class DraftWatch:
                 return
             raise RuntimeError(line)
 
-    def _snapshot(self) -> None:
-        """File the market for the pick now on the clock. Called after INIT and
-        after every SELECTED, so `<pick>.parquet` is the board as it stood when
-        that pick was made -- not after it. Picks before the watch connected have
-        no snapshot, which is what `replay(as_of=True)` reports as coverage."""
-        path = write_snapshot(self.board, self.state.taken_keys(), self.league_id,
-                              self.state.on_the_clock)
-        if path is not None:
-            self.snapshots.append(self.state.on_the_clock)
+    async def _snapshot(self) -> None:
+        """File the market for the pick now on the clock, so `<pick>.parquet` is
+        the board as it stood when that pick was made.
+
+        The board is re-read first, the way `_recommendation` does. `self.board`
+        is otherwise the board the watch was *constructed* with, and refreshing
+        it only inside `_recommendation` -- which runs on a handful of picks --
+        would have written the same stale ADP into every file while the coverage
+        block reported success. `server.watch_draft`'s refresh is a cache lookup,
+        so the per-pick cost is a dict hit.
+
+        Written after INIT (the seed), after SELECTED, and again on SELECTING,
+        which is ESPN naming the team that has just gone on the clock and is
+        therefore the event this wants. SELECTING also arrives when the clock
+        reopens after an UNDONE, so the rewrite self-corrects. Picks before the
+        watch connected have no snapshot at all, which is what
+        `replay(as_of=True)` reports as coverage."""
+        if self.refresh is not None:
+            self.board, self.bye_weight = self.refresh()
+        pick = self.state.on_the_clock
+        path = write_snapshot(self.board, self.state.taken_keys(), self.league_id, pick)
+        if path is None and self.board is not None:
+            # Silence is the failure mode: a watch writing nothing for two hours
+            # is invisible from inside the draft room. Say so once, then stay
+            # quiet until it works again.
+            self.snapshot_failures += 1
+            if self.snapshot_failures == 1:
+                await self.notify(
+                    f"as-of market snapshots stopped writing at pick {pick}; the replay "
+                    "will price these picks with today's numbers. The draft is unaffected.",
+                    {"league": self.league_id, "event": "snapshot_failed", "pick": str(pick)})
+            return
+        self.snapshot_failures = 0
+        if path is not None and pick not in self.snapshots:
+            self.snapshots.append(pick)
 
     # -- queries
 
@@ -326,6 +398,10 @@ class DraftWatch:
             "recent": [{"at_ms": ts, "team": label(t), "event": ev}
                        for ts, t, ev in self.presence[-chat_limit:]],
             "upcoming": self.upcoming(),
+            # Next to picks_made, so "picks_made 122, as_of_snapshots 0" is one
+            # line to read: it catches a snapshot writer that has quietly stopped.
+            "as_of_snapshots": len(self.snapshots),
+            "snapshot_write_failures": self.snapshot_failures,
             **self.state.summary(),
         }
 

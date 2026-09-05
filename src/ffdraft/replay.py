@@ -117,7 +117,9 @@ def _as_of_coverage(rows: list[dict], snapshots: str | Path | None) -> dict:
     with_snap = [r for r in rows if r["snapshot"]]
     scored = [r for r in rows if r["snapshot"] and r["pool_rows"]]
     return {
-        "snapshots": str(snapshots),
+        # The directory's own name, not its absolute path: the answer goes back
+        # over MCP and a home directory carries the user's account name.
+        "snapshots": (Path(str(snapshots)).name if snapshots is not None else None),
         "picks": len(rows),
         "picks_with_snapshot": len(with_snap),
         "coverage": round(len(with_snap) / len(rows), 3) if rows else None,
@@ -210,6 +212,7 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         key = norm_name(p["name"])
         taken_row = row_at[overall]
         pool = b[~b["_row"].isin(taken)]
+        as_of_row: dict | None = None
         if as_of_from is not None:
             from .watch import read_snapshot
 
@@ -217,9 +220,10 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
             covered: set[str] = set()
             if snap is not None:
                 pool, covered = _apply_snapshot(pool, snap)
-            as_of_rows.append({"pick": overall, "snapshot": snap is not None,
-                               "pool_rows": len(pool), "rows_from_snapshot": len(covered),
-                               "actual_covered": key in covered})
+            as_of_row = {"pick": overall, "snapshot": snap is not None,
+                         "pool_rows": len(pool), "rows_from_snapshot": len(covered),
+                         "actual_covered": key in covered}
+            as_of_rows.append(as_of_row)
         recs, next_pick = recommend_for(slot, overall, pool)
         if wf is not None and len(recs):
             wf.observe(recs, taken_row if taken_row in recs.index else None,
@@ -235,6 +239,14 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
             "proj_gap": None, "pick_regret": None, "reach": None, "market_z": None,
             "need_mult": None, "role_mult": None, "p_available_next": None,
         }
+        if as_of_row is not None:
+            # Per row, not only in the coverage block: a reader scanning these
+            # will not cross-reference, and "priced as of this pick" versus
+            # "silently priced with today's ADP" is a per-row difference.
+            row["as_of"] = as_of_row["actual_covered"]
+            row["as_of_pool_share"] = (round(as_of_row["rows_from_snapshot"]
+                                             / as_of_row["pool_rows"], 3)
+                                       if as_of_row["pool_rows"] else None)
         if len(recs):
             top = recs.iloc[0]
             row["model_pick"] = top["name"]

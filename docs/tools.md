@@ -142,8 +142,10 @@ as they stood then — instead of today's. Snapshots exist only from the moment 
 watch first connected and reach the top few hundred available players, so the
 answer carries an `as_of` block: picks covered, the first and last covered pick,
 the mean share of each pool the snapshot reached, and how often the player
-actually taken was inside it. Anything uncovered keeps today's numbers. Format
-and bounds in [data-sources.md](data-sources.md), "As-of market snapshots".
+actually taken was inside it. Every per-pick row also carries `as_of` (was that
+pick's own player priced from the snapshot) and `as_of_pool_share`. Anything
+uncovered keeps today's numbers. Format and bounds in
+[data-sources.md](data-sources.md), "As-of market snapshots".
 
 `just replay [picks]` prints the same without a server. The
 answer also carries the walk-forward `predictors` score sheet, `predictor_rows`
