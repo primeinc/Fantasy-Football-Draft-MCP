@@ -1,7 +1,7 @@
 # Splitting feat/espn-live-draft into upstream PRs
 
 Base: `zacharytran26/Fantasy-Football-Draft-MCP` master at `1a68844`.
-Branch: `feat/espn-live-draft`, 76 commits, 7 of them merges from two
+Branch: `feat/espn-live-draft`, 122 commits, 13 of them merges from the
 integration rounds across three parallel branches.
 
 No PR is opened without the user's say-so.
@@ -33,14 +33,29 @@ resulting tree passes its own tests. Re-verified after both merge rounds.
     156496e  merge dotted initials in name keys
 
 Measured in a detached worktree at the base: five clean cherry-picks,
-`ruff check src tests` clean, 100 tests passed. `ty` was **not** verified there:
-every finding was an unresolved import for numpy, pandas and requests, which is
-a bare worktree having no environment rather than a defect. Create the venv on
-the PR branch before claiming the type checker.
+`ruff check src tests` clean, 100 tests passed.
+
+There is no type check to run at this prefix. `just check` here is ruff and
+pytest; the `uvx ty check` line arrives with `353be59`, whose hunks are
+distributed by file below. Whichever PR takes that hunk takes the shipped form,
+not `353be59`'s original:
+
+    uvx ty check --python "{{ justfile_directory() / '.venv' }}" src tests
+
+The bare `uvx ty check src tests` looks for a `.venv` beside the project and,
+finding none, resolves third-party imports against whatever uv cache it lands
+on — reporting numpy, pandas and pytest as unresolvable and burying any real
+finding under a page of them. A fresh clone and a git worktree both look like
+that. The quoting is load-bearing: `justfile_directory()` yields a Windows path
+with backslashes, these recipes run through bash, and bash strips a backslash
+from an unquoted word, so ty receives `C:Userswilldevespn-ffd-mcp/.venv` and
+fails as "cannot find the path specified" — indistinguishable from the missing
+environment the flag exists to report. `just -n` cannot show this; it prints
+after just's interpolation and before the shell's.
 
 ### Commits that split across PRs
 
-Divide these by hunk; neither goes whole into any single PR.
+Divide these by hunk; none goes whole into any single PR.
 
 - `3121b47` — next-pickers list for `draft_room` (PR 3) and `draft_strength`
   (PR 5).
@@ -200,16 +215,30 @@ the PR, not a placeholder.
 
 ## PR 9 — Hot reload and integration hygiene
 
-Stack. Sources: the `reload_code` commit, the reload-order completeness test,
-and the duplicate-definition test.
+Stack. Sources: `e7cf48a`, `e208f75`, `c48eaa9`, `e67a827`, `31a5e91`,
+`e461b00`, `1b89916`, `dde6f08`, `96e98e5`.
+
+Lands last, because `96e98e5` rewrites all 83 `json.dumps` call sites in
+`server.py` and so needs every tool the earlier PRs add.
 
 `reload_code` re-imports the package and refreshes the served tool registry
-without a reconnect, so a code change does not drop a live watch. Two tests keep
-the mechanism honest: one asserts the reload order lists every module in the
-package, in both directions; the other asserts no module defines the same
-top-level name twice.
+without a reconnect, so a code change does not drop a live watch. It works under
+`python -m ffdraft.server` as well: that launch registers the module as
+`__main__` only, leaving `ffdraft.server` absent from `sys.modules` while
+`__spec__.name` still says `ffdraft.server`, and the reload re-registers it
+under the spec name rather than failing on the gap. Two tests keep the mechanism
+honest: one asserts the reload order lists every module in the package, in both
+directions; the other asserts no module defines the same top-level name twice.
 
-Tests: `tests/test_reload.py`, `tests/test_no_duplicate_definitions.py`.
+Every tool payload also goes out through one sanitising emit. `json.dumps`
+writes a float NaN as a bare `NaN` literal, which Python's own parser reads back
+and every conforming client rejects, so the failure is invisible from inside the
+process and total from outside. A static test fails if any handler calls
+`json.dumps` outside `_emit`, because the round-trip test can only reach tools
+that run without a network.
+
+Tests: `tests/test_reload.py`, `tests/test_no_duplicate_definitions.py`,
+`tests/test_json_payloads.py`.
 
 The second test is not incidental. During integration, two branches fixed one
 defect independently and git merged both definitions with no conflict, leaving
@@ -221,8 +250,33 @@ parallel.
 
 - `353be59` cleared every type-check finding across the package. Its hunks are
   distributed by file above. If upstream would rather take the sweep whole, it
-  becomes a tenth PR that lands last.
-- Three tasks were still open on the branch when this was written: the plan's
-  ADP cut for kickers and defenses, exclude semantics for a zero start
-  probability, and a seed-block re-run of the bye weight. None is required by
-  any PR above; each lands wherever its file already sits.
+  becomes a tenth PR that lands last, and it carries the `just check` ty line in
+  the form given under the clean prefix.
+- The three tasks open when this was written have landed: the plan's ADP cut for
+  kickers and defenses and the every-turn count of a required position in PR 4,
+  exclude semantics for a zero start probability in PR 8, and the two-block bye
+  re-run in PR 4.
+- Checked by walking the 41 files the branch touches against the assignments
+  above. Every source and test file is reached by commits some PR owns. The
+  shared ones carry no commit of their own — `adp.py`, `board.py`, `config.py`
+  and `features.py` move with whichever feature commit touched them, as do
+  `README.md`, `SECURITY.md`, `pyproject.toml`, `docs/data-sources.md` and
+  `docs/methodology.md`.
+- `docs/tools.md` is touched by 46 commits and will conflict in every stacked
+  PR. Take this branch's final text for the tools that PR ships, and nothing
+  else from it.
+- `CHANGELOG.md` is touched by nearly every commit. It is the worst conflict on
+  the branch and carries no code; write each PR's entry fresh rather than
+  porting hunks.
+- This file ships in no PR.
+- Two negative results belong in PR 4's description, because they are why
+  `_absorbed_by` and `_plan_pool` ship as they do. Replacing even absorption
+  with a curve fitted to the room's observed K/D-ST timing makes the plan worse,
+  taking a defense in round 9 of 14; and making pool membership and survival
+  agree by counting makes it worse by the same mechanism, because a count is an
+  expectation and the step function treats it as fact. Both are recorded in the
+  changelog with their measurements. The honest fix needs a spread parameter
+  fitted from pick-by-pick position records across many drafts, which is not a
+  data source this repo has.
+- `5874482` ignores `.claude/worktrees/`. It is an artifact of how this branch
+  was built and ships in no PR.
