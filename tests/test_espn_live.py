@@ -342,6 +342,23 @@ class TestPickEvent:
             event = espn_live.pick_event(line)
             assert event is not None and event["event"] == "unparsed", line
 
+    def test_a_malformed_number_is_unparsed_rather_than_an_exception(self):
+        # The parser's contract is that it never raises: it runs over a live
+        # draft's log inside dump_draft, where one bad line must not cost the
+        # dump. A leading-minus test that is not the conversion itself accepts
+        # "--5" and hands it to int(), which refuses it.
+        for line in ["SELECTED 8 --5 7 {D}", "SELECTED --1 2 3", "UNDONE --129",
+                     "SELECTED 8 - 7", "UNDONE -", "SELECTED 8 1- 7"]:
+            event = espn_live.pick_event(line)
+            assert event is not None and event["event"] == "unparsed", line
+
+    def test_the_signed_field_reader_answers_for_every_shape(self):
+        assert espn_live._signed("5") == 5
+        assert espn_live._signed("-16034") == -16034
+        assert espn_live._signed("-0") == 0
+        for bad in ("--5", "-", "", "5-", "x", " ", "1.0"):
+            assert espn_live._signed(bad) is None, bad
+
 
 class TestReplayPicks:
     def test_no_lines_is_the_snapshot_itself(self, init):

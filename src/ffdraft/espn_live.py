@@ -599,8 +599,17 @@ def picks_from_init(init: DraftInit) -> list[dict]:
 
 def _signed(field: str) -> int | None:
     """The field as an int, or None when it is not one. ESPN encodes a team
-    defense as a negative player id, so a leading minus is data, not a reject."""
-    return int(field) if field.lstrip("-").isdigit() else None
+    defense as a negative player id, so a leading minus is data, not a reject.
+
+    The conversion decides, rather than a test that approximates it: stripping
+    every leading minus and asking `isdigit` accepts "--5", which `int` then
+    refuses, and the whole point of this parser is that a line it cannot read
+    comes back as unparsed instead of raising inside a dump of a live draft.
+    """
+    try:
+        return int(field)
+    except ValueError:
+        return None
 
 
 def pick_event(line: str) -> dict | None:
