@@ -179,6 +179,25 @@ class TestMyRows:
         priced = st.my_rows(nan_pos)["position"].astype(str).value_counts().to_dict()
         assert priced.get("RB", 0) == 1
 
+    def test_a_stand_in_is_never_built_at_a_position_called_nan(self, tmp_path,
+                                                                monkeypatch):
+        # The fourth copy of the same rule, found by marge on review. `my_rows`
+        # filtered on `p.get("position")` and stringified whatever passed, and
+        # NaN is truthy -- so a record carrying NaN built a stand-in at the
+        # position "nan", priced at that position's replacement level, which
+        # does not exist. It reads the same rule as the counts now.
+        monkeypatch.setattr(bd, "STATE_DIR", tmp_path)
+        st = DraftState(_league(), name="standin")
+        st.record("RB_A", overall=1, team_slot=1)
+        st.record("Ghost Back", overall=2, team_slot=1, position="RB")
+        st.picks[-1]["position"] = np.nan
+
+        rows = st.my_rows(_board())
+        assert sorted(rows["name"]) == ["RB_A"]
+        assert "nan" not in set(rows["position"].astype(str))
+        # And the two halves still agree about him: neither counts him.
+        assert st.my_roster(_board()) == {"RB": 1}
+
     def test_the_room_wide_count_invents_no_phantom_position(self, tmp_path,
                                                              monkeypatch):
         # Same cause, second symptom. `picks_by_position` stringified the NaN

@@ -758,22 +758,27 @@ class DraftState:
         rows = board[board["_key"].isin([norm_name(p["name"]) for p in mine])].copy()
         rows[UNPRICED] = False
         priced = set(rows["_key"])
-        missing = [p for p in mine
-                   if norm_name(p["name"]) not in priced and p.get("position")]
+        # Paired with the position it will be placed at, through the same read
+        # `_position_of` uses. Filtering on `p.get("position")` accepted a NaN,
+        # which is truthy, and `str()` then made a stand-in at a position called
+        # "nan" priced at that position's replacement level.
+        missing = [(p, pos) for p in mine
+                   if norm_name(p["name"]) not in priced
+                   and (pos := self._recorded_position(p))]
         if not missing:
             return rows
         stand_ins = pd.DataFrame([{
             "_key": norm_name(p["name"]),
             "name": p["name"],
-            "position": str(p["position"]),
-            "proj_points": replacement_points(board, str(p["position"])),
-            "replacement_points": replacement_points(board, str(p["position"])),
+            "position": pos,
+            "proj_points": replacement_points(board, pos),
+            "replacement_points": replacement_points(board, pos),
             "vor": 0.0,
             "draft_score": 0.0,
             "off_roster": False,
             "is_rookie": False,
             UNPRICED: True,
-        } for p in missing]).reindex(columns=rows.columns)
+        } for p, pos in missing]).reindex(columns=rows.columns)
         # reindex fills the columns the stand-in has no opinion about with NaN,
         # which turns a bool column into object and breaks every `frame[col]`
         # mask downstream -- the mistake the K/DST rows already made once.
@@ -821,6 +826,20 @@ class DraftState:
         on_board = board_positions.get(norm_name(pick["name"]))
         if isinstance(on_board, str) and on_board:
             return on_board
+        return DraftState._recorded_position(pick)
+
+    @staticmethod
+    def _recorded_position(pick: dict) -> str:
+        """What the draft record says this pick plays, or "" if it does not say.
+
+        Split out because `my_rows` needs the same answer and must not reach it
+        by a second route. It filtered on `p.get("position")` and stringified
+        whatever passed, so a record carrying NaN -- truthy -- built a stand-in
+        at a position called "nan" and priced it at that position's replacement
+        level, which does not exist. Harmless only for as long as nothing files
+        a NaN there, and three copies of one rule disagreeing is exactly how the
+        counting bug above happened.
+        """
         recorded = pick.get("position")
         return recorded if isinstance(recorded, str) and recorded else ""
 

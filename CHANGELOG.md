@@ -84,7 +84,20 @@ All notable changes to this project. Format follows
   it, which is why nothing had.
 - The three sites shared the same three-line idiom and had drifted into three
   behaviours; they now share `DraftState._position_of`, which reaches the
-  fallback on anything that is not a non-empty `str`.
+  fallback on anything that is not a non-empty `str`. A fourth, `my_rows`, was
+  found on review: it filtered on `p.get("position")` and stringified whatever
+  passed, so a record carrying NaN built a stand-in at a position called `"nan"`
+  priced at that position's replacement level. It reads the same rule now.
+- marge sized the third symptom against the shipped `pick_hazards`, feeding it
+  the old and new `held_by_slot` dicts so nothing else could vary. One malformed
+  row, a slot holding a kicker the board forgot to classify: **12.0000 forced
+  takers at K against 11.0080** — a whole taker that does not exist, scaling
+  linearly with such rows, and in the direction of more urgency. The DST column
+  is the better argument: the aggregate barely moves (12.0000 to 12.0080) while
+  the per-pick hazards go from `[0.5, 0.5]` to `[0.008, 1.0]`.
+  `counting_survival` consumes the Poisson-binomial of those hazards rather than
+  their sum, so an aggregate-only check would have reported no effect on #37 and
+  been wrong.
 - The note itself now says what is true: the board carries a row for the player
   and records no position on it, so he counts at the position you drafted him at
   and is priced at none. That is the board being wrong about someone rather than
