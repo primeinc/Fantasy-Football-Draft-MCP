@@ -172,6 +172,13 @@ audit:
     os.environ.update(env)
     from ffdraft import server
 
+    b = server._build_board()
+    flags = {c: str(b[c].dtype) for c in ("is_rookie", "off_roster") if c in b.columns}
+    special = int(b["position"].isin(("K", "DST")).sum()) if "position" in b.columns else 0
+    print(f"board rows {len(b)}  K/DST rows {special}  market_join_version "
+          f"{int(b['market_join_version'].iloc[0]) if 'market_join_version' in b.columns else None}  "
+          f"adp_source {b['adp_source'].value_counts().to_dict() if 'adp_source' in b.columns else None}  "
+          f"flag dtypes {flags}")
     out = json.loads(server.draft_audit())
     print(f"ok {out['ok']}  picks {out['picks']}  mine {out['mine']}  unresolved {out['unresolved']}")
     for f in out["failures"]:
