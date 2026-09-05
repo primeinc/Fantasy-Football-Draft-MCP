@@ -156,8 +156,12 @@ class TestUnpricedRosterSlot:
     position as fuller than `roles.bench_values` does — the two halves of the
     model disagree about the same roster."""
 
-    def test_a_pick_the_board_cannot_price_is_reported_on_the_rows_it_affects(
+    def test_a_pick_the_board_cannot_price_no_longer_splits_the_two_counts(
             self, monkeypatch, tmp_path, league):
+        # This case USED to be the note's trigger and #40 closed it. `my_rows`
+        # now gives a pick with no board row a stand-in at replacement level, so
+        # the counted roster and the priced one agree and there is nothing to
+        # report. The note going quiet here is the fix landing, not a regression.
         b = _board([
             _row("Real Back", "RB", 100.0, 400.0),
             _row("Other Back", "RB", 99.0, 401.0),
@@ -166,19 +170,38 @@ class TestUnpricedRosterSlot:
             _row("A Passer", "QB", 30.0, 404.0),
             _row("An End", "TE", 20.0, 405.0),
         ])
-        # My slot takes a back the board has no row for, the way a kicker or an
-        # unprojected player is recorded.
         state = _wire(monkeypatch, tmp_path, league, b)
         state.record("Ghost Back", 4, league.draft_slot, position="RB")
 
         out = json.loads(server.who_should_i_pick(limit=4))
+        assert out["roster_note"] is None
+        assert all(r["roster_slot_note"] is None for r in out["recommendations"])
+
+    def test_a_board_row_with_no_position_still_splits_them(
+            self, monkeypatch, tmp_path, league):
+        # What the note now catches, and the only thing that can still split the
+        # two counts. `my_roster` reads the board's position first and falls back
+        # to the recorded one when it is blank, while `my_rows` keeps the board
+        # row as it stands. So a row the board carries WITHOUT a position is
+        # counted at RB and priced at "", and the halves disagree again.
+        #
+        # Enumerated rather than argued: of the five ways a pick can relate to
+        # the board, this and its NaN twin are the two that still disagree.
+        b = _board([
+            _row("Real Back", "RB", 100.0, 400.0),
+            _row("Other Back", "RB", 99.0, 401.0),
+            _row("A Receiver", "WR", 40.0, 402.0),
+            _row("Another Receiver", "WR", 39.0, 403.0),
+            _row("A Passer", "QB", 30.0, 404.0),
+            _row("An End", "TE", 20.0, 405.0),
+            _row("Blank Back", "", 95.0, 406.0),
+        ])
+        state = _wire(monkeypatch, tmp_path, league, b)
+        state.record("Blank Back", 4, league.draft_slot, position="RB")
+
+        out = json.loads(server.who_should_i_pick(limit=4))
         assert out["roster_note"] is not None
         assert "RB: 1 counted, 0 priced" in out["roster_note"]
-        by_pos = {r["position"]: r for r in out["recommendations"]}
-        assert by_pos["RB"]["roster_slot_note"] is not None
-        assert "prices only 0 of them" in by_pos["RB"]["roster_slot_note"]
-        # Positions the count is honest about say nothing.
-        assert by_pos["WR"]["roster_slot_note"] is None
 
     def test_a_fully_priced_roster_says_nothing(self, monkeypatch, tmp_path, league):
         b = _board([
