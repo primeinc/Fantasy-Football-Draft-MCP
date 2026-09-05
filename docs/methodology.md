@@ -121,9 +121,43 @@ its **marginal gain over that expectation**.
 
 ### Survival probability
 
-ADP is treated as the centre of a normal distribution whose spread widens later in the
-draft, matching how real variance behaves: pick 3 goes where pick 3 goes, pick 90 is a
-coin flip across twenty names.
+ADP is treated as the centre of a distribution whose spread widens later in the draft,
+matching how real variance behaves: pick 3 goes where pick 3 goes, pick 90 is a coin flip
+across twenty names. Every number reported is conditional — the chance he lasts to your
+next pick *given* that he is on the board now.
+
+The shape of that distribution is logistic, not normal (`model.SURVIVAL_TAIL`), with the
+same spread. Only the tail differs, and the tail is what the model is asked about most
+often. A Gaussian right tail says a player three and a half standard deviations past his
+ADP is certainly gone; real boards are full of players who are not. An exponential tail
+instead makes the conditional survival of a player well past his ADP tend to a constant
+hazard per pick: "he has slid this far already, so the chance he goes in the next seven
+picks is about what it was for the last seven", which is the right statement about a
+player the market has stopped pricing at his ADP.
+
+Evidence, the recorded 2026 draft replayed at 122 picks, same board and picks with only
+the shape varying. Overall survival Brier 0.129 -> 0.127 and log loss 0.416 -> 0.401
+against a base rate of 0.250, with log loss improving in five of seven rounds and for QB
+(0.836 -> 0.760), WR (0.289 -> 0.275) and K (0.187 -> 0.170), unchanged for RB and TE,
+and worse for DST (0.568 -> 0.618) on 17 forecasts.
+
+Those aggregates are direction, not proof, and the change does not rest on them. This is
+one draft. Treating the seven rounds as blocks, the per-round log-loss deltas are -0.080,
+-0.014, -0.001, +0.014, -0.019, +0.007, -0.014 — mean -0.015, t = -1.3 on 6 degrees of
+freedom; Brier gives t = -1.6; dropping round 1, which contributes more than half the
+total, leaves t = -0.8. Nothing there is distinguishable from zero.
+
+What the change rests on instead is that the old answers were wrong independently of any
+score. A defense demonstrably on the board at pick 123 was assigned a survival of 0.00,
+and past about eight standard deviations the arithmetic returned 1.0 for a player who was
+certainly gone. Supporting that: the mechanism, and the lowest-probability bucket, where
+the normal predicted 0.040 against 0.080 observed and the logistic predicts 0.050 against
+0.070 — half the calibration error, on 329 and 334 forecasts, in the exact region the
+change targets.
+
+The per-position counts differ between the two runs because the replay re-derives its
+recommendations from the survival numbers themselves, so the position breakdowns are not
+paired samples and the small ones should not be read as if they were.
 
 ### Roster need
 

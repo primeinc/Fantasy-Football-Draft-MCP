@@ -24,10 +24,6 @@ from .config import (
 )
 
 
-def _norm_cdf(x: float) -> float:
-    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-
-
 def touchdown_luck_multiplier(rz_touches: pd.Series, rz_td: pd.Series,
                               baseline_rate: pd.Series, weight: float,
                               min_touches: int = 8) -> pd.Series:
@@ -495,23 +491,84 @@ ADP_SD_FLOOR = 5.0
 ADP_SD_RATE = 0.22
 
 
-def survival_probability(adp: float, current_pick: int, next_pick: int,
-                         sd_floor: float = ADP_SD_FLOOR) -> float:
-    """Chance a player is still on the board at your next pick.
+_erfc_vec = np.vectorize(math.erfc, otypes=[float])
 
-    ADP is treated as the centre of a normal distribution whose spread widens later
-    in the draft, which matches how real draft variance behaves: pick 3 goes where
-    pick 3 goes, pick 90 is a coin flip across twenty names.
+# Shape of the distribution of a player's realised draft slot around his ADP.
+# "normal" was the original; "logistic" keeps the same spread but replaces the
+# Gaussian right tail with an exponential one. See survival_probability.
+SURVIVAL_TAIL = "logistic"
+# Logistic scale that matches a normal of standard deviation 1.
+_LOGISTIC_SCALE = math.sqrt(3.0) / math.pi
+
+
+def _log_sf(z: np.ndarray, tail: str) -> np.ndarray:
+    """log P(the realised slot lands more than z standard deviations past ADP).
+
+    Computed in logs because the useful range is the far tail, where the
+    survival function underflows to zero in linear space and the conditional
+    probability below would come out 0/0.
+    """
+    if tail == "normal":
+        # erfc, not 1 - cdf: the complementary error function keeps its accuracy
+        # into the far tail, where `1 - Phi(z)` is catastrophic cancellation and
+        # underflows to exactly 0 past about z = 8. That underflow made the
+        # numerator and the denominator of the conditional probability below
+        # equal, and the survival of a hopelessly gone player came out as 1.0.
+        with np.errstate(divide="ignore"):
+            return np.log(np.clip(0.5 * _erfc_vec(z / math.sqrt(2)), 1e-300, 1.0))
+    # Logistic: P(X > m + z*sd) = 1 / (1 + exp(z / _LOGISTIC_SCALE)), so the log
+    # survival is -logaddexp(0, z / scale) -- stable for any z.
+    return -np.logaddexp(0.0, z / _LOGISTIC_SCALE)
+
+
+def _conditional_survival(adp: np.ndarray, current_pick: float, next_pick: float,
+                          sd_floor: float, tail: str) -> np.ndarray:
+    """P(still available at next_pick | still available now). NaN where no ADP."""
+    adp = np.asarray(adp, dtype=float)
+    # A row with no ADP is carried through as NaN rather than pushed into the
+    # tail functions, which would warn on every board that has one.
+    known = np.isfinite(adp)
+    safe = np.where(known, adp, 1.0)
+    sd = np.maximum(sd_floor, ADP_SD_RATE * safe)
+    log_p = (_log_sf((next_pick - safe) / sd, tail)
+             - _log_sf((current_pick - safe) / sd, tail))
+    out = np.clip(np.exp(np.minimum(log_p, 0.0)), 0.0, 1.0)
+    return np.where(known, out, np.nan)
+
+
+def survival_probability(adp: float, current_pick: int, next_pick: int,
+                         sd_floor: float = ADP_SD_FLOOR,
+                         tail: str | None = None) -> float:
+    """Chance a player is still on the board at your next pick, given that he is
+    on it now.
+
+    ADP is the centre of a distribution whose spread widens later in the draft,
+    which matches how real draft variance behaves: pick 3 goes where pick 3
+    goes, pick 90 is a coin flip across twenty names.
+
+    The shape of that distribution is the part that matters most, and it is not
+    normal. A Gaussian right tail says a player 3.5 standard deviations past his
+    ADP is certainly gone -- and the board is full of players who are not. The
+    live 2026 record had the second-best defense sitting undrafted at pick 123
+    with an ADP of 93, in a room that had taken one defense in 122 picks; the
+    normal tail put his survival at 0.00 and did the same for every other
+    defense, which then told `expected_best_at_next_pick` that waiting at the
+    position was worth its *worst* player. A whole position's marginal value was
+    computed off that.
+
+    A logistic of matching spread keeps the middle of the distribution and gives
+    the tail an exponential decay instead, so the conditional survival of a
+    player well past his ADP tends to exp(-(next - current) / scale): a constant
+    hazard per pick rather than a cliff. "He has slid this far already, so the
+    chance he goes in the next seven picks is roughly what it was for the last
+    seven" is the right statement about a player the market has stopped pricing
+    at his ADP.
     """
     if not np.isfinite(adp):
         return 0.5
-    sd = max(sd_floor, ADP_SD_RATE * adp)
-    # P(this player's realised draft slot lands after our next pick)
-    p_survive = 1 - _norm_cdf((next_pick - adp) / sd)
-    p_gone_now = _norm_cdf((current_pick - adp) / sd)
-    if p_gone_now >= 0.999:
-        return 0.0
-    return float(np.clip(p_survive / max(1e-6, 1 - p_gone_now), 0.0, 1.0))
+    out = _conditional_survival(np.asarray([adp], dtype=float), current_pick, next_pick,
+                                sd_floor, tail or SURVIVAL_TAIL)
+    return float(out[0])
 
 
 _erf_vec = np.vectorize(math.erf, otypes=[float])
@@ -522,15 +579,13 @@ def _norm_cdf_vec(z: np.ndarray) -> np.ndarray:
 
 
 def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
-                             sd_floor: float = ADP_SD_FLOOR) -> np.ndarray:
+                             sd_floor: float = ADP_SD_FLOOR,
+                             tail: str | None = None) -> np.ndarray:
     """Vectorised form of survival_probability. plan_my_draft evaluates the whole
     board once per round, so the scalar version ran thousands of times per call."""
     adp = np.asarray(adp, dtype=float)
-    sd = np.maximum(sd_floor, ADP_SD_RATE * adp)
-    p_survive = 1 - _norm_cdf_vec((next_pick - adp) / sd)
-    p_gone_now = _norm_cdf_vec((current_pick - adp) / sd)
-    out = np.where(p_gone_now >= 0.999, 0.0,
-                   p_survive / np.maximum(1e-6, 1 - p_gone_now))
+    out = _conditional_survival(adp, current_pick, next_pick, sd_floor,
+                                tail or SURVIVAL_TAIL)
     return np.clip(np.nan_to_num(out, nan=0.5), 0.0, 1.0)
 
 
@@ -625,6 +680,46 @@ def score_special_teams(special: pd.DataFrame, board: pd.DataFrame,
     return out
 
 
+# A multiplier above this would flip the sign of a negative pick_value rather
+# than push it further down. Nothing in `recommend` comes close -- role caps at
+# ROLE_CEILING 1.3, need at 1.18 -- but the reflection below is only monotone
+# while it holds.
+DISCOUNT_CEILING = 2.0
+
+
+def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
+    """Apply a pick_value multiplier so that below 1 always means further down
+    the list, and above 1 always means further up.
+
+    Multiplication alone does not do that. Almost every candidate on a live
+    board has a negative pick_value -- 564 of 577 available rows at pick 123 of
+    the recorded draft -- because most players are worth less than what waiting
+    is expected to return. Multiplying a negative number by a discount moves it
+    *toward* zero, so the ordering inside the negative half comes out inverted:
+    with need_mult 0.04 for a second quarterback, the worse the backup the
+    higher he ranked, and recommendation ranks 17 to 22 were six consecutive
+    backup QBs ordered by how bad they are.
+
+    A multiplier of `m` is read as "move this by (1 - m) of its own size", which
+    is what multiplying already means for a positive value and is applied by
+    reflection to a negative one: `v * (2 - m)`. Dividing would express the same
+    ordering, and was the first fix here, but it is unbounded -- `need_mult`
+    bottoms out at 0.02, so a negative value could be inflated fiftyfold. That
+    is invisible in a ranking and ruinous in a sum: `replay` sums `pick_regret`
+    per team and sorts the team table on it, and one backup quarterback at pick
+    108 gave his team a regret of 8641 against 398 for the next worst. The
+    reflection is bounded at twice the magnitude, so no single pick can take
+    over an aggregate.
+
+    Every multiplier in `recommend` goes through here, so they cannot drift
+    apart on this.
+    """
+    v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
+    m = np.clip(m, 0.0, DISCOUNT_CEILING)
+    return np.where(v >= 0, v * m, v * (2.0 - m))
+
+
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
@@ -687,20 +782,12 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     # option from the middle rounds and wins the last pick, which is where the
     # league actually forces the slot.
     raw_share = np.where(avail["position"].isin(SPECIAL_POSITIONS), 0.0, 0.20)
-    avail["pick_value"] = (
-        (1 - raw_share) * avail["marginal_value"] + raw_share * avail["draft_score"]
-    ) * avail["need_mult"]
+    avail["pick_value"] = _discount(
+        (1 - raw_share) * avail["marginal_value"] + raw_share * avail["draft_score"],
+        avail["need_mult"])
 
     avail["role_mult"] = role_multiplier(avail)
-    # Applied so that below 1 always means "further down the list". pick_value
-    # goes negative deep in the board -- a candidate worth less than what waiting
-    # is expected to return -- and multiplying a negative number by 0.2 moves it
-    # *toward* zero, which would promote exactly the players the discount exists
-    # to bury. Dividing is the same penalty with the sign the other way round,
-    # and it keeps a multiplier above 1 a promotion in both halves.
-    pv = avail["pick_value"].to_numpy(dtype=float)
-    rm = avail["role_mult"].to_numpy(dtype=float)
-    avail["pick_value"] = np.where(pv >= 0, pv * rm, pv / rm)
+    avail["pick_value"] = _discount(avail["pick_value"], avail["role_mult"])
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -716,7 +803,7 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
             mults.append(max(0.5, 1 - bye_weight * (len(same_pos) + 0.5 * len(other))))
         avail["bye_conflicts"] = names
         avail["bye_mult"] = mults
-        avail["pick_value"] = avail["pick_value"] * avail["bye_mult"]
+        avail["pick_value"] = _discount(avail["pick_value"], avail["bye_mult"])
     return avail.sort_values("pick_value", ascending=False).head(top_n)
 
 

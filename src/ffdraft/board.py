@@ -121,7 +121,48 @@ def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
                                       "espn_injury"])
     out["_key"] = out["name"].map(norm_name)
     out["source"] = "espn_adp"
-    return out.dropna(subset=["adp"]).drop_duplicates("_key").reset_index(drop=True)
+    out = out.dropna(subset=["adp"]).drop_duplicates("_key").reset_index(drop=True)
+    out["adp_undrafted"] = undrafted_adp_mask(out["adp"])
+    return out
+
+
+# ESPN fills `averageDraftPosition` with a placeholder for players its
+# population does not draft, rather than leaving it null. On the live 2026 list
+# 823 of 999 rows land in one 4-pick-wide bin: 260 share the value 169.99 and
+# 208 share 170.00 exactly. A number 468 players share is not a draft position
+# -- only one player can be taken at each pick -- it is "undrafted" written as a
+# pick number, and reading it as one tells the survival model that most of the
+# board is about to disappear.
+#
+# The placeholder is found rather than hardcoded, because its value is ESPN's
+# default draft length and moves with it: the most-repeated ADP, accepted as a
+# placeholder only when more players share it than could possibly share a real
+# pick. UNDRAFTED_ADP_TOLERANCE is the half-width of the run around it that is
+# treated the same way, and it is policy, not a fitted number -- ESPN's average
+# smears the fill across neighbouring hundredths, and 1.0 pick is the width that
+# takes the spike (794 of 999 rows, all with a median 0.03% roster rate) while
+# leaving the nearest genuinely-drafted players outside it (Dalton Schultz at
+# 168.87 and 18.4% owned, Calvin Ridley at 168.94 and 25.1%).
+UNDRAFTED_MIN_TIES = 20
+UNDRAFTED_ADP_TOLERANCE = 1.0
+# adp_source for a row ESPN carries but declines to price, as distinct from
+# "modelled", which means the market join found no row for him at all.
+UNDRAFTED_SOURCE = "undrafted"
+
+
+def undrafted_adp_mask(adp: pd.Series) -> pd.Series:
+    """Which ESPN ADPs are the "nobody drafts him" placeholder, not a position.
+
+    Returns all-False when no value repeats often enough to be a fill, so a
+    market frame with genuinely continuous ADPs (a pasted CSV, consensus ECR)
+    is never touched.
+    """
+    values = pd.to_numeric(adp, errors="coerce")
+    counts = values.round(2).value_counts()
+    if counts.empty or counts.iloc[0] < UNDRAFTED_MIN_TIES:
+        return pd.Series(False, index=adp.index)
+    placeholder = float(counts.index[0])
+    return (values - placeholder).abs() <= UNDRAFTED_ADP_TOLERANCE
 
 
 def espn_season_projection(player: dict, season: int) -> float | None:
@@ -143,6 +184,7 @@ def strip_adp(board: pd.DataFrame) -> pd.DataFrame:
     """The board without its market columns, ready for attach_adp again."""
     return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format",
                                            "adp_match", "market_join_version",
+                                           "adp_undrafted",
                                            "espn_proj", "espn_injury", "espn_rank")
                                if c in board.columns])
 
@@ -375,7 +417,7 @@ KEY_ONLY_JOIN = "key_only"
 # the same reason names.KEY_VERSION exists: the projections in the parquet are
 # still good, but the market columns beside them were derived by rules that no
 # longer hold, and nothing else in the cache gate would notice.
-MARKET_JOIN_VERSION = 4
+MARKET_JOIN_VERSION = 5
 
 
 def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
@@ -407,9 +449,11 @@ def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
         key_only_total = int(len(ko))
         key_only = [{"name": r["name"], "position": r["position"],
                      "adp": round(float(r["adp"]), 1)} for _, r in ko.head(limit).iterrows()]
+    undrafted_total = int((board["adp_source"] == UNDRAFTED_SOURCE).sum())
     return {"unjoined": unjoined, "unjoined_total": int(len(un)),
             "alias_joined": alias, "alias_joined_total": alias_total,
-            "key_only": key_only, "key_only_total": key_only_total}
+            "key_only": key_only, "key_only_total": key_only_total,
+            "undrafted_total": undrafted_total}
 
 
 def _exact_market_join(b: pd.DataFrame, src: pd.DataFrame, extra: list[str]) -> pd.DataFrame:
@@ -458,7 +502,8 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     b = board.copy()
     b["_key"] = b["name"].map(norm_name)
     if adp is not None and not adp.empty:
-        extra = [c for c in ("espn_proj", "espn_injury", "espn_rank") if c in adp.columns]
+        extra = [c for c in ("espn_proj", "espn_injury", "espn_rank", "adp_undrafted")
+                 if c in adp.columns]
         b = b.drop(columns=[c for c in extra if c in b.columns])
         src = adp.drop_duplicates(["_key", "position"]) if "position" in adp.columns \
             else adp.drop_duplicates("_key")
@@ -498,6 +543,16 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
         label = "espn" if "source" in adp.columns and (adp["source"] == "espn_adp").any() \
             else "consensus"
         b["adp_source"] = np.where(b["adp"].notna(), label, "modelled")
+        # A row the market carries but declines to price is not priced. Blanking
+        # the placeholder here hands it to the same synthetic fallback that
+        # already covers a row the join missed, so every consumer of `adp` --
+        # survival odds, plan_my_draft's availability filter, the reach numbers
+        # -- reads "no market price" instead of "about to be taken at 170".
+        # adp_source keeps the two causes apart.
+        if "adp_undrafted" in b.columns:
+            blank = b["adp_undrafted"].fillna(False).astype(bool) & b["adp"].notna()
+            b.loc[blank, "adp"] = np.nan
+            b["adp_source"] = np.where(blank, UNDRAFTED_SOURCE, b["adp_source"])
     else:
         b["adp"] = np.nan
         b["adp_source"] = "modelled"

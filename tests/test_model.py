@@ -5,13 +5,75 @@ import pandas as pd
 from ffdraft.board import FORMAT_SHIFT_DAMPING, convert_adp_format, synthetic_adp
 from ffdraft.config import LeagueSettings
 from ffdraft.model import (
+    _discount,
     _positional_need,
     apply_current_team,
     expected_best_at_next_pick,
+    recommend,
     survival_probability,
     survival_probability_vec,
     touchdown_luck_multiplier,
 )
+
+
+class TestDiscount:
+    def test_a_discount_lowers_a_value_of_either_sign(self):
+        # A multiplier of 0.2 means "move this by 80% of its own size", applied
+        # by reflection below zero.
+        out = _discount(pd.Series([10.0, -10.0]), pd.Series([0.2, 0.2]))
+        assert abs(out[0] - 2.0) < 1e-9
+        assert abs(out[1] + 18.0) < 1e-9
+        # Both moved down the list, which is what a discount has to mean.
+        assert out[0] < 10.0 and out[1] < -10.0
+
+    def test_the_penalty_is_bounded(self):
+        # Dividing would be unbounded: need_mult bottoms out at 0.02, so a
+        # negative value could be inflated fiftyfold, which is invisible in a
+        # ranking and ruinous in replay's per-team sum of pick_regret.
+        out = _discount(pd.Series([-10.0, -10.0]), pd.Series([0.02, 0.0]))
+        assert all(abs(v) <= 20.0 for v in out)
+
+    def test_a_boost_raises_a_value_of_either_sign(self):
+        out = _discount(pd.Series([10.0, -10.0]), pd.Series([1.3, 1.3]))
+        assert out[0] > 10.0 and out[1] > -10.0
+
+    def test_a_neutral_multiplier_changes_nothing(self):
+        values = pd.Series([10.0, 0.0, -10.0])
+        assert list(_discount(values, pd.Series([1.0, 1.0, 1.0]))) == [10.0, 0.0, -10.0]
+
+    def test_a_heavier_discount_cannot_promote_a_worse_candidate(self):
+        # The live case at pick 123: Daniel Jones, marginal_value -20.9, at a
+        # need of 0.04 for a second quarterback, against Juwan Johnson at -10.4
+        # and a tight-end need of 0.28. Multiplied, the quarterback lands nearer
+        # zero and outranks the better candidate purely because he was
+        # discounted harder.
+        qb, te = -20.9, -10.4
+        mult = pd.Series([0.04, 0.28])
+        naive = pd.Series([qb, te]) * mult
+        assert naive[0] > naive[1]
+        fixed = _discount(pd.Series([qb, te]), mult)
+        assert fixed[1] > fixed[0]
+
+    def test_a_zero_multiplier_does_not_produce_inf(self):
+        out = _discount(pd.Series([-10.0]), pd.Series([0.0]))
+        assert np.isfinite(out[0])
+
+    def test_recommend_buries_a_backup_quarterback(self):
+        league = LeagueSettings(name="t", teams=12)
+        b = pd.DataFrame({
+            "name": ["Real WR", "Backup QB A", "Backup QB B"],
+            "position": ["WR", "QB", "QB"], "team": ["A", "B", "C"],
+            "proj_points": [150.0, 300.0, 250.0], "draft_score": [20.0, 60.0, 40.0],
+            "adp": [80.0, 120.0, 140.0], "pos_rank": [30, 12, 20],
+            "overall_rank": [90, 130, 160], "consistency": [0.5, 0.5, 0.5],
+            "adj_ppg": [10.0, 18.0, 15.0], "drafted": [False, False, False],
+        })
+        b["_key"] = b["name"].map(lambda n: n.lower())
+        # A quarterback already rostered: BACKUP_DECAY["QB"] puts need at 0.04.
+        out = recommend(b, league, current_pick=100, next_pick=120,
+                        roster={"QB": 1, "RB": 2, "WR": 2, "TE": 1}, top_n=3)
+        assert out["name"].iloc[0] == "Real WR"
+        assert out["name"].tolist()[1:] == ["Backup QB A", "Backup QB B"]
 
 
 class TestSurvival:
@@ -41,6 +103,52 @@ class TestSurvival:
     def test_missing_adp_does_not_produce_nan(self):
         out = survival_probability_vec(np.array([np.nan, 30.0]), 10, 20)
         assert not np.isnan(out).any()
+
+    def test_a_player_far_past_his_adp_is_not_written_off(self):
+        # The live case: a defense with an ADP of 93 still on the board at pick
+        # 157. A Gaussian tail calls that certain to end, which then told
+        # expected_best_at_next_pick that waiting at the position was worth its
+        # worst player.
+        normal = survival_probability(adp=93, current_pick=157, next_pick=164,
+                                      tail="normal")
+        logistic = survival_probability(adp=93, current_pick=157, next_pick=164,
+                                        tail="logistic")
+        assert normal < 0.35
+        assert logistic > 0.45
+        assert logistic > normal
+
+    def test_the_tail_hazard_is_roughly_constant_once_well_past_adp(self):
+        # An exponential tail means "he has slid this far, so the next seven
+        # picks look like the last seven" -- the same wait costs about the same
+        # whether he is 60 or 100 picks past his ADP.
+        far = survival_probability(adp=40, current_pick=160, next_pick=167,
+                                   tail="logistic")
+        further = survival_probability(adp=40, current_pick=200, next_pick=207,
+                                       tail="logistic")
+        assert abs(far - further) < 0.02
+        # The normal tail has no such limit: it keeps collapsing.
+        n_far = survival_probability(adp=40, current_pick=160, next_pick=167,
+                                     tail="normal")
+        n_further = survival_probability(adp=40, current_pick=200, next_pick=207,
+                                         tail="normal")
+        assert n_further < n_far
+
+    def test_the_middle_of_the_distribution_is_preserved(self):
+        # Only the tail is meant to change; near the ADP the two shapes should
+        # give nearly the same answer.
+        for adp, current, nxt in ((60, 55, 62), (100, 95, 108), (30, 28, 34)):
+            a = survival_probability(adp, current, nxt, tail="normal")
+            b = survival_probability(adp, current, nxt, tail="logistic")
+            assert abs(a - b) < 0.10
+
+    def test_both_tails_stay_probabilities_and_stay_monotone(self):
+        for tail in ("normal", "logistic"):
+            previous = 1.1
+            for nxt in (21, 30, 45, 70, 120, 250):
+                p = survival_probability(40, 20, nxt, tail=tail)
+                assert 0.0 <= p <= 1.0
+                assert p <= previous
+                previous = p
 
 
 class TestPositionalNeed:

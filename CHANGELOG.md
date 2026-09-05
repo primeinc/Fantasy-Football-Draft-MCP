@@ -213,6 +213,155 @@ All notable changes to this project. Format follows
 - `draft_strength`: every team's draft ranked by projected starter points
   (`board.team_strength`), with bench projection and open starter slots.
 
+**ESPN's "undrafted" ADP is a placeholder, not a pick number**
+
+- `averageDraftPosition` is not null for a player ESPN's population never
+  drafts: it is filled with a value near ESPN's default draft length. On the
+  2026 list 823 of 999 rows land in one 4-pick-wide bin — 260 share exactly
+  169.99 and 208 share exactly 170.00. A value 468 players share cannot be a
+  draft position, since only one player is taken at each pick.
+- Read as a pick number it told the model that most of the board was about to
+  vanish. `plan_my_draft`'s availability filter (`adp > pick - 1.1*sqrt(pick)`)
+  treated every such row as already gone once the pick number passed ~174: the
+  candidate pool went from 550 at pick 164 to **nine** at pick 189, and *not one
+  of the nine had an ESPN projection at all*. That is why the plan's last three
+  picks were Jakobie Keeney-James, Drake Dabney and Gage Larvadain — men with no
+  NFL role — and it is not something the role-unknown scaling could fix, because
+  there was nothing else left in the pool to prefer.
+- `board.undrafted_adp_mask` finds the placeholder instead of hardcoding it,
+  because its value follows ESPN's default draft length: the most-repeated ADP,
+  accepted only when more than `UNDRAFTED_MIN_TIES` (20) players share it, plus
+  a `UNDRAFTED_ADP_TOLERANCE` (1.0 pick) run either side for the smear the
+  averaging leaves across neighbouring hundredths.
+  That tolerance is load-bearing, not decorative, and otto was right to ask:
+  468 rows sit exactly on 169.99 or 170.00 and another 326 are caught only by
+  the run. Whether those 326 belong turns on whether their ADP carries signal,
+  and it does not. Outside the band, ADP and ESPN's own rank correlate at
+  rho = +0.95 and mean ADP rises 47.7 -> 127.8 -> 159.3 -> 168.6 across rank
+  buckets. Inside it rho = +0.09, the whole spread is 0.18 picks against 53.7
+  outside, and mean ADP across rank buckets 199-400, 400-900, 900-1500 and
+  1500-2500 is 170.18, 169.93, 169.98, 169.99 — not even monotone. In the
+  tolerance-only subset rho = **-0.29**: a better-ranked player has a *later*
+  ADP, which is the opposite of a draft position. Shrinking the tolerance to
+  absorb float noise alone would leave 326 rows carrying a number that runs
+  backwards against rank.
+  Ownership is untouched and is a separate question: some of the 326 are real
+  players rostered in 15-34% of leagues (Cairo Santos, Tre Tucker, Pat
+  Freiermuth) against a maximum of 0.51% among rows sitting exactly on the
+  placeholder. The only claim made about them is that ESPN's ADP does not price
+  them, which the correlations show of every row in the band.
+  A market frame with continuous ADPs (a pasted CSV, consensus ECR) trips
+  neither condition and is untouched.
+- Those rows go to the same synthetic fallback that already covers a row the
+  market join missed, so every consumer of `adp` — survival odds, the
+  availability filter, the reach numbers — reads "no market price" rather than
+  "about to go at 170". They keep `espn_proj` and `espn_rank`, since losing
+  those would have made all 449 of them look role-unknown. A new `adp_source`
+  value `undrafted` keeps the two causes apart, and `market_join_report` counts
+  it separately: 449 undrafted against 9 genuinely unjoined.
+- Live board at 122 picks, one-step before -> after. `adp_source` espn 687 ->
+  espn 238 / undrafted 449, modelled 9 either way. The plan's pool at pick 189
+  9 -> 441, of which those carrying an ESPN projection go 0 -> 275; at 196
+  8 -> 439 (0 -> 274); at 221 7 -> 427 (0 -> 264). The plan itself at picks
+  164/189/196/221: Detroit Lions D/ST, Jakobie Keeney-James, Drake Dabney, Gage
+  Larvadain -> Zach Charbonnet, Evan Engram, James Conner, Tre Tucker. Every
+  name in the new plan is a player ESPN projects; three of the four it replaced
+  were not.
+- The pool at pick 164 goes 550 -> 541, the only place the count falls. Those
+  nine are rows the model ranks highly and ESPN does not price at all, so the
+  synthetic curve gives them an early pseudo-ADP and the filter now reads them
+  as already gone. That is the synthetic fallback's existing behaviour, applied
+  to more rows; it is not new logic.
+- Known limitation, still true and stated rather than hidden: the plan ends with
+  no kicker and no defense although the league starts both. With no next pick,
+  `expected_best_at_next_pick` values waiting at the *worst* player left at that
+  position, so a position with a long bad tail (265 receivers down to a
+  draft_score of -145) shows a far larger marginal value than one with a short
+  tail (32 defenses down to -25). That is tail length, not opportunity cost, and
+  fixing it is a third change to the pick-value model that none of these entries
+  covers. Left undone deliberately.
+
+**The survival model's right tail**
+
+- `survival_probability` treated a player's realised draft slot as normal around
+  his ADP. A Gaussian right tail says a player three and a half standard
+  deviations past his ADP is certainly gone, and real boards are full of players
+  who are not: the live record had the second-best defense undrafted at pick 123
+  with an ADP of 93, in a room that had taken one defense in 122 picks, and the
+  model put his survival at 0.00. That is worse than an over-urgent single
+  number. When a whole position reads 0.00,
+  `expected_best_at_next_pick` accumulates nothing, so waiting at that position
+  is valued at its *worst* remaining player — and `marginal_value`, which 80% of
+  `pick_value` is built from, is computed against that.
+- The distribution is now logistic with the same spread (`model.SURVIVAL_TAIL`),
+  so only the tail changes. Conditional survival well past the ADP tends to a
+  constant hazard per pick instead of a cliff: "he has slid this far already, so
+  the chance he goes in the next seven picks is about what it was for the last
+  seven" is the right statement about a player the market has stopped pricing at
+  his ADP. Computed in logs (`np.logaddexp`), so the far tail no longer needs the
+  `p_gone_now >= 0.999` hard zero that used to stand in for it.
+- Two numerical repairs found on the way, both in the normal path: `1 - Phi(z)`
+  is catastrophic cancellation that underflows to exactly 0 past about z = 8,
+  which made the numerator and denominator of the conditional probability equal
+  and returned a survival of 1.0 for a hopelessly gone player. It uses `erfc`
+  now. And a row with no ADP no longer reaches the tail functions at all.
+- Decided on evidence, three arms over the recorded draft at 122 picks, same
+  board and same picks, only the distribution varying. `shipped` is the exact
+  pre-change implementation, `normal` is the repaired normal without the hard
+  zero, `logistic` is what ships:
+  shipped and normal are identical on every reported figure (Brier 0.129, log
+  loss 0.416, and the same per-round and per-position tables), so the numerical
+  repairs change nothing measurable on this record and the whole difference
+  below is the tail shape. That is now counted rather than inferred, at otto's
+  suggestion: of 78,159 survival evaluations in the replay, the shipped
+  `p_gone_now >= 0.999` hard zero fires 27 times (0.03%) and `z > 8`, where
+  `1 - Phi(z)` underflows, fires **zero** times. So the `erfc` repair is
+  unexercised on this record — proven, not assumed — and the hard zero fires
+  too rarely to move an aggregate. Both would be reached far more often on a
+  full 224-pick draft or a deeper board, which is the case for repairing them
+  regardless of what this record shows.
+  logistic: Brier 0.129 -> 0.127, log loss 0.416 -> 0.401, against a base rate
+  of 0.250. Log loss improves in five of seven rounds, and for QB
+  (0.836 -> 0.760), WR (0.289 -> 0.275) and K (0.187 -> 0.170); RB (0.473) and
+  TE (0.361) are unchanged; DST is worse (0.568 -> 0.618) on 17 forecasts. The
+  `espn_list` (3.358) and `adp` (3.333) predictors are bit-identical, which is
+  the control.
+  **Those aggregates are not a demonstrated improvement, and the change does not
+  rest on them.** This is one draft. Treating the seven rounds as blocks, the
+  per-round log-loss deltas are -0.080, -0.014, -0.001, +0.014, -0.019, +0.007,
+  -0.014: mean -0.015, and t = -1.3 on 6 degrees of freedom. Brier gives
+  t = -1.6. Neither is distinguishable from zero, and dropping round 1 — which
+  contributes more than half the total — leaves t = -0.8. Five of seven rounds
+  and four of six positions move the right way, which is direction, not
+  significance.
+  What the change actually rests on is that the old answers were wrong
+  independently of any score: a defense demonstrably on the board at pick 123
+  was assigned survival 0.00, and past z = 8 the arithmetic returned 1.0 for a
+  player who was certainly gone. A model that says 0.00 about something that is
+  visibly true is worth replacing whether or not one draft's Brier can prove it.
+  The supporting evidence is the mechanism (constant hazard rather than a cliff)
+  and the lowest-probability bucket, where the normal predicted 0.040 against
+  0.080 observed and the logistic predicts 0.050 against 0.070 — half the
+  calibration error, on 329 and 334 forecasts, in the exact region the change
+  targets. That bucket is also a single draft.
+  Read the per-position rows with more care still: the replay re-derives its
+  recommendations from the survival numbers, so the two runs do not score
+  identical forecast sets (DST n 17 vs 18, K 9 vs 11) and the small positions
+  are not paired samples at all.
+  Prompted by lena finding that `roles.weight_backtest`'s seed-to-seed spread at
+  8-12 paired drafts is about the size of every effect measured with it. None of
+  the numbers in these entries come from that harness — every one is a
+  deterministic re-run over one recorded draft or one board, with no seeds — but
+  "deterministic" is not "well evidenced", and the correction applies.
+- The K/DST pricing below was re-measured on the fixed tail, because the two
+  interacted: the thin tail was inflating D/ST marginal value at the same time
+  the carve-out was deflating its raw-value share. It still earns its keep. With
+  the 0.20 raw share kept, the top defense is the second-best pick at 125 —
+  round 8 of 14 — and three defenses crowd the top six; priced on marginal value
+  alone it is fifth at 125 and 189, third at 164 and 196. The top defense's
+  survival to the next pick now reads 0.54 at pick 157 and 0.54 at 189, against
+  0.30 and 0.18 before.
+
 **Kickers and defenses are priced, not guessed**
 
 - K and D/ST are on the board. nflverse box scores carry no kicking and no team
@@ -284,6 +433,39 @@ All notable changes to this project. Format follows
   every caller on the board, not just for kickers.
 - `MARKET_JOIN_VERSION` 4: a cached board built before this has no K or D/ST
   rows (or has them without the boolean flags) and reprices on load.
+- `who_should_i_pick` returned invalid JSON as soon as a defense reached the
+  list. It emitted `r.get("espn_injury")` straight into `json.dumps`, ESPN files
+  no injury status for a team defense, and NaN is truthy so no `or`-guard
+  catches it. Python writes NaN as a bare `NaN` literal, which its own parser
+  reads back happily and every conforming client rejects — so the failure was
+  invisible from inside the process and total from outside it. Found by lena
+  against my board. New `server._jsonable` walks a hand-built payload and turns
+  every non-finite float, NaT and NA into null; `_rows` already did this for
+  table output and the hand-built dicts had nothing. Swept the other eight
+  tools: only this one leaked.
+
+- The cost, measured and recorded rather than left for someone to find. Putting
+  64 rarely-drafted players into the pool makes the walk-forward choice model
+  worse: `just replay`'s blend log loss goes 3.103 -> 3.183 and its forecast for
+  pick 123 goes from WR 72% / RB 22% to WR 52% / DST 17% / K 14%, in a room that
+  had taken one defense and one kicker in 122 picks.
+  The cause is not the pick_value ordering, and it is worth being exact because
+  the obvious explanation is wrong. `espn_list` (3.315 -> 3.358) and `adp`
+  (3.359 -> 3.484) degrade too, and neither reads `pick_value` at all — `adp`
+  degrades most of the three. Forcing an open K/DST slot to a neutral need of
+  1.00 instead of the usual 1.18 open-slot premium recovers 0.008 of the 0.080.
+  Two mechanisms are left. A conditional logit over the available pool must
+  spread mass across 64 more candidates, and K/DST carry real ADPs and ESPN
+  ranks that place them mid-pack rather than last. And `picks_scored` goes
+  117 -> 119: Brandon Aubrey and the Denver Broncos D/ST are picks the board
+  previously could not model and the replay silently skipped. If the other 117
+  were unchanged those two alone would carry a mean log loss of 4.88 against a
+  base of 3.103, which is the whole difference. Some of the apparent regression
+  is the replay no longer ducking the two hardest picks in the record.
+  Left alone deliberately. Excluding K/DST from the choice model's pool would
+  restore the old numbers by restoring the old blind spot, and a neutral K/DST
+  need is a second position-specific constant that buys 0.008 — inside the noise
+  of a single draft, by the standard applied to the survival tail above.
 
 **ESPN projections as a role check**
 - `load_espn_adp` also carries `espn_proj` (ESPN's season projection under the
@@ -318,14 +500,65 @@ All notable changes to this project. Format follows
   (105.42). Picks 125/132/157/189 are unchanged — no role-unknown player was in
   those top fives. `plan_my_draft` changes at 164 (Jared Wayne -> Dalton
   Schultz).
-- `recommend` divides by `role_mult` where `pick_value` is already negative
-  instead of multiplying. A candidate worth less than waiting has a negative
-  pick_value, and multiplying that by 0.2 moves it toward zero — so a discount
-  promoted exactly the players it exists to bury. Dividing is the same penalty
-  with the sign the other way round, and keeps a multiplier above 1 a promotion
-  in both halves. No live top-five order changes from this on its own (the
-  affected rows are far below zero either way); it is what makes the
-  role-unknown discount mean what it says.
+- Every pick_value multiplier goes through `model._discount`, which multiplies
+  a non-negative value and divides a negative one, so below 1 always means
+  further down the list and above 1 always means further up. Plain
+  multiplication does not: almost every candidate on a live board has a
+  negative pick_value (564 of 577 available rows at pick 123 of the recorded
+  draft) because most players are worth less than what waiting returns, and
+  multiplying a negative number by a discount moves it *toward* zero. The
+  ordering inside the negative half came out inverted — the more a player was
+  discounted, the higher he ranked.
+  Found first on `role_mult`, where it was fixed alone; otto's review caught
+  that `need_mult` had the same defect, is always on, and does far more damage,
+  since `BACKUP_DECAY["QB"]` is 0.04. `bye_mult` had it too — inert only
+  because `bye` defaults to 0. All three now go through the one helper, so they
+  cannot drift apart on this again.
+  A/B on the live board at pick 123, same board both arms, only the sign rule
+  varying. Recommendation ranks 14 to 20 before were Justin Fields
+  (marginal_value -33.9), Hunter Henry (-7.8), Shane Buechele (-50.4), J.J.
+  McCarthy (-52.1), Daniel Jones (-20.9), Tua Tagovailoa (-27.6) and Carson
+  Wentz (-68.8): six backup quarterbacks, ordered by how bad they were, sitting
+  above candidates several times better. After, those ranks are Evan Engram,
+  four kickers and three defenses, ordered by marginal value, and the backups
+  fall to 221, 266, 320, 329 and 365 of 577. C.J. Stroud, a starter the model
+  rates, holds rank 8 in both. The first eleven are identical, because a
+  positive pick_value multiplies either way; the entire difference is in the
+  negative half, which is 98.1% of the board.
+  This reaches past the top of `who_should_i_pick`: `choice.py`'s
+  `log_model_rank` feature ranks the whole pool by pick_value, and
+  `plan_my_draft`, `mock_draft` and `draft_counterfactual` read the full
+  ordering. `just replay`, 119 picks scored out of sample, before -> after:
+  the `model` predictor's log loss 4.690 -> 4.324, its top-1/3/5 and median
+  rank unchanged; the `blend` 3.189 -> 3.192 with top-1 0.210 -> 0.193 and
+  top-5 0.555 -> 0.580. Stated plainly: the predictor that reads the model's
+  order directly gets materially better calibrated, and the blend moves within
+  noise on 119 picks rather than improving. `espn_list` and `adp` are
+  bit-identical (3.358 and 3.333), as are the survival Brier (0.129) and log
+  loss (0.416), which is the control — nothing that does not read pick_value
+  moved. The case for the change is that the ordering was wrong, not that the
+  blend got better.
+  The first version of this divided, which expresses the same ordering but is
+  unbounded: `need_mult` bottoms out at 0.02, so a negative pick_value could be
+  inflated fiftyfold. Invisible in a ranking and ruinous in a sum — `replay`
+  sums `pick_regret` per team and `_team_totals` *sorts the team table on it*,
+  and one backup quarterback at pick 108 (Mac Jones, need 0.04) gave slot 12 a
+  summed regret of 8641 against 398 for the next worst, with `biggest_regrets`
+  showing that single row at 8494 instead of five informative ones. otto caught
+  it.
+  A multiplier of `m` is now read as "move this by (1 - m) of its own size" —
+  what multiplying already means above zero, applied by reflection below it as
+  `v * (2 - m)`. Bounded at twice the magnitude, so no single pick can take over
+  an aggregate. On the live board the worst team's summed regret is 400 against
+  359 for the next worst (1.1x, against 21x under division), and
+  `biggest_regrets` reads Mac Jones 254, KC Concepcion 152, Rashod Bateman 110,
+  Jadarian Price 96, Matthew Golden 88.
+  The ordering fix survives the bound: at pick 123 the backup quarterbacks that
+  multiplication put at ranks 15, 18, 19 and 20 (Justin Fields, Daniel Jones,
+  Tua Tagovailoa, Carson Wentz) sit at 141, 69, 108 and 295 of 577, and C.J.
+  Stroud — a starter the model rates — holds rank 8 under both. `DISCOUNT_CEILING`
+  guards the one place the reflection stops being monotone; nothing in
+  `recommend` approaches it (role caps at 1.3, need at 1.18).
 - Known limitation this exposed, not fixed here: `plan_my_draft`'s availability
   filter drops the pool to 9 rows by pick 189, all of them role-unknown, so its
   last three picks are forced rather than chosen and the scaling cannot change

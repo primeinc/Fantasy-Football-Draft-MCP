@@ -63,6 +63,44 @@ player: `player.ownership.averageDraftPosition`, `percentOwned`, `percentStarted
 because it is the list ESPN opponents draft from; FantasyPros consensus is a different
 market and stays the fallback.
 
+`averageDraftPosition` is **not null for a player nobody drafts** — it is filled with a
+placeholder near ESPN's default draft length. On the 2026 list, 823 of 999 rows land in
+one 4-pick-wide bin: 260 share exactly 169.99 and 208 share exactly 170.00. A value 468
+players share cannot be a draft position (only one player is taken at each pick), and the
+rows carrying it have a median 0.03% roster rate against 86.7% for the rest. Read as a
+pick number it tells the survival model that most of the board is about to disappear:
+`plan_my_draft`'s availability filter treated all 448 such board rows as already gone once
+the pick number passed ~174, collapsing the pool from 501 candidates at pick 164 to nine
+at pick 189.
+
+`board.undrafted_adp_mask` finds the placeholder rather than hardcoding it, since its
+value follows ESPN's default draft length: the most-repeated ADP, accepted only when more
+than `UNDRAFTED_MIN_TIES` (20) players share it, plus a `UNDRAFTED_ADP_TOLERANCE` (1.0
+pick) run either side to catch the smear the averaging leaves across neighbouring
+hundredths. That width is load-bearing, not decorative: 468 rows sit exactly on 169.99 or 170.00
+and another 326 are caught only by the tolerance. Those 326 are the ones worth
+checking, and the check is whether their ADP carries any signal. It does not. Among
+the 205 rows outside the band, ADP and ESPN's own rank correlate at rho = +0.95, and
+mean ADP rises 47.7 -> 127.8 -> 159.3 -> 168.6 across rank buckets. Inside the band
+rho = +0.09, the whole spread is 0.18 picks against 53.7 outside, and mean ADP across
+rank buckets 199-400, 400-900, 900-1500 and 1500-2500 is 170.18, 169.93, 169.98,
+169.99 — not even monotone. In the tolerance-only subset rho = -0.29: a better-ranked
+player has a *later* ADP there, which is the opposite of a draft position. Shrinking
+the tolerance to absorb float noise alone would leave those 326 rows carrying a number
+that runs backwards against rank.
+
+Ownership is a separate matter and is not touched. Some of the 326 are real players
+rostered in 15-34% of leagues (Cairo Santos, Tre Tucker, Pat Freiermuth), against a
+maximum of 0.51% among the rows sitting exactly on the placeholder. What is claimed
+about them is only that ESPN's ADP does not price them, which the correlations above
+show is true of every row in the band. A market frame with continuous ADPs (a pasted
+CSV, consensus ECR) trips neither condition and is never touched.
+
+Those rows keep their `espn_proj` and `espn_rank` and are priced by the same synthetic
+fallback that covers a row the market join missed, under `adp_source: undrafted` so the
+two causes stay apart in `draft_audit`'s `market_join` block (449 undrafted against 9
+genuinely unjoined on the live board).
+
 Fields used: `settings.scoringSettings.scoringItems[statId=53].points` (reception
 points), `settings.rosterSettings.lineupSlotCounts` (slot id -> count; 0 QB, 2 RB, 4 WR,
 6 TE, 16 DST, 17 K, 20 bench, 21 IR, 23 flex), `teams[].owners`, `draftDetail.picks[]`

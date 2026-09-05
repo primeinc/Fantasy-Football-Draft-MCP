@@ -573,6 +573,71 @@ class TestRoleUnknown:
         assert "left unscaled" in joined and "Anthony Richardson" in joined
 
 
+class TestUndraftedAdp:
+    def _adp(self, extra_rows=0):
+        # A realistic shape: a handful of real ADPs and a spike of placeholders
+        # smeared across neighbouring hundredths, the way ESPN's average leaves it.
+        real = [("Real One", 12.4), ("Real Two", 88.1), ("Real Three", 168.87),
+                ("Real Four", 168.94)]
+        # The mode carries most of the fill; the averaging smears the rest across
+        # neighbouring hundredths, which is the shape ESPN's live list has.
+        fill = [(f"Filler {i}", 169.99) for i in range(24 + extra_rows)]
+        fill += [(f"Smear {i}", v) for i, v in enumerate(
+            (169.96, 169.97, 169.98, 170.00, 170.01, 170.02))]
+        rows = real + fill
+        adp = pd.DataFrame({
+            "name": [n for n, _ in rows], "adp": [a for _, a in rows],
+            "position": ["WR"] * len(rows),
+            "espn_rank": list(range(1, len(rows) + 1)),
+            "espn_proj": [150.0] * len(rows),
+            "espn_injury": ["ACTIVE"] * len(rows),
+            "source": ["espn_adp"] * len(rows)})
+        adp["_key"] = adp["name"].map(board.norm_name)
+        adp["adp_undrafted"] = board.undrafted_adp_mask(adp["adp"])
+        return adp
+
+    def test_the_placeholder_spike_is_found_not_hardcoded(self):
+        adp = self._adp()
+        flagged = adp[adp["adp_undrafted"]]["name"].tolist()
+        assert len(flagged) == 30
+        assert all(n.startswith(("Filler", "Smear")) for n in flagged)
+        # The nearest real ADPs sit outside the tolerance and are left alone.
+        assert "Real Three" not in flagged and "Real Four" not in flagged
+
+    def test_continuous_adps_are_never_touched(self):
+        # A pasted CSV or consensus ECR has no repeated value, so no placeholder.
+        continuous = pd.Series([float(i) for i in range(1, 200)])
+        assert not board.undrafted_adp_mask(continuous).any()
+
+    def test_a_spike_too_small_to_be_a_fill_is_left_alone(self):
+        few = pd.Series([170.0] * (board.UNDRAFTED_MIN_TIES - 1) + [1.0, 2.0, 3.0])
+        assert not board.undrafted_adp_mask(few).any()
+
+    def test_attach_prices_them_synthetically_but_keeps_the_espn_columns(self):
+        b = pd.DataFrame({"name": ["Real Two", "Filler 0"], "position": ["WR", "WR"],
+                          "pos_rank": [20, 140], "overall_rank": [60, 400],
+                          "proj_points": [180.0, 60.0]})
+        out = board.attach_adp(b, self._adp()).set_index("name")
+        assert out.loc["Real Two", "adp_source"] == "espn"
+        assert out.loc["Real Two", "adp"] == 88.1
+        assert out.loc["Filler 0", "adp_source"] == board.UNDRAFTED_SOURCE
+        # Priced by the synthetic curve, well past ESPN's placeholder.
+        assert out.loc["Filler 0", "adp"] > 200
+        # The role check still needs ESPN's opinion of him: losing espn_proj here
+        # would make every undrafted row look role-unknown.
+        assert out.loc["Filler 0", "espn_proj"] == 150.0
+        assert out.loc["Filler 0", "espn_rank"] == 5
+
+    def test_the_report_separates_undrafted_from_a_failed_join(self):
+        b = pd.DataFrame({"name": ["Filler 0", "Nobody At All"], "position": ["WR", "WR"],
+                          "team": ["X", "Y"], "pos_rank": [140, 150],
+                          "overall_rank": [400, 420], "proj_points": [60.0, 50.0]})
+        rep = board.market_join_report(board.attach_adp(b, self._adp()))
+        assert rep["undrafted_total"] == 1
+        assert rep["unjoined_total"] == 1
+        assert [u["name"] for u in rep["unjoined"]] == ["Nobody At All"]
+
+
 class TestSpecialTeams:
     def _adp(self):
         adp = pd.DataFrame({
@@ -690,6 +755,38 @@ class TestSpecialTeams:
             LeagueSettings(name="t", teams=16,
                            starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1}),
             {"DST": 1, "K": 0})["QB"]
+
+
+class TestJsonPayloads:
+    def test_nan_never_reaches_the_wire(self):
+        # ESPN files no injury status for a team defense, so the value is NaN.
+        # Python writes that as a bare `NaN` literal, which its own parser reads
+        # back and every conforming client rejects: the failure is invisible
+        # from inside the process and total from outside it.
+        import json
+        import math
+
+        from ffdraft import server
+
+        payload = server._jsonable({
+            "espn_injury": float("nan"),
+            "team": float("nan"),
+            "nested": [{"p": float("inf")}, {"q": pd.NaT}],
+            "kept": ["HOU", 3, 1.5, True, None],
+        })
+        assert payload["espn_injury"] is None
+        assert payload["team"] is None
+        assert payload["nested"] == [{"p": None}, {"q": None}]
+        assert payload["kept"] == ["HOU", 3, 1.5, True, None]
+
+        raw = json.dumps(payload)
+        assert "NaN" not in raw and "Infinity" not in raw
+
+        def reject(constant):
+            raise ValueError(constant)
+
+        json.loads(raw, parse_constant=reject)
+        assert math.isnan(float("nan"))  # the value really was NaN going in
 
 
 class TestSyncEspnLive:
