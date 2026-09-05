@@ -110,6 +110,69 @@ During a live draft this API is blind: `draftDetail.inProgress` is true, every p
 `playerId: -1`, every roster is empty, and `kona_player_info` with `filterStatus: ONTEAM`
 returns nothing. Picks appear only once `draftDetail.drafted` is true.
 
+### In-season waiver surfaces
+
+Read for `waiver_targets`, from `espn_dump_1734659820_2026_20260905-003140` at
+2026-09-05. Everything below was measured on that capture; the two gaps are named
+because they are the fields the tool depends on most.
+
+**Who is available.** Each `kona_player_info` entry carries `status` and `onTeamId`
+alongside `player`. `status` is one of `FREEAGENT` / `WAIVERS` / `ONTEAM` and `onTeamId`
+is 0 for an unrostered player. **This capture cannot exercise that split**: it was taken
+mid-draft, so all 1036 rows come back `FREEAGENT` with `onTeamId` 0 — the same blindness
+described above, one field further on. The FA/waivers/rostered distinction is unverified
+here and must be checked against a real in-season pull before anything relies on it.
+
+**Ownership**, under `player.ownership`: `percentOwned`, `percentStarted`,
+`percentChange` (the week-over-week move in roster rate, which is the pickup signal),
+`averageDraftPositionPercentChange`, and `activityLevel`. `activityLevel` is null for
+every row in this capture, so it is unverified too. `percentChange` is 0.0 for every row
+here for the same reason — no week has elapsed.
+
+**ESPN's own view of a player**, under `player.stats`, one block per
+`(statSourceId, statSplitTypeId, scoringPeriodId, seasonId)`: `statSourceId` 0 is actual
+and 1 is projected, `statSplitTypeId` 0 is a season total and 1 is a single week,
+`appliedTotal` is the number under this league's scoring. This capture holds only
+`scoringPeriodId` 0 and 1, so the weekly series is one week long. **ESPN is not the
+source for the role-change signal** — snap and target share come from the nflverse weekly
+pipeline (`features.player_season_profiles`, `sources.snap_counts`); ESPN supplies the
+pool, the ownership move, the injury status and its own weekly projection, which is the
+thing usage is measured *against*.
+
+`player.injuryStatus` on this capture: ACTIVE 808, QUESTIONABLE 124, INJURY_RESERVE 51,
+OUT 9, DAY_TO_DAY 1, SUSPENSION 1, absent 42. A missing value is not ACTIVE — guard on
+`pd.notna`, since ESPN files no status at all for a team defense.
+
+**Claim priority**, `settings.acquisitionSettings`. This league:
+
+| field | value | what it means |
+|---|---|---|
+| `acquisitionType` | `WAIVERS_TRADITIONAL` | rolling waiver order, not an auction |
+| `isUsingAcquisitionBudget` | `false` | **FAAB is off** |
+| `acquisitionBudget` | 100 | present and inert |
+| `minimumBid` | 1 | present and inert |
+| `waiverOrderReset` | `true` | order resets after a claim |
+| `waiverHours` | 24 | claim sits 24h before processing |
+| `waiverProcessDays` | 6 of 7 (not Tuesday) | when claims clear |
+| `waiverProcessHour` | 11 | local hour |
+| `acquisitionLimit` / `matchupAcquisitionLimit` | -1 | unlimited |
+
+`acquisitionBudget: 100` next to `isUsingAcquisitionBudget: false` is the trap: a tool
+that reads the budget and recommends a bid would be recommending FAAB to a league that
+does not use it. Read `isUsingAcquisitionBudget` first and let it decide which of the two
+recommendations is even meaningful.
+
+**Drop candidates**, `settings.rosterSettings`. `isUsingUndroppableList` is `true`, so
+ESPN forbids dropping players on its own list — **that list is a surface this dump does
+not contain**, and until it is read a drop suggestion can name a player the league will
+refuse. `moveLimit` is -1 (unlimited). `positionLimits` by `defaultPositionId`: QB 4,
+RB 8, WR 8, TE 3, K 3, DST 3. `isBenchUnlimited` is `true` while
+`lineupSlotCounts["20"]` is 6 — declared unlimited, six slots in fact, so a claim needs a
+drop; trust the slot count. `lineupLocktimeType` is `INDIVIDUAL_GAME`.
+
+`settings.scheduleSettings.matchupPeriodCount` is 14, so this league's regular season is
+14 weeks whatever the season calendar says.
+
 ## ESPN live draft socket
 
 The draft room gets its state over a websocket. `espn_live.py` speaks it.
