@@ -127,11 +127,15 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         return _BOARDS[key]
     if not force and path.exists():
         b = pd.read_parquet(path)
+        if "bye_week" not in b.columns:
+            b = _attach_byes(b)
+            b.to_parquet(path, index=False)
         _BOARDS[key] = b
         return b
 
     tbl = model.build_player_table(league, weights)
     proj = model.project(tbl, league, weights)
+    proj = _attach_byes(proj)
     try:
         adp = bd.load_adp(
             csv_path=(_CACHE["adp_csv"] or {}).get(league.name),
@@ -145,6 +149,12 @@ def _build_board(force: bool = False) -> pd.DataFrame:
     proj.to_parquet(path, index=False)
     _BOARDS[key] = proj
     return proj
+
+
+def _attach_byes(b: pd.DataFrame) -> pd.DataFrame:
+    b = b.copy()
+    b["bye_week"] = b["team"].map(features.team_bye_weeks(CURRENT_SEASON))
+    return b
 
 
 def _state() -> bd.DraftState:
@@ -313,8 +323,9 @@ def best_available(position: str | None = None, limit: int = 15,
     if key not in avail.columns:
         key = "draft_score"
     avail = avail.sort_values(key, ascending=False)
-    cols = ["name", "position", "team", "overall_rank", "pos_rank", "adp", "adp_delta",
-            "proj_points", "adj_ppg", "consistency", "startable_rate", "injury_risk", "vor"]
+    cols = ["name", "position", "team", "bye_week", "overall_rank", "pos_rank", "adp",
+            "adp_delta", "proj_points", "adj_ppg", "consistency", "startable_rate",
+            "injury_risk", "vor"]
     return json.dumps({"sorted_by": key, "players": _rows(avail, cols, limit)}, indent=2)
 
 
@@ -337,17 +348,22 @@ def who_should_i_pick(limit: int = 6) -> str:
     after = state.pick_after_next() if nxt == current else nxt
 
     roster = state.my_roster(b)
+    _, weights = _settings()
     recs = model.recommend(b, league, current_pick=current, next_pick=after,
-                           roster=roster, top_n=limit)
+                           roster=roster, top_n=limit, mine=state.my_rows(b),
+                           bye_weight=weights.bye)
 
     picks = []
     for _, r in recs.iterrows():
+        bye = r.get("bye_week")
         picks.append({
             "player": r["name"], "position": r["position"], "team": r.get("team"),
             "adp": round(float(r["adp"]), 1),
             "proj_points": round(float(r["proj_points"]), 1),
             "consistency": round(float(r["consistency"]), 3),
             "survives_to_next_pick": round(float(r["p_available_next"]), 2),
+            "bye_week": int(bye) if bye is not None and pd.notna(bye) else None,
+            "bye_conflicts": r.get("bye_conflicts") or "",
             "why": model.explain(r),
         })
     return json.dumps({
@@ -1144,8 +1160,14 @@ def plan_my_draft(strategy: str = "balanced") -> str:
 def model_settings(consistency_weight: float | None = None, injury_weight: float | None = None,
                    oline_weight: float | None = None, schedule_weight: float | None = None,
                    pace_weight: float | None = None, td_luck_weight: float | None = None,
-                   qb_boost: float | None = None, coverage_trend_weight: float | None = None) -> str:
+                   qb_boost: float | None = None, coverage_trend_weight: float | None = None,
+                   bye_weight: float | None = None) -> str:
     """Tune how much each factor moves a player. Rebuilds the board.
+
+    bye_weight cuts a candidate's pick_value by that fraction for every player
+    you already hold at the same position with the same bye week, and half that
+    for other positions. Default 0; who_should_i_pick reports bye_week and
+    bye_conflicts either way.
 
     td_luck_weight controls how hard a player's red zone touchdown rate gets
     regressed toward what his position converts on average (player_report shows
@@ -1178,7 +1200,8 @@ def model_settings(consistency_weight: float | None = None, injury_weight: float
     for name, val in [("consistency_weight", consistency_weight), ("injury", injury_weight),
                       ("oline", oline_weight), ("schedule", schedule_weight),
                       ("pace_volume", pace_weight), ("td_luck", td_luck_weight),
-                      ("qb_boost", qb_boost), ("coverage_trend", coverage_trend_weight)]:
+                      ("qb_boost", qb_boost), ("coverage_trend", coverage_trend_weight),
+                      ("bye", bye_weight)]:
         if val is not None:
             setattr(weights, name, float(val))
     save_settings(league, weights)
@@ -1220,7 +1243,7 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
         ctx_info = bd.espn_league_context(league_id, season, swid, espn_s2)
         if ctx_info["my_team_id"] is None:
             return json.dumps({"error": "no team owned by ESPN_SWID in this league"})
-        league, _ = _settings()
+        league, weights = _settings()
         board_df = _build_board()
         # The session outlives this request; a notification with no related request
         # id rides the connection's standalone channel.
@@ -1235,7 +1258,8 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
         await stop_watch(league_id)
         directory = bd.espn_league_directory(league_id, season, swid, espn_s2)
         w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
-                             league, board_df, notify, directory=directory)
+                             league, board_df, notify, directory=directory,
+                             bye_weight=weights.bye)
     except Exception as exc:
         # The MCP SDK hides tool tracebacks behind "Error executing tool".
         return json.dumps({"error": f"{type(exc).__name__}: {exc}",

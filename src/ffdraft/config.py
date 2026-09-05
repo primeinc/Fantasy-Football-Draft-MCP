@@ -184,6 +184,12 @@ class ModelWeights:
     # already schemed into the passing game. Re-derive these rates for the season
     # you're drafting before trusting a nonzero value here; they will decay.
     coverage_trend: float = 0.0
+    # Bye-week stacking penalty on pick_value in recommend(): fractional cut per
+    # player already on your roster who shares the candidate's bye, full weight at
+    # the same position, half weight at other positions. Supplied belief like
+    # qb_boost (a stacked bye costs one week of a starter, roughly 1/14 of a
+    # season), off by default; set per league with model_settings(bye_weight=...).
+    bye: float = 0.0
 
 
 LEAGUES_PATH = STATE_DIR / "leagues.json"

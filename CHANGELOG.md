@@ -28,6 +28,16 @@ All notable changes to this project. Format follows
   from the snapshot's online flags and the JOINED/LEFT/CHAT lines.
 - `draft_queue` / `set_draft_queue`: read and replace the ESPN pick queue over the
   socket (`DRAFT_LIST`), so autopick has your plan if you miss the clock.
+
+**Bye weeks**
+- Every board row carries `bye_week` from the nfldata schedule
+  (`features.team_bye_weeks`). `who_should_i_pick` and the watch report
+  `bye_week` and `bye_conflicts` (the players you hold who share it), and
+  `explain` says so.
+- New weight `bye` (`model_settings(bye_weight=...)`, default 0): cuts a
+  candidate's pick_value by that fraction per same-position player you hold on
+  the same bye and half that per other player. Supplied belief, not backtested;
+  a stacked bye costs a week of a starter, about 1/14 of a season.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 

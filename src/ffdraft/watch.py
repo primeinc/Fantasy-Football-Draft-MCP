@@ -37,8 +37,9 @@ RECOMMEND_WITHIN = 3
 class DraftWatch:
     def __init__(self, league_id: str, season: int, team_id: int, swid: str, espn_s2: str,
                  league: LeagueSettings, board_df, notify: Notify,
-                 directory: dict[int, dict] | None = None) -> None:
+                 directory: dict[int, dict] | None = None, bye_weight: float = 0.0) -> None:
         self.league_id = league_id
+        self.bye_weight = bye_weight
         # ESPN team id -> {"name": team name, "owners": [display names]}.
         self.directory = directory or {}
         # ESPN team id -> whether an owner is in the draft room. Seeded from the
@@ -268,11 +269,13 @@ class DraftWatch:
         after = self.state.pick_after_next()
         roster = self.state.my_roster(b)
         recs = model.recommend(b, self.league, current_pick=nxt, next_pick=after,
-                               roster=roster, top_n=3)
+                               roster=roster, top_n=3, mine=self.state.my_rows(b),
+                               bye_weight=self.bye_weight)
         if recs.empty:
             return "No recommendation: board empty."
-        names = [f"{r['name']} ({r['position']}, {float(r['p_available_next']):.0%} lasts)"
-                 for _, r in recs.iterrows()]
+        names = [f"{r['name']} ({r['position']}, {float(r['p_available_next']):.0%} lasts"
+                 + (f", bye stacks with {r['bye_conflicts']}" if r.get("bye_conflicts") else "")
+                 + ")" for _, r in recs.iterrows()]
         return "Recommend: " + "; then ".join(names) + "."
 
     def _name(self, pid: int) -> str:

@@ -518,7 +518,8 @@ def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
-              top_n: int = 8) -> pd.DataFrame:
+              top_n: int = 8, mine: pd.DataFrame | None = None,
+              bye_weight: float = 0.0) -> pd.DataFrame:
     """Rank available players for the pick that's on the clock.
 
     Two ideas drive the ordering beyond raw value:
@@ -526,6 +527,10 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
         worth less right now than an equally good player who certainly won't.
       * Roster need — value is discounted once a position is full and the player
         would only be a bench body, and boosted when a starting slot is still open.
+
+    `mine` is the board rows you already hold. With bye_weight > 0 a candidate whose
+    bye_week matches theirs loses bye_weight of pick_value per same-position player
+    and half that per other player; `bye_conflicts` names them either way.
     """
     avail = board[~board["drafted"]].copy() if "drafted" in board.columns else board.copy()
     if avail.empty:
@@ -556,6 +561,22 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     avail["pick_value"] = (
         0.80 * avail["marginal_value"] + 0.20 * avail["draft_score"]
     ) * avail["need_mult"]
+
+    avail["bye_conflicts"] = ""
+    avail["bye_mult"] = 1.0
+    if mine is not None and not mine.empty and "bye_week" in avail.columns \
+            and "bye_week" in mine.columns:
+        held = mine.dropna(subset=["bye_week"])
+        names, mults = [], []
+        for _, r in avail.iterrows():
+            same = held[held["bye_week"] == r["bye_week"]]
+            same_pos = same[same["position"] == r["position"]]
+            other = same[same["position"] != r["position"]]
+            names.append(", ".join(same["name"].tolist()))
+            mults.append(max(0.5, 1 - bye_weight * (len(same_pos) + 0.5 * len(other))))
+        avail["bye_conflicts"] = names
+        avail["bye_mult"] = mults
+        avail["pick_value"] = avail["pick_value"] * avail["bye_mult"]
     return avail.sort_values("pick_value", ascending=False).head(top_n)
 
 
@@ -673,4 +694,8 @@ def explain(row: pd.Series) -> str:
     p = row.get("p_available_next")
     if p is not None and np.isfinite(p):
         bits.append(f"{p:.0%} chance he lasts to your next pick")
+    bye = row.get("bye_week")
+    if bye is not None and pd.notna(bye):
+        conflicts = row.get("bye_conflicts") or ""
+        bits.append(f"bye week {int(bye)}" + (f" stacks with {conflicts}" if conflicts else ""))
     return "; ".join(bits)

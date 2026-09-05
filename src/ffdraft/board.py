@@ -332,6 +332,13 @@ class DraftState:
     def taken_keys(self) -> set[str]:
         return {norm_name(p["name"]) for p in self.picks}
 
+    def my_rows(self, board: pd.DataFrame) -> pd.DataFrame:
+        """Board rows for the players you have drafted, in pick order."""
+        keys = [norm_name(p["name"]) for p in self.picks if p["slot"] == self.my_slot]
+        if "_key" not in board.columns or not keys:
+            return board.iloc[0:0]
+        return board[board["_key"].isin(keys)]
+
     def my_roster(self, board: pd.DataFrame) -> dict[str, int]:
         mine = [p for p in self.picks if p["slot"] == self.my_slot]
         counts: dict[str, int] = {}

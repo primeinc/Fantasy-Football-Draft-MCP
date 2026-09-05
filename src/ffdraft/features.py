@@ -354,6 +354,28 @@ def _player_redzone_role(pbp: pd.DataFrame) -> pd.DataFrame:
     return out[["season", "player_id", "rz_touches", "rz_td"]]
 
 
+def team_bye_weeks(season: int) -> dict[str, int]:
+    """Team -> regular-season week with no game. Falls back to the newest published
+    season, like strength_of_schedule. Empty when the schedule has no regular season."""
+    sched = sources.schedules()
+    games = sched[sched["season"] == season]
+    if games.empty:
+        games = sched[sched["season"] == sched["season"].max()]
+    if "game_type" in games.columns:
+        games = games[games["game_type"] == "REG"]
+    if games.empty:
+        return {}
+    weeks = sorted(int(w) for w in games["week"].unique())
+    teams = set(games["home_team"]) | set(games["away_team"])
+    out: dict[str, int] = {}
+    for team in teams:
+        played = set(games.loc[(games["home_team"] == team) | (games["away_team"] == team), "week"])
+        off = [w for w in weeks if w not in played]
+        if off:
+            out[str(team)] = off[0]
+    return out
+
+
 def strength_of_schedule(target_season: int, defense: pd.DataFrame) -> pd.DataFrame:
     key = f"sos_{target_season}_{len(defense)}"
     if key in _DERIVED:

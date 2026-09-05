@@ -104,6 +104,14 @@ One watch per league; `stop_watch(league_id)` ends it.
 Who is in the ESPN draft room right now and the latest room chat, from the running
 watch's socket, with team and owner names from the league member list.
 
+### Bye weeks
+`who_should_i_pick`, the watch's pushed recommendation, and `best_available` carry
+`bye_week`; recommendations also carry `bye_conflicts`, the players you already
+hold who share that bye. `model_settings(bye_weight=0.08)` makes the recommender
+cut a candidate's pick value by 8% per same-position player on the same bye and
+4% per other player. Default 0. Kickers and defenses are not modelled, so their
+byes are yours to check.
+
 ### `draft_queue` / `set_draft_queue`
 Your ESPN pick queue, the list autopick draws from if you miss the clock.
 `set_draft_queue(league_id, "Name, Name, ...")` replaces it in that order over the
