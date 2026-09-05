@@ -40,7 +40,7 @@ pytest; the `uvx ty check` line arrives with `353be59`, whose hunks are
 distributed by file below. Whichever PR takes that hunk takes the shipped form,
 not `353be59`'s original:
 
-    uvx ty check --python "{{ justfile_directory() / '.venv' }}" src tests
+    uvx ty check --python "{{ venv }}" src tests
 
 The bare `uvx ty check src tests` looks for a `.venv` beside the project and,
 finding none, resolves third-party imports against whatever uv cache it lands
@@ -52,6 +52,14 @@ from an unquoted word, so ty receives `C:Userswilldevespn-ffd-mcp/.venv` and
 fails as "cannot find the path specified" — indistinguishable from the missing
 environment the flag exists to report. `just -n` cannot show this; it prints
 after just's interpolation and before the shell's.
+
+`venv` is the justfile's derived environment: this checkout's `.venv` when it has
+one, else the main checkout's, found through `git rev-parse --git-common-dir`. A
+worktree has no `.venv` of its own, so before that fallback existed `just check`
+could not run in one at all and every agent ran its three steps by hand. The
+justfile also exports `PYTHONPATH` to this checkout's `src`, because the venv's
+editable install names whichever checkout created it — without that a worktree
+borrowing the main checkout's venv tests the main checkout's code.
 
 ### Commits that split across PRs
 

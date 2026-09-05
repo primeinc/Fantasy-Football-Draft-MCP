@@ -1,13 +1,48 @@
 set minimum-version := '1.55.0'
 set default-list
+
+# The virtualenv the recipes run from: this checkout's own `.venv`, else the main
+# checkout's, reached through `--git-common-dir` (whose parent is the main
+# checkout). A git worktree never has one -- `.venv` is untracked and
+# `git worktree add` copies nothing -- so without the fallback every recipe here
+# resolves a python that is not on disk, and `check` failed before it ran.
+#
+# The git call sits in the else branch deliberately. just evaluates variables
+# eagerly on every recipe invocation, but does not evaluate the untaken branch of
+# an `if`, so a checkout that has its own `.venv` never shells out. `|| true`
+# keeps a directory that is not a repo from aborting just with git's error before
+# `check` can name the problem itself.
+#
+# `just -n` does not evaluate `shell()`: a dry run prints this expression's source
+# text and a path built from it, which is nonsense and not what runs.
+# `just --evaluate venv` shows the value the recipes actually get.
+_local := justfile_directory() / '.venv'
+_common_dir := if path_exists(_local) == 'true' { '' } else { shell('git -C "$1" rev-parse --path-format=absolute --git-common-dir || true', justfile_directory()) }
+venv := if path_exists(_local) == 'true' { _local } else if _common_dir != '' { parent_directory(_common_dir) / '.venv' } else { '' }
+python := venv / 'Scripts' / 'python.exe'
+
+# `[script]` recipes still need a local `.venv`: a setting is a const context and
+# rejects `python`, which is derived ("cannot access non-const variable `python`
+# in const context"). In a worktree without one, every `[script]` recipe fails
+# with "execution error: The system cannot find the path specified" before its
+# first line runs. Fixing it means a second copy of the venv rule written in sh,
+# which is a design call, not a typo.
 set script-interpreter := ['.venv/Scripts/python.exe']
 
-python := '.venv/Scripts/python.exe'
+# Every recipe imports THIS checkout's source. The venv installs the package
+# editable, and that `.pth` names whichever checkout created the venv -- so a
+# worktree borrowing the main checkout's venv would otherwise run and test the
+# main checkout's code under its own tests. Exported once here rather than
+# prefixed onto individual lines, so no recipe can be added without it.
+export PYTHONPATH := justfile_directory() / 'src'
 
 # Create .venv and install the package with dev extras
+#
+# The path is literal, not `{{ python }}`: setup builds the venv for THIS
+# directory, and in a worktree `python` points at the main checkout's.
 setup:
     uv venv .venv --python 3.12
-    uv pip install --python {{ python }} -e ".[dev]"
+    uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 
 # Lint, type-check, and run the offline test suite
 #
@@ -18,16 +53,24 @@ setup:
 # happens in a git worktree, where `.venv` is untracked and absent. Pointed at a
 # path, ty either uses it or says in one line that it is not there.
 #
-# The path is QUOTED. `justfile_directory()` yields a Windows path with
-# backslashes, this justfile runs recipes through bash, and bash eats a
+# Every interpolated path is QUOTED. `justfile_directory()` yields a Windows path
+# with backslashes, this justfile runs recipes through bash, and bash eats a
 # backslash in an unquoted word: `C:\Users\will\dev\espn-ffd-mcp/.venv` reaches
 # ty as `C:Userswilldevespn-ffd-mcp/.venv`, which fails as "cannot find the
 # path specified" and reads like a missing venv rather than a mangled argument.
 # `just -n` shows the pre-shell text and so cannot show this; only running it can.
+#
+# The first line names a missing venv once, in a sentence, rather than letting
+# three commands each fail their own way against a path that is not there.
+#
+# pytest imports through the exported PYTHONPATH above, not the venv's editable
+# `.pth`; without it a worktree borrowing the main checkout's venv would test the
+# main checkout's code and report green for code it never loaded.
 check:
-    {{ python }} -m ruff check src tests
-    uvx ty check --python "{{ justfile_directory() / '.venv' }}" src tests
-    {{ python }} -m pytest tests -q
+    @test -x "{{ python }}" || { echo 'just check: no virtualenv python. Looked for "{{ _local }}", then for a .venv beside the main checkout that git reports. Run `just setup`.' >&2; exit 1; }
+    "{{ python }}" -m ruff check src tests
+    uvx ty check --python "{{ venv }}" src tests
+    "{{ python }}" -m pytest tests -q
 
 # Upstream CI locally: ruff and the test suite on every Python it tests, each
 # in a throwaway venv, then the distribution build.
@@ -53,11 +96,11 @@ ci-matrix:
 
 # One-time nflverse download and board build (cache in ~/.ffdraft)
 data:
-    {{ python }} setup_data.py
+    "{{ python }}" setup_data.py
 
 # Run the MCP server on stdio (what Claude launches)
 serve:
-    {{ python }} -m ffdraft.server
+    "{{ python }}" -m ffdraft.server
 
 # Standalone draft watch for one ESPN league: keeps the pick state current and
 # logs every event to ~/.ffdraft/state/watch_<league>.log without Claude attached.
