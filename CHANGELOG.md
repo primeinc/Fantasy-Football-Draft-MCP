@@ -596,6 +596,47 @@ All notable changes to this project. Format follows
   never arose there; the cause was this same availability filter, applied to K
   and D/ST whose ADPs are real but do not describe a real room.
 
+**The plan's view of a required position degrades, instead of falling off a cliff**
+
+- otto found that the two mechanisms below hand over discontinuously. While the
+  availability filter still kept a defense, the counting rule did not fire and
+  the plan was offered the *best* one; the turn the filter emptied the position,
+  the rule fired and offered the *sixteenth*. On the live board that is picks
+  157 and 189 — the offered player jumping from #1 to #16 between consecutive
+  turns, the wrong direction for a quantity that should decay as a draft goes on.
+- The counting rule now answers a required position at *every* turn rather than
+  as a fallback, so the filter no longer decides those positions at all — which
+  otto's threshold table showed it was never doing anyway.
+  `server._absorbed_by` says how many of a position the rest of the league has
+  taken by a given pick: it needs `starters * teams`, some are already gone, and
+  the remainder is absorbed evenly over the picks that are left. Anchored on what
+  has happened rather than projected from the start of the draft, so it is exact
+  at the current pick and rises to the whole remainder by the last one, which
+  makes it non-decreasing by construction.
+- Offered index across the seven remaining picks, both positions: **0, 1, 5, 6,
+  9, 10, 14**, against 0, 0, 0, 0, 15, 15, 15 before. Defenses run Texans → Rams
+  → Lions → Eagles → Chiefs → Chargers → 49ers; kickers Dicker → Mevis → Butker
+  → Little → Cairo Santos → Trey Smack → McPherson. Still no ADP, no threshold
+  and no fitted constant: the two inputs are `starters * teams` and the recorded
+  picks' own positions.
+- The anchor is the reason it is exact rather than pessimistic, and it only works
+  because `record_pick` stores the position it resolves (lena's 053290b). Without
+  that the count reads zero for every position and this silently reverts to
+  projecting from pick 1, which offered the ninth-best defense at the current
+  pick instead of the best. A pick logged without a position therefore makes the
+  rule *more* conservative, never less — wrong in the safe direction, and tested.
+- I said I would check rather than assume whether the early picks moved, and
+  they did — my prediction was wrong. Under `zero_rb` and `hero_rb` the plan now
+  takes the defense at 164 and the kicker at 196, where both used to come at 196
+  and 221. The reason is the point of the change rather than a side effect: the
+  defense is worth *less* at every pick now (at 164 its pick_value falls 10.02 →
+  3.89 and its rank among candidates 1 → 5, because the plan is offered the
+  Eagles rather than the Texans), but waiting is worth less still, since a later
+  turn now honestly offers a worse defense instead of pretending the best one
+  will still be there. A plan that knows waiting costs it something takes the
+  slot earlier. `balanced` and `robust_rb` are unchanged, and all four still
+  finish with exactly one kicker and one defense.
+
 **Every starting slot the league requires**
 
 - `plan_my_draft` finished a 14-round plan for a league that starts a kicker and

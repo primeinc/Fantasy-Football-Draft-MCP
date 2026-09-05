@@ -820,6 +820,50 @@ class TestPlanFillsEveryStartingSlot:
         # And it does not overshoot into a second one.
         assert taken.count("K") == 1 and taken.count("DST") == 1
 
+    def test_the_offered_player_never_improves_as_the_draft_goes_on(self, tmp_path,
+                                                                    monkeypatch):
+        from collections import Counter
+
+        from ffdraft import server
+        from ffdraft.config import LeagueSettings
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=12, rounds=14, draft_slot=4,
+                                starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1,
+                                          "FLEX": 0, "K": 1, "DST": 1})
+        drafted = Counter({"K": 1, "DST": 1})
+        for pos in ("K", "DST"):
+            offered = [server._absorbed_by(pos, league, drafted, 40, pick)
+                       for pick in range(40, league.teams * league.rounds + 1)]
+            # The whole point of #32: a later turn can never be offered a better
+            # player than an earlier one. It used to jump from the best to the
+            # sixteenth the moment the availability filter emptied the position.
+            assert offered == sorted(offered), pos
+            # Exact at the current pick -- the best on the board really is
+            # available now -- and never more than the league can still absorb.
+            assert offered[0] == 0
+            assert max(offered) <= league.starters[pos] * league.teams - drafted[pos]
+
+    def test_a_missing_pick_position_makes_the_count_conservative(self, tmp_path,
+                                                                  monkeypatch):
+        from collections import Counter
+
+        from ffdraft import server
+        from ffdraft.config import LeagueSettings
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=12, rounds=14, draft_slot=4,
+                                starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1,
+                                          "FLEX": 0, "K": 1, "DST": 1})
+        mid = 100
+        known = server._absorbed_by("DST", league, Counter({"DST": 4}), 40, mid)
+        unknown = server._absorbed_by("DST", league, Counter(), 40, mid)
+        # A pick logged without a position leaves more of the league's need
+        # outstanding, so the plan is offered someone deeper -- wrong in the
+        # safe direction, which is why record_pick storing the position matters
+        # rather than being merely tidy.
+        assert unknown > known
+
     def test_a_league_without_those_slots_never_takes_one(self, tmp_path, monkeypatch):
         import json as _json
 
