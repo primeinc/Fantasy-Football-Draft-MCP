@@ -58,7 +58,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import adp as adp_mod
 from . import board as bd
-from . import features, model, sources
+from . import features, model, names, sources
 from .config import (
     CURRENT_SEASON,
     DATA_DIR,
@@ -131,10 +131,14 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         if "bye_week" not in b.columns:
             b = _attach_byes(b)
             changed = True
-        # A board priced off consensus before ESPN ADP was configured is
-        # repriced in place: projections stay, only the market columns change.
-        if bd.espn_adp_configured() and "adp_source" in b.columns \
-                and (not (b["adp_source"] == "espn").any() or "espn_rank" not in b.columns):
+        # A board priced off consensus before ESPN ADP was configured, or keyed
+        # by an older normaliser, is repriced in place: projections stay, the
+        # market columns are joined again.
+        stale_key = int(b["key_version"].iloc[0]) != names.KEY_VERSION \
+            if "key_version" in b.columns and len(b) else True
+        if stale_key or (bd.espn_adp_configured() and "adp_source" in b.columns
+                         and (not (b["adp_source"] == "espn").any()
+                              or "espn_rank" not in b.columns)):
             b = _price_board(bd.strip_adp(b), league)
             changed = True
         if changed:
@@ -160,6 +164,7 @@ def _price_board(proj: pd.DataFrame, league: LeagueSettings) -> pd.DataFrame:
         print(f"ADP unavailable ({type(exc).__name__}); using model rank as proxy")
         adp = None
     proj = bd.attach_adp(proj, adp)
+    proj["key_version"] = names.KEY_VERSION
     return bd.convert_adp_format(proj, _scoring_label(league))
 
 

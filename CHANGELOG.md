@@ -150,6 +150,12 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+- `names.normalize` folds accents: nflverse "Audric Estimé" and ESPN "Audric
+  Estime" keyed differently, so his ESPN ADP (169.99, undrafted) never joined
+  and the synthetic fallback priced him at 110.7. The walk-forward ADP
+  predictor then named him the room's likeliest pick at 123. Boards carry
+  `names.KEY_VERSION`; a cached board from an older normaliser is re-joined
+  to its market columns on load.
 - `pyproject.toml` license is an SPDX string (setuptools 77+), not the
   deprecated table plus classifier that `python -m build` warned about.
 - `survival_probability_vec` no longer carries a lint suppression.

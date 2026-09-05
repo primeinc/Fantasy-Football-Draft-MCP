@@ -45,6 +45,13 @@ class TestNormalize:
     def test_known_alternate_names(self):
         assert normalize("Hollywood Brown") == "marquise brown"
 
+    def test_accents_fold_to_base_letters(self):
+        # nflverse writes the accent, ESPN does not; PUNCT used to delete the
+        # letter, leaving "audric estim" that matched nothing.
+        assert normalize("Audric Estimé") == "audric estime"
+        assert normalize("Audric Estimé") == normalize("Audric Estime")
+        assert normalize("Tomás Ramírez") == "tomas ramirez"
+
     def test_is_idempotent(self):
         for raw in ["Josh Palmer", "D.J. Moore", "Kenneth Walker III"]:
             assert normalize(normalize(raw)) == normalize(raw)

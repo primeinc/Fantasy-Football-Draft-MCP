@@ -11,13 +11,25 @@ This module centralises matching so every join in the codebase uses the same log
 from __future__ import annotations
 
 import re
+import unicodedata
 from difflib import SequenceMatcher
 
 import pandas as pd
 
+# Bumped whenever normalize() changes what a name keys to. A cached board
+# stamped with an older version is re-joined to its sources on load, because
+# every join in the codebase is on this key.
+KEY_VERSION = 2
+
 SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b\.?", re.I)
 PUNCT = re.compile(r"[^a-z0-9 ]")
 SPACES = re.compile(r"\s+")
+
+
+def _ascii(name: str) -> str:
+    """Accents folded to their base letters: "Estimé" and "Estime" (nflverse vs
+    ESPN) must key identically; PUNCT would otherwise delete the é outright."""
+    return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
 
 # Formal name <-> the short form ranking sites tend to publish.
 NICKNAMES: dict[str, str] = {
@@ -97,7 +109,7 @@ def _merge_initials(n: str) -> str:
 
 def _base_norm(name: str) -> str:
     """Normalization without alias substitution — keeps the original spelling's tokens."""
-    n = str(name).lower().strip()
+    n = _ascii(str(name)).lower().strip()
     n = n.replace("'", "").replace("`", "").replace(".", " ").replace("-", " ")
     n = PUNCT.sub(" ", n)
     n = SUFFIX.sub(" ", n)
@@ -106,8 +118,9 @@ def _base_norm(name: str) -> str:
 
 def normalize(name: str) -> str:
     """Canonical key: lowercase, no punctuation, no generational suffix, dotted
-    initials merged ("D.J." and "DJ" agree)."""
-    n = str(name).lower().strip()
+    initials merged ("D.J." and "DJ" agree), accents folded ("Estimé" and
+    "Estime" agree)."""
+    n = _ascii(str(name)).lower().strip()
     n = n.replace("'", "").replace("`", "").replace(".", " ").replace("-", " ")
     n = PUNCT.sub(" ", n)
     n = SUFFIX.sub(" ", n)

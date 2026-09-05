@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 import ffdraft
-from ffdraft import board, sources
+from ffdraft import board, names, sources
 
 
 class TestIdCrosswalk:
@@ -128,7 +128,42 @@ class TestRepriceCachedBoard:
         b = server._build_board()
         row = b[b["name"] == "Jakobi Meyers"].iloc[0]
         assert row["adp_source"] == "espn" and row["adp"] == 104.5
-        assert pd.read_parquet(path)["adp_source"].iloc[0] == "espn"
+        saved = pd.read_parquet(path)
+        assert saved["adp_source"].iloc[0] == "espn"
+        assert int(saved["key_version"].iloc[0]) == names.KEY_VERSION
+        server._BOARDS.pop(league.cache_key(), None)
+
+    def test_board_keyed_by_an_older_normaliser_is_rejoined(self, monkeypatch, tmp_path):
+        from ffdraft import server
+
+        monkeypatch.setenv("ESPN_LEAGUE_ID", "1")
+        monkeypatch.setenv("ESPN_SWID", "{A}")
+        monkeypatch.setenv("ESPN_S2", "s")
+        league, _ = server._settings()
+        path = tmp_path / "board.parquet"
+        # Priced under the old key ("audric estim"), so ESPN never joined and
+        # the synthetic fallback filled adp; espn_rank exists, adp_source is a
+        # mix, and key_version is old.
+        stale = pd.DataFrame({"name": ["Audric Estimé", "Jakobi Meyers"],
+                              "position": ["RB", "WR"], "team": ["NO", "JAX"],
+                              "pos_rank": [36, 20], "overall_rank": [125, 60],
+                              "bye_week": [8, 7], "adp": [110.7, 122.4],
+                              "adp_source": ["modelled", "espn"], "adp_delta": [0.0, 0.0],
+                              "adp_format": ["ppr", "ppr"], "espn_rank": [None, 112],
+                              "key_version": [names.KEY_VERSION - 1] * 2})
+        stale.to_parquet(path, index=False)
+        monkeypatch.setattr(server, "_board_path", lambda _l: path)
+        monkeypatch.setattr(board, "load_adp", lambda **_k: pd.DataFrame(
+            {"name": ["Audric Estime", "Jakobi Meyers"], "adp": [169.99, 122.4],
+             "_key": ["audric estime", "jakobi meyers"], "espn_rank": [1392, 112],
+             "source": ["espn_adp", "espn_adp"]}))
+        server._BOARDS.pop(league.cache_key(), None)
+
+        b = server._build_board().set_index("name")
+        assert b.loc["Audric Estimé", "adp"] == 169.99
+        assert b.loc["Audric Estimé", "adp_source"] == "espn"
+        assert int(b.loc["Audric Estimé", "espn_rank"]) == 1392
+        assert int(pd.read_parquet(path)["key_version"].iloc[0]) == names.KEY_VERSION
         server._BOARDS.pop(league.cache_key(), None)
 
 
