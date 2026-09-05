@@ -33,7 +33,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from . import sources
+from . import adp, sources
 
 # Weeks of history used to describe how a defence and an offence have been
 # playing. Short on purpose: this is a streaming call, and a unit that changed
@@ -298,6 +298,16 @@ def _fit(x: np.ndarray, y: np.ndarray, ridge: float = 1.0) -> np.ndarray:
     return np.linalg.solve(design.T @ design + penalty, design.T @ y)
 
 
+def _units(verdict: dict) -> dict:
+    """The rule's verdict under this module's field names.
+
+    Every exit from `calibration_blocks` goes through here, including the ones
+    that never fit anything, so there is no path that reports a unit without
+    asking `adp.margin_unit` for it.
+    """
+    return {"margin_units": verdict["unit"], "margin_units_reason": verdict["unit_reason"]}
+
+
 def calibration_blocks(frame: pd.DataFrame, features: tuple[str, ...],
                        target: str = "points") -> dict:
     """Fit on two disjoint halves of the weeks and report both, never their mean.
@@ -316,13 +326,16 @@ def calibration_blocks(frame: pd.DataFrame, features: tuple[str, ...],
     needed = [*features, target, "week"]
     if frame.empty or any(c not in frame.columns for c in needed):
         # A position with no history at all -- an empty fixture, a season the
-        # source has not published. Ordinal by default, because "no evidence"
-        # and "evidence that disagrees" both mean the margin is not in points.
-        return {"blocks": [], "usable": False, "margin_units": "ordinal",
+        # source has not published. Through the same rule as every other exit,
+        # which answers ordinal for no blocks: "no evidence" and "evidence that
+        # disagrees" both mean the margin is not a quantity of points.
+        return {"blocks": [], "usable": False,
+                **_units(adp.margin_unit(False, None, 0)),
                 "note": "no rows to fit on for this position"}
     frame = frame.dropna(subset=[*features, target])
     if len(frame) < 4 * len(features):
-        return {"blocks": [], "usable": False, "margin_units": "ordinal",
+        return {"blocks": [], "usable": False,
+                **_units(adp.margin_unit(False, None, 0)),
                 "note": f"only {len(frame)} complete rows for {len(features)} features"}
     y = frame[target].to_numpy(dtype=float)
     x = frame[list(features)].to_numpy(dtype=float)
@@ -351,16 +364,20 @@ def calibration_blocks(frame: pd.DataFrame, features: tuple[str, ...],
     agree = ({f: len({s[f] for s in signs}) == 1 for f in features}
              if len(signs) == 2 else {})
     all_agree = bool(agree) and all(agree.values())
-    beats_mean = bool(out) and all(b["variance_explained"] > 0 for b in out)
+    # The second clause, per block, handed to the rule rather than applied here.
+    # `variance_explained` is 1 - (rmse/sd)^2 on the block the fit did not see,
+    # so above 0 is exactly "beats its own mean out of sample".
+    beats = [bool(b["variance_explained"] > 0) for b in out]
+    verdict = adp.margin_unit(all_agree, beats, len(out))
     return {
         "blocks": out, "usable": len(out) == 2,
         "coefficient_signs_agree": agree,
         "all_signs_agree": all_agree,
-        "beats_its_own_mean_out_of_sample": beats_mean,
-        # The one field a caller should branch on. Two ways to fail, and both
-        # mean the same thing about the answer: the number is an order, not a
-        # quantity of points.
-        "margin_units": "points" if (all_agree and beats_mean) else "ordinal",
+        "beats_its_own_mean_out_of_sample": all(beats) if beats else False,
+        # The one field a caller branches on, and it is not decided here.
+        # `adp.margin_unit` owns the rule so this module cannot drift from the
+        # trade harness about what earns the word "points".
+        **_units(verdict),
         "spread": ({f: round(abs(out[0]["coefficients"][f] - out[1]["coefficients"][f]), 4)
                     for f in features} if len(out) == 2 else {}),
         "note": "two disjoint blocks of the same data. A margin ships in points "
@@ -533,7 +550,11 @@ def rank_week(season: int, week: int, bands: dict, items: dict,
         scored.sort(key=lambda r: float(r["score"]), reverse=True)
         for i, r in enumerate(scored, start=1):
             r["rank"] = i
-        units = report.get("margin_units", "ordinal")
+        # Indexed, not `.get(..., "ordinal")`. Every exit from
+        # `calibration_blocks` sets this through `adp.margin_unit`, so a report
+        # without it is a bug in that function and should say so here rather
+        # than be quietly defaulted into the safe answer.
+        units = report["margin_units"]
         held = starters.get(pos)
         base = next((r["score"] for r in scored if r["name"] == held), None)
         for r in scored:
@@ -548,10 +569,9 @@ def rank_week(season: int, week: int, bands: dict, items: dict,
             "unrankable": [r for r in rows if r["score"] is None],
             "ranked": scored,
             "note": ("margins are fantasy points under this league's own bands"
-                     if units == "points" else
-                     "ordinal only: the fit for this position does not beat its own "
-                     "mean out of sample, so the order is usable and a points "
-                     "margin would not be"),
+                     if units == adp.UNIT_POINTS else
+                     "ordinal only, because " + report["margin_units_reason"] +
+                     ". The order is usable and a points margin would not be"),
         }
     return out
 

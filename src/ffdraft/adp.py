@@ -981,7 +981,67 @@ def _paired_blocks(draft_pair, score, n_trials: int, blocks: int, seed: int,
     return _block_summary(rows)
 
 
-def block_agreement(gains: list[float]) -> dict:
+UNIT_POINTS = "points"
+UNIT_ORDINAL = "ordinal"
+
+
+def margin_unit(signs_agree: bool, beats_own_mean: list[bool] | None,
+                blocks: int) -> dict:
+    """THE CALIBRATION RULE, and the only place it is decided.
+
+        Points only when the blocks agree in sign and each block beats its own
+        mean out of sample; ordinal otherwise.
+
+    Sign agreement is necessary and not sufficient. Two blocks of a term that
+    does nothing agree half the time, which `blocks_agree_p_null` states in the
+    output, so agreement alone buys one coin flip. What earns the right to
+    report a quantity in points rather than as an ordering is the second clause:
+    each block also beating its own mean out of sample. That is what separated
+    defences from kickers in the streaming work -- both had agreeing blocks,
+    only defences beat their own mean, and kickers ship ordinal and labelled.
+
+    A rule that lives in prose decays into decoration, so this returns the
+    verdict a caller must branch on rather than describing what the caller ought
+    to do. The default is the strict direction: `beats_own_mean=None` means the
+    second clause is unproven, not waived, and unproven is ordinal. A caller
+    that cannot produce out-of-sample scores therefore cannot obtain the word
+    "points" from here at all, which is the point -- there is no other place to
+    get it.
+
+    `unit_reason` names which clause failed, so an ordinal answer says why it is
+    ordinal rather than leaving the reader to guess whether the evidence
+    disagreed or was never gathered. Those are different states and only one of
+    them is a finding.
+    """
+    if blocks <= 0:
+        return {"unit": UNIT_ORDINAL, "unit_reason": "no blocks",
+                "beats_own_mean": None}
+    if not signs_agree:
+        return {"unit": UNIT_ORDINAL, "unit_reason": "the blocks disagree in sign",
+                "beats_own_mean": list(beats_own_mean) if beats_own_mean else None}
+    if beats_own_mean is None:
+        return {"unit": UNIT_ORDINAL,
+                "unit_reason": "no out-of-sample scores were supplied, so the second "
+                               "clause is unproven rather than waived",
+                "beats_own_mean": None}
+    if len(beats_own_mean) != blocks:
+        return {"unit": UNIT_ORDINAL,
+                "unit_reason": f"{len(beats_own_mean)} out-of-sample results for "
+                               f"{blocks} blocks",
+                "beats_own_mean": list(beats_own_mean)}
+    if not all(beats_own_mean):
+        return {"unit": UNIT_ORDINAL,
+                "unit_reason": "a block does not beat its own mean out of sample, "
+                               "which no amount of sign agreement rescues",
+                "beats_own_mean": list(beats_own_mean)}
+    return {"unit": UNIT_POINTS,
+            "unit_reason": "the blocks agree in sign and each beats its own mean "
+                           "out of sample",
+            "beats_own_mean": list(beats_own_mean)}
+
+
+def block_agreement(gains: list[float],
+                    beats_own_mean: list[bool] | None = None) -> dict:
     """The reporting contract for a set of per-block gains, whatever produced them.
 
     One mean is never reported alone: the spread between blocks of the same
@@ -990,27 +1050,20 @@ def block_agreement(gains: list[float]) -> dict:
     `trade.py` scores two fixed rosters over simulated seasons -- states
     agreement the same way rather than growing a second dialect of it.
 
-    THE CALIBRATION RULE, which every caller of this is held to:
-
-        Points only when the blocks agree in sign and each block beats its own
-        mean out of sample; ordinal otherwise.
-
-    Sign agreement is necessary and not sufficient. Two blocks of a term that
-    does nothing agree half the time, which `blocks_agree_p_null` states in the
-    output, so agreement alone buys one coin flip. What earns the right to report
-    a quantity in points rather than as an ordering is the second clause: each
-    block also beating its own mean out of sample. That is what separated
-    defences from kickers in the streaming work -- both had agreeing blocks, only
-    defences beat their own mean, and kickers ship ordinal and labelled as such.
-
-    This function reports the first clause. The second belongs to whoever holds
-    the out-of-sample scores, and a caller that cannot show it may not print
-    points.
+    `beats_own_mean` carries the second clause of the calibration rule: one flag
+    per block, true when that block's fit beats its own mean on the data it was
+    not fitted on. Supplying it is what makes `unit` say "points"; omitting it
+    leaves the clause unproven and `unit` says "ordinal". See `margin_unit`,
+    which decides that and is the one place the rule lives.
     """
     agree = bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains))
     return {
         "improvement": round(float(np.mean(gains)), 1) if gains else None,
         "block_improvements": gains,
+        # The verdict a caller branches on before printing a number with a unit
+        # on it. Merged in rather than nested so there is one field to read and
+        # no way to print points while ignoring it.
+        **margin_unit(agree, beats_own_mean, len(gains)),
         # The distance between blocks of the same configuration: the harness's
         # own noise for this term, and the number to read the improvement
         # against. Not a universal floor — see `trials_changed`.

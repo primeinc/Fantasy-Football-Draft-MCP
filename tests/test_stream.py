@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ffdraft import sources, stream
+from ffdraft import adp, sources, stream
 
 BANDS = {
     "points_allowed_0": 5.0, "points_allowed_1_6": 4.0, "points_allowed_7_13": 3.0,
@@ -194,15 +194,56 @@ class TestRankWeek:
             assert ranked["BOMB"]["margin_over_your_starter"] == 0.0
             assert ranked["SHUT"]["margin_over_your_starter"] > 0
 
-    def test_an_ordinal_position_reports_no_points_margin(self, monkeypatch):
-        monkeypatch.setattr(stream, "calibration_blocks",
-                            lambda *_a, **_k: {"margin_units": "ordinal", "blocks": []})
+    def _report(self, monkeypatch, signs_agree, beats, blocks=2):
+        """A calibration report whose verdict comes from the rule, not from me.
+
+        The fake is built through `adp.margin_unit` rather than by writing
+        `"points"` into a dict, so this tests that `rank_week` obeys the rule
+        rather than that it obeys a string a test happened to choose. `blocks`
+        is passed rather than inferred from `beats`, since the case worth
+        testing is two blocks whose out-of-sample scores were never gathered.
+        """
+        report = {"blocks": [], **stream._units(
+            adp.margin_unit(signs_agree, beats, blocks))}
+        monkeypatch.setattr(stream, "calibration_blocks", lambda *_a, **_k: report)
+        return report
+
+    def test_an_ordinal_verdict_forbids_a_points_margin(self, monkeypatch):
+        # The enforcement, from the caller's side: a verdict of ordinal means no
+        # row may carry a points margin, whatever the scores would allow.
+        report = self._report(monkeypatch, True, [True, False])
+        assert report["margin_units"] == "ordinal"
         out = stream.rank_week(2026, 1, BANDS, ITEMS, {"DST": ["SHUT", "BOMB"]},
                                [2025], starters={"DST": "BOMB"})
         pos = out["positions"]["DST"]
         assert pos["margin_units"] == "ordinal"
         assert all(r["margin_over_your_starter"] is None for r in pos["ranked"])
         assert "ordinal only" in pos["note"]
+        # And it says which clause failed, so "no evidence" is not reported as
+        # "evidence that disagreed".
+        assert "does not beat its own mean" in pos["note"]
+
+    def test_evidence_that_was_never_gathered_is_also_ordinal(self, monkeypatch):
+        # The default direction of the rule. Sign agreement alone, with no
+        # out-of-sample scores offered at all, must not buy points.
+        report = self._report(monkeypatch, True, None)
+        assert report["margin_units"] == "ordinal"
+        out = stream.rank_week(2026, 1, BANDS, ITEMS, {"DST": ["SHUT", "BOMB"]},
+                               [2025], starters={"DST": "BOMB"})
+        pos = out["positions"]["DST"]
+        assert all(r["margin_over_your_starter"] is None for r in pos["ranked"])
+        assert "unproven rather than waived" in pos["note"]
+
+    def test_a_points_verdict_is_what_lets_a_margin_be_printed(self, monkeypatch):
+        # The other side of the same gate: the margin appears only when the rule
+        # grants points, so the test above is measuring the gate and not an
+        # unrelated reason the field is empty.
+        self._report(monkeypatch, True, [True, True])
+        out = stream.rank_week(2026, 1, BANDS, ITEMS, {"DST": ["SHUT", "BOMB"]},
+                               [2025], starters={"DST": "BOMB"})
+        pos = out["positions"]["DST"]
+        assert pos["margin_units"] == "points"
+        assert any(r["margin_over_your_starter"] is not None for r in pos["ranked"])
 
     def test_the_look_ahead_covers_the_next_weeks(self):
         out = stream.stream_kdst(2026, 1, BANDS, ITEMS, {"DST": ["SHUT", "BOMB"]},

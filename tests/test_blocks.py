@@ -134,3 +134,69 @@ class TestSummaryShape:
     def test_default_blocks_is_more_than_one(self):
         # The whole point: a single block cannot show its own noise.
         assert adp.DEFAULT_BLOCKS >= 2
+
+
+class TestTheCalibrationRule:
+    """Points only when the blocks agree in sign and each block beats its own
+    mean out of sample; ordinal otherwise.
+
+    The rule lived in a docstring, and a rule that only lives in prose decays
+    into decoration. `adp.margin_unit` is now the one place it is decided and
+    the only place the word "points" can be obtained, so these pin the verdict
+    rather than the sentence.
+    """
+
+    def test_both_clauses_met_earns_points(self):
+        out = adp.margin_unit(True, [True, True], 2)
+        assert out["unit"] == adp.UNIT_POINTS
+        assert "beats its own mean" in out["unit_reason"]
+
+    def test_disagreeing_signs_are_ordinal_whatever_the_scores_say(self):
+        out = adp.margin_unit(False, [True, True], 2)
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert "disagree in sign" in out["unit_reason"]
+
+    def test_agreement_alone_does_not_buy_points(self):
+        # The second clause is what separated defences from kickers: both had
+        # agreeing blocks, only defences beat their own mean.
+        out = adp.margin_unit(True, [True, False], 2)
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert "does not beat its own mean" in out["unit_reason"]
+
+    def test_evidence_not_offered_is_unproven_not_waived(self):
+        # The direction that makes this an enforcement rather than a suggestion.
+        # A caller who cannot produce out-of-sample scores cannot get the word
+        # "points" out of this function at all.
+        out = adp.margin_unit(True, None, 2)
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert "unproven rather than waived" in out["unit_reason"]
+
+    def test_a_score_per_block_or_none_at_all(self):
+        # Two blocks and one flag is not evidence about both of them.
+        out = adp.margin_unit(True, [True], 2)
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert "1 out-of-sample results for 2 blocks" in out["unit_reason"]
+
+    def test_no_blocks_is_ordinal(self):
+        assert adp.margin_unit(True, [], 0)["unit"] == adp.UNIT_ORDINAL
+
+
+class TestBlockAgreementCarriesTheVerdict:
+    def test_agreeing_gains_without_out_of_sample_scores_are_ordinal(self):
+        out = adp.block_agreement([5.0, 4.0])
+        assert out["blocks_agree"] is True
+        assert out["unit"] == adp.UNIT_ORDINAL
+        assert out["beats_own_mean"] is None
+
+    def test_agreeing_gains_with_the_scores_are_points(self):
+        out = adp.block_agreement([5.0, 4.0], [True, True])
+        assert out["unit"] == adp.UNIT_POINTS
+        assert out["beats_own_mean"] == [True, True]
+
+    def test_the_verdict_sits_beside_the_mean_it_qualifies(self):
+        # One dict, so there is no way to read `improvement` without the field
+        # that says what it may be called.
+        out = adp.block_agreement([5.0, 4.0])
+        for key in ("improvement", "block_spread", "blocks_agree",
+                    "blocks_agree_p_null", "unit", "unit_reason"):
+            assert key in out, key

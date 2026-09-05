@@ -33,6 +33,28 @@ All notable changes to this project. Format follows
   nothing, which is precisely the kicker case: it agrees with itself and cannot
   predict. A rule that only checks agreement would have shipped kicker margins
   in points.
+- **The rule is now enforced rather than documented.** It lived in
+  `adp.block_agreement`'s docstring, and freddy's objection was the right one: a
+  rule that only lives in prose decays into decoration. `adp.margin_unit` is now
+  the single place it is decided and the only place the word `"points"` can be
+  obtained. `block_agreement` takes the per-block out-of-sample results and
+  merges the verdict — `unit`, `unit_reason`, `beats_own_mean` — into the same
+  dict as `improvement`, so there is no way to read the mean without the field
+  that says what it may be called.
+- The default is the strict direction, which is what makes it an enforcement:
+  omitting the out-of-sample results leaves the second clause **unproven, not
+  waived**, and unproven is ordinal. A caller that cannot produce them cannot
+  obtain "points" from anywhere. `unit_reason` distinguishes the four ways to
+  fail, because "the evidence disagreed" and "the evidence was never gathered"
+  are different states and only one of them is a finding.
+- `stream.calibration_blocks` no longer decides its own units. Every exit,
+  including the two that never fit anything, goes through `adp.margin_unit`, and
+  `rank_week` indexes `margin_units` rather than defaulting a missing key to the
+  safe answer — a report without it is a bug in the rule, not a reason to guess.
+  Tests pin the gate from both sides: an ordinal verdict forbids a points margin
+  on every row, a points verdict is what permits one, and the fixtures build
+  their verdicts by calling the rule rather than by writing the string a test
+  would like to see.
 - Features earned their place or were dropped, measured not assumed. Kept:
   opponent implied points for defences, own implied points for kickers. Dropped:
   `home` (signs flip, +0.71 against −0.66, and held-out RMSE gets *worse*) and
