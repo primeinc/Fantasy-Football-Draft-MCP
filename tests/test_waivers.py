@@ -447,5 +447,38 @@ class TestDropCandidate:
         assert out["undroppable_checked"] is False
         assert "unchecked" in out["reason"]
 
+    def unpriced_bench(self, deep_projection: float):
+        """The shape `my_rows` returns once #40 lands: a stand-in for a roster
+        player the board cannot price, at the position's replacement level with
+        vor 0, no bye_week and no exp_games."""
+        return pd.DataFrame({
+            "name": ["Deep Back", "Real Starter", "Unpriced Man"],
+            "position": ["RB", "WR", "RB"],
+            "proj_points": [deep_projection, 240.0, 120.0],
+            "exp_games": [17.0, 17.0, np.nan],
+            "bye_week": [np.nan, np.nan, np.nan],
+            "vor": [0.0, 80.0, 0.0],
+            "droppable": [True, True, True],
+            "unpriced": [False, False, True],
+        })
+
+    def test_a_drop_resting_on_a_stand_in_says_so(self):
+        # Every real bench player above replacement, so the stand-in is cheapest.
+        out = waivers.drop_candidate(self.unpriced_bench(180.0), league(), self.held())
+        assert out["player"] == "Unpriced Man"
+        assert out["projection_basis"] == "replacement-level stand-in"
+        assert "cannot price this player" in out["reason"]
+
+    def test_a_stand_in_is_not_automatically_the_cheapest_drop(self):
+        # Replacement level is above a genuinely deep bench player, so a real
+        # one at 90 still beats a stand-in at 120.
+        out = waivers.drop_candidate(self.unpriced_bench(90.0), league(), self.held())
+        assert out["player"] == "Deep Back"
+        assert out["projection_basis"] == "board projection"
+
+    def test_a_board_that_prices_everyone_has_no_stand_ins(self):
+        out = waivers.drop_candidate(self.bench(), league(), self.held())
+        assert out["projection_basis"] == "board projection"
+
     def test_an_empty_bench_names_nobody(self):
         assert waivers.drop_candidate(pd.DataFrame(), league())["player"] is None

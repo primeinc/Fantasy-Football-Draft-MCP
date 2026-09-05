@@ -289,6 +289,25 @@ def drop_candidate(bench: pd.DataFrame, league, mine: pd.DataFrame | None = None
     already in the view we capture. A player it forbids is not offered. A player
     the pull did not carry has no value there, which is not the same as
     droppable, so he is offered with `undroppable_checked` false.
+
+    `projection_basis` says what the recommendation rests on, because it does not
+    always rest on a real projection. #40 (`board.UNPRICED`, not merged at the
+    time of writing) makes `DraftState.my_rows` return a stand-in for a roster
+    player the board cannot price, at the position's replacement level with `vor`
+    0 and no `bye_week`. Once a `my_rows` frame is wired in here — the tool
+    milestone, not this one — some bench rows carry a synthetic number the board
+    has no opinion about, and a drop recommendation resting on one should say so
+    rather than read like a measurement. Flagged by marge.
+
+    Measured rather than assumed, because her prediction was that the stand-in
+    would tend to look cheapest and that is only conditionally true. Replacement
+    level is by construction *above* a genuinely deep bench player, so the
+    stand-in is chosen only when every other bench player projects above
+    replacement. With a real player at 90 against a stand-in at 120 the real one
+    is still the cheaper drop (bench values 4.5 against 6.0); with the rest of
+    the bench at 180 and 200 the stand-in wins it at 6.0. Both are plausible
+    weeks. The flag matters in the first case too, since what changes is not
+    who is picked but whether the number behind him is real.
     """
     if bench is None or bench.empty:
         return {"player": None, "reason": "no bench player to drop"}
@@ -302,15 +321,25 @@ def drop_candidate(bench: pd.DataFrame, league, mine: pd.DataFrame | None = None
                 "reason": "every bench player is on the league's undroppable list"}
     worst = allowed.nsmallest(1, "bench_value").iloc[0]
     checked = bool("droppable" in allowed.columns and pd.notna(worst.get("droppable")))
+    # Read by name rather than through `board.UNPRICED`, which does not exist on
+    # every head this runs against yet. A frame without the column simply has no
+    # stand-ins in it, which is the honest answer for a board that prices
+    # everyone it holds.
+    unpriced = bool(worst.get("unpriced", False))
     return {
         "player": str(worst["name"]),
         "position": str(worst.get("position")),
         "bench_value": round(float(worst["bench_value"]), 1),
         "starts_in_a_given_week": round(float(worst["p_start"]), 2),
         "undroppable_checked": checked,
+        "projection_basis": "replacement-level stand-in" if unpriced else "board projection",
         "reason": ("lowest bench value on the roster: worth "
                    f"{float(worst['bench_value']):.0f} points once the weeks he would "
                    f"actually start are priced"
+                   + ("" if not unpriced else
+                      "; the board cannot price this player, so that figure is the "
+                      "position's replacement level standing in for him rather than a "
+                      "projection of his own")
                    + ("" if checked else
                       "; ESPN's droppable flag was not in the pull for this player, so "
                       "the league's undroppable list is unchecked for him")),
