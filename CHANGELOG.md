@@ -54,7 +54,10 @@ All notable changes to this project. Format follows
 - `bye_backtest`: paired mock drafts with and without the penalty, scored on
   weekly best lineups from real box scores (`adp.weekly_lineup_points`,
   `adp.best_weekly_lineup`). The mock-draft trial loop is shared
-  (`adp._draft_trial`).
+  (`adp._draft_trial`). A 2022-2025 run (12 paired drafts per season, weight
+  0.08) gave +5.8, +7.0, -19.2, -2.0 weekly points, -2.1 overall: fewer empty
+  starter slots in three of four seasons, swamped by who gets drafted instead.
+  `bye` therefore stays 0 by default and the conflicts stay informational.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 

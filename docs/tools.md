@@ -118,8 +118,11 @@ failure.
 `bye_week`; recommendations also carry `bye_conflicts`, the players you already
 hold who share that bye. `model_settings(bye_weight=0.08)` makes the recommender
 cut a candidate's pick value by 8% per same-position player on the same bye and
-4% per other player. Default 0. Kickers and defenses are not modelled, so their
-byes are yours to check.
+4% per other player. Default 0, and `bye_backtest` (2022-2025, 12 paired drafts
+each, weight 0.08) found why: +5.8, +7.0, -19.2, -2.0 weekly lineup points per
+season, -2.1 overall. The penalty fills more starter slots, but the player it
+swaps in decides ten times more, so it stays informational like `matchup_z`.
+Kickers and defenses are not modelled, so their byes are yours to check.
 
 ### `bye_backtest`
 Does the bye-week stacking penalty win more weekly lineup points? For each season
