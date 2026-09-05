@@ -868,14 +868,68 @@ class TestPlanFillsEveryStartingSlot:
             assert taken.count("DST") == 1, (strategy, taken)
 
         # The offer itself does not depend on the strategy -- it is a count of
-        # what the league absorbs -- so asserting it once covers all four, and
-        # asserting it here rather than only on `_absorbed_by` pins the property
-        # at the level the plan actually consumes it.
+        # what the league absorbs -- so asserting it once covers all four.
         drafted = Counter(str(p.get("position")) for p in state.picks)
         for pos in ("K", "DST"):
             offered = [server._absorbed_by(pos, league, drafted, state.on_the_clock, pick)
                        for pick in league.picks_for_slot(league.draft_slot)]
             assert offered == sorted(offered), (pos, offered)
+
+    def test_the_offer_the_plan_actually_sees_never_improves(self, tmp_path, monkeypatch):
+        """`_absorbed_by` is monotone by construction -- `int(remaining * elapsed)`
+        over a non-decreasing `elapsed` cannot be otherwise -- so asserting it
+        pins the helper's contract and nothing about #32. The property #32
+        delivers is one level up: what `_plan_pool` *offers* is monotone, which
+        depends on the concat-and-replace actually consuming the count, and which
+        was false before the change because the offer came from the ADP filter
+        until that filter gave up. This walks the slot's picks and reads the
+        offered index back out of the pool, which is the quantity the plan sees.
+
+        Measured on this fixture across the slot's fourteen picks, both positions:
+
+            before  0, 0, 0, 0, 0, 0, 0, 0, 2, 8, 10, 16, 18, 12
+            after   0, 1, 1, 3, 3, 4, 5, 6, 7,  8,  8, 10, 10, 11
+
+        The before row is the fault in both the shapes #32 was raised over: the
+        best player offered for eight straight turns while the ADP filter keeps
+        him alive, and then an offer that *improves* at the final pick, 18 back
+        to 12, which cannot happen in a draft. It is only the live record's
+        particular ADP ordering that came out monotone anyway, so this is the
+        test that fails without the change.
+        """
+        from ffdraft import server
+        from ffdraft.config import LeagueSettings, ModelWeights
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=12, rounds=14, draft_slot=4,
+                                starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1,
+                                          "FLEX": 0, "K": 1, "DST": 1})
+        state = board.DraftState(league)
+        monkeypatch.setattr(server, "_settings", lambda: (league, ModelWeights()))
+        monkeypatch.setattr(server, "_state", lambda: state)
+        b = self._board()
+        monkeypatch.setattr(server, "_build_board", lambda force=False: b)
+
+        picks = league.picks_for_slot(league.draft_slot)
+        for pos in ("K", "DST"):
+            whole = b[b["position"] == pos].sort_values("draft_score", ascending=False)
+            order = whole["_key"].tolist()
+            offered = []
+            for i, pick in enumerate(picks):
+                # Roster held empty and nothing taken, so the only thing varying
+                # between picks is the pick number itself.
+                pool = server._plan_pool(b, set(), state.on_the_clock, pick, league, {},
+                                         state, picks_left=len(picks) - i)
+                rows = pool[pool["position"] == pos]
+                if rows.empty:
+                    offered.append(len(order))
+                    continue
+                best = rows.sort_values("draft_score", ascending=False)["_key"].iloc[0]
+                offered.append(order.index(best))
+            assert offered == sorted(offered), (pos, offered)
+            # And it really moves, so a rule that offered the same player at every
+            # pick would not pass this by standing still.
+            assert offered[-1] > offered[0], (pos, offered)
 
     def test_a_missing_pick_position_makes_the_count_conservative(self, tmp_path,
                                                                   monkeypatch):
