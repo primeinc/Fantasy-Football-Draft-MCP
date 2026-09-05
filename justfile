@@ -10,9 +10,16 @@ setup:
     uv pip install --python {{ python }} -e ".[dev]"
 
 # Lint, type-check, and run the offline test suite
+#
+# ty is given the environment explicitly. Left to itself it looks for a `.venv`
+# beside the project and, not finding one, resolves third-party imports against
+# whatever uv cache it lands on -- which reports numpy, pandas and pytest as
+# unresolvable and buries any real finding under a page of them. That is what
+# happens in a git worktree, where `.venv` is untracked and absent. Pointed at a
+# path, ty either uses it or says in one line that it is not there.
 check:
     {{ python }} -m ruff check src tests
-    uvx ty check src tests
+    uvx ty check --python {{ justfile_directory() / ".venv" }} src tests
     {{ python }} -m pytest tests -q
 
 # Upstream CI locally: ruff and the test suite on every Python it tests, each
