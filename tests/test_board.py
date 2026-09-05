@@ -844,6 +844,39 @@ class TestPlanFillsEveryStartingSlot:
             assert offered[0] == 0
             assert max(offered) <= league.starters[pos] * league.teams - drafted[pos]
 
+    def test_every_strategy_fills_both_slots_and_never_upgrades_its_offer(
+            self, tmp_path, monkeypatch):
+        import json as _json
+        from collections import Counter
+
+        from ffdraft import server
+        from ffdraft.config import LeagueSettings, ModelWeights
+
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        league = LeagueSettings(name="t", teams=12, rounds=14, draft_slot=4,
+                                starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1,
+                                          "FLEX": 0, "K": 1, "DST": 1})
+        state = board.DraftState(league)
+        monkeypatch.setattr(server, "_settings", lambda: (league, ModelWeights()))
+        monkeypatch.setattr(server, "_state", lambda: state)
+        monkeypatch.setattr(server, "_build_board", lambda force=False: self._board())
+
+        for strategy in ("balanced", "zero_rb", "hero_rb", "robust_rb"):
+            plan = _json.loads(server.plan_my_draft(strategy))
+            taken = [row["position"] for row in plan["plan"]]
+            assert taken.count("K") == 1, (strategy, taken)
+            assert taken.count("DST") == 1, (strategy, taken)
+
+        # The offer itself does not depend on the strategy -- it is a count of
+        # what the league absorbs -- so asserting it once covers all four, and
+        # asserting it here rather than only on `_absorbed_by` pins the property
+        # at the level the plan actually consumes it.
+        drafted = Counter(str(p.get("position")) for p in state.picks)
+        for pos in ("K", "DST"):
+            offered = [server._absorbed_by(pos, league, drafted, state.on_the_clock, pick)
+                       for pick in league.picks_for_slot(league.draft_slot)]
+            assert offered == sorted(offered), (pos, offered)
+
     def test_a_missing_pick_position_makes_the_count_conservative(self, tmp_path,
                                                                   monkeypatch):
         from collections import Counter
