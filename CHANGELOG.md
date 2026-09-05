@@ -376,11 +376,14 @@ All notable changes to this project. Format follows
   outright — the recorded draft predates this code, so there is nothing to read
   and the two runs are identical, which is the right behaviour for an as-of
   option with no snapshots. Positive control at real scale, against a
-  throwaway league id with ADP shifted +10 for picks 60 onward: coverage 63 of
-  122 (0.516, first 60, last 122), mean pool share 0.553 (300 rows of a ~540-row
-  pool), the player taken inside the snapshot 57 times, exactly 57 picks' `reach`
-  moved and every one by +10 (pick 61: 27.6 -> 37.6), pick 30 unchanged, survival
-  Brier 0.128 -> 0.143. 63 files, 870 KB, so a full 224-pick draft is about 3 MB.
+  throwaway league id with ADP shifted +10 for picks 60 onward, on the 696-row
+  board: coverage 63 of 122 (0.516, first 60, last 122), mean pool share 0.495
+  (300 rows of a ~600-row pool), the player taken inside the snapshot 60 times,
+  exactly 60 picks' `reach` moved and every one by +10 (pick 61: 27.6 -> 37.6),
+  pick 30 unchanged, survival Brier 0.131 -> 0.143. 63 files, 988 KB, so a full
+  224-pick draft is about 3.5 MB. The coverage fractions are properties of the
+  bound and the record; the Brier and the pool share move with the board, and
+  did when kickers and defenses were priced onto it.
 
 **Counterfactual replay**
 - `draft_counterfactual` (`replay.counterfactual_draft`, `just counterfactual
@@ -416,13 +419,22 @@ All notable changes to this project. Format follows
   it now takes a pick at its word when the pick carries its own `proj_points`,
   which recorded picks never do. `choice.WalkForward.probabilities` exposes one
   predictor's distribution over an arbitrary pool without training on it.
-- On the live record (122 picks, slot 4, argmax): projected starter points,
-  model 1494, control 1058, real 1343 — the intervention is +436 against the
-  control and +151 against the real roster. 7 of 7 turns substituted. 106 of
-  111 other-team picks differ from the real draft, 4 off-board picks mirrored,
-  and the control could not have 3 of its 7 real picks. Those numbers are the
-  point as much as the delta is: the predictor's room is not that draft's room,
-  and a control missing three of its own picks is not quite the real drafter.
+- On the live record (122 picks, slot 4, argmax, board at 696 rows): projected
+  starter points model 1481, control 1058, real 1343 — the intervention is +423
+  against the control and +138 against the real roster. 7 of 7 turns
+  substituted. 107 of 113 other-team picks differ from the real draft, 2
+  off-board picks mirrored, and the control could not have 3 of its 7 real
+  picks. Those numbers are the point as much as the delta is: the predictor's
+  room is not that draft's room, and a control missing three of its own picks is
+  not quite the real drafter.
+- Every figure in that paragraph is a simulation result, not an invariant, and
+  it moves with the recommender: it re-runs `model.recommend` once per pick per
+  arm, so any change to `pick_value` — the discount rule, the survival
+  distribution, `expected_best_at_next_pick`, what the board prices — moves it.
+  It read 1494 / +436 / +151 before `expected_best_at_next_pick` stopped valuing
+  an exhausted position at its own worst player. Re-run `just counterfactual`
+  rather than trusting the number here; what is stable is the shape of the
+  comparison, not its output.
 
 **League position intercepts evaluated, and not adopted**
 - `blend_pos` — the blend plus league-level `is_QB`/`is_RB`/`is_WR`/`is_TE`
