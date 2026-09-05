@@ -34,6 +34,14 @@ FANTASY_POSITIONS = ("QB", "RB", "WR", "TE")
 # separation, replacement baselines in project()) has to special-case them.
 SPECIAL_POSITIONS = ("K", "DST")
 
+# ESPN injury states that vacate a role, and so zero a player for a week.
+# QUESTIONABLE is not one: by Friday it describes half the league, and treating
+# it as out would bench a starter on a coin flip. Written by lena for `waivers`
+# and promoted here because `lineup` needs the same rule to price a week --
+# "what counts as out" answered twice is how the position rule came to have
+# four symptoms.
+OUT_STATUSES = ("OUT", "INJURY_RESERVE", "DOUBTFUL", "SUSPENSION", "NA")
+
 # Weekly point thresholds that count as a "startable" week, by position.
 # Used for the consistency / floor score.
 STARTABLE_THRESHOLD = {"QB": 18.0, "RB": 12.0, "WR": 12.0, "TE": 9.0}

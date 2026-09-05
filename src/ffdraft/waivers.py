@@ -38,6 +38,7 @@ import requests
 
 from . import roles
 from .config import CURRENT_SEASON
+from .config import OUT_STATUSES as _OUT_STATUSES
 
 READS_HOST = "https://lm-api-reads.fantasy.espn.com"
 # The same filter `espn_dump` uses, so the pool here is the pool that dump
@@ -98,8 +99,10 @@ PRIOR_WEEKS = 3
 MIN_RECENT_GAMES = 1
 
 # ESPN injury states that vacate a role. QUESTIONABLE does not: it is the
-# default state of half the league by Friday.
-OUT_STATUSES = ("OUT", "INJURY_RESERVE", "DOUBTFUL", "SUSPENSION", "NA")
+# default state of half the league by Friday. Defined in `config` because
+# `lineup` prices a week with the same rule; re-exported here so every existing
+# `waivers.OUT_STATUSES` reference keeps working and there is still one list.
+OUT_STATUSES = _OUT_STATUSES
 
 
 @dataclass

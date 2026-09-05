@@ -2488,6 +2488,90 @@ def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
                   # those players were left out of both the lineup and the drop
                   # candidates, which is worth seeing rather than inferring.
                   "unplaceable_on_my_roster": parts["unplaceable"], **out}, indent=2)
+def _lineup_inputs(league_id: str, week: int, season: int):
+    """The roster for `week`, priced for `week`. The only part that fetches."""
+    from . import lineup, rosters
+
+    league, _ = _settings()
+    board = _build_board()
+    teams = rosters.fetch_roster_teams(league_id, season, week)
+    team_id = rosters.my_team_id(teams)
+    if team_id is None:
+        raise RuntimeError("no team in this league is owned by ESPN_SWID")
+    mine = rosters.rosters_by_team(teams, board, bd._ESPN_POSITION_NAMES)[team_id]
+    weekly = rosters.fetch_weekly_projections(league_id, season, week)
+    return league, lineup.week_value(mine, week, weekly), len(weekly)
+
+
+@mcp.tool()
+def set_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
+    """The lineup that maximises expected points this week, and why each slot.
+
+    Every starter carries `week_points`, the `basis` that number came from, the
+    slot he fills, and the alternatives you passed over with what each would
+    cost. Bye and an ESPN out-status are zero whatever else is known, because a
+    player who does not play scores nothing; QUESTIONABLE is not out, since by
+    Friday it describes half the league.
+
+    **Read the basis.** ESPN publishes a weekly projection for well under half
+    the player pool, so most rows are priced from the board's per-game rate
+    instead, and the `basis` on each row says which. A lineup built from two
+    bases is still the best lineup available, but the margins between two players
+    priced differently are worth less than the margins between two priced alike.
+
+    `versus_espn` is the control: this lineup against the one ESPN currently has
+    set on the same roster, as the players to start, the players to bench, and
+    the `gain` in this tool's own valuation. A negative gain means ESPN's lineup
+    is better by this tool's own numbers, and it is reported rather than hidden.
+
+    `unfilled_slots` names starting slots nobody on the roster can fill, and
+    `unplaceable` names roster rows carrying no usable position -- a board defect
+    rather than a set of players to bench.
+
+    **Shape unverified.** No populated ESPN roster has been read yet: the read
+    API withholds rosters until a draft completes, so every field here is parsed
+    against ESPN's documented shape and none of it has met a real one.
+    """
+    from . import lineup, rosters
+
+    try:
+        league, priced, weekly_seen = _lineup_inputs(league_id, week, season)
+    except Exception as exc:
+        return _emit({"error": f"could not read the roster for week {week}: "
+                               f"{type(exc).__name__}: {exc}"}, indent=2)
+
+    starters, bench = lineup.starting_lineup(priced, league,
+                                             value=lineup.WEEK_VALUE)
+    slots = []
+    for _, row in starters.iterrows():
+        alts = lineup.slot_alternatives(row, bench, league, lineup.WEEK_VALUE)
+        slots.append({
+            "slot": str(row[lineup.SLOT_COLUMN]),
+            "player": str(row["name"]),
+            "position": str(row["position"]),
+            "week_points": round(float(row[lineup.WEEK_VALUE]), 1),
+            "basis": str(row[lineup.WEEK_BASIS]),
+            "why": lineup.why_started(row, alts, lineup.WEEK_VALUE),
+            "alternatives": alts,
+        })
+    return _emit(_jsonable({
+        "week": week, "season": season,
+        "projected_points": round(float(starters[lineup.WEEK_VALUE].sum()), 1)
+        if not starters.empty else 0.0,
+        "lineup": slots,
+        "bench": [{"player": str(r["name"]), "position": str(r["position"]),
+                   "week_points": round(float(r[lineup.WEEK_VALUE]), 1),
+                   "basis": str(r[lineup.WEEK_BASIS])}
+                  for _, r in bench.iterrows()],
+        "unfilled_slots": lineup.unfilled_slots(starters, league),
+        "unplaceable": [str(n) for n in lineup.unplaceable(priced).get("name", [])],
+        "versus_espn": lineup.against_espn(starters, rosters.started(priced),
+                                           lineup.WEEK_VALUE),
+        # How many of the pool ESPN gave a weekly projection for, so the reader
+        # can see how much of the lineup rests on the fallback.
+        "espn_weekly_projections_seen": weekly_seen,
+        "shape": rosters.UNVERIFIED_SHAPE,
+    }), indent=2)
 
 
 @mcp.tool()

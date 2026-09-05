@@ -241,6 +241,162 @@ class TestDuplicateIndexLabels:
         assert sorted(bench["name"]) == ["WR3", "WR4", "WR5"]
 
 
+class TestWeekValue:
+    """What a player is worth in one week, and on what basis."""
+
+    def _rows(self):
+        return pd.DataFrame([
+            {"name": "Bye Man", "position": "WR", "espn_id": "1", "bye_week": 9,
+             "espn_injury": None, "adj_ppg": 15.0, "proj_points": 255.0},
+            {"name": "Out Man", "position": "WR", "espn_id": "2", "bye_week": 5,
+             "espn_injury": "OUT", "adj_ppg": 14.0, "proj_points": 238.0},
+            {"name": "Doubtful Man", "position": "WR", "espn_id": "6", "bye_week": 5,
+             "espn_injury": "DOUBTFUL", "adj_ppg": 14.0, "proj_points": 238.0},
+            {"name": "Questionable Man", "position": "WR", "espn_id": "3",
+             "bye_week": 5, "espn_injury": "QUESTIONABLE", "adj_ppg": 13.0,
+             "proj_points": 221.0},
+            {"name": "Per Game Man", "position": "WR", "espn_id": "4", "bye_week": 5,
+             "espn_injury": None, "adj_ppg": 12.0, "proj_points": 204.0},
+            {"name": "Season Only", "position": "WR", "espn_id": "5", "bye_week": 5,
+             "espn_injury": None, "adj_ppg": float("nan"), "proj_points": 170.0},
+        ])
+
+    def test_a_bye_is_zero_whatever_else_is_known(self):
+        out = lineup.week_value(self._rows(), 9, {"1": 18.0}).set_index("name")
+        assert float(out.loc["Bye Man", lineup.WEEK_VALUE]) == 0.0
+        assert out.loc["Bye Man", lineup.WEEK_BASIS] == lineup.BASIS_BYE
+
+    def test_an_out_status_is_zero_even_with_a_projection(self):
+        out = lineup.week_value(self._rows(), 9, {"2": 18.0}).set_index("name")
+        assert float(out.loc["Out Man", lineup.WEEK_VALUE]) == 0.0
+        assert out.loc["Out Man", lineup.WEEK_BASIS] == lineup.BASIS_OUT
+        assert float(out.loc["Doubtful Man", lineup.WEEK_VALUE]) == 0.0
+
+    def test_questionable_is_not_out(self):
+        # By Friday it describes half the league; benching on it is a coin flip.
+        out = lineup.week_value(self._rows(), 9, {}).set_index("name")
+        assert float(out.loc["Questionable Man", lineup.WEEK_VALUE]) == 13.0
+
+    def test_espn_weekly_wins_when_the_pull_carried_one(self):
+        out = lineup.week_value(self._rows(), 9, {"4": 21.5}).set_index("name")
+        assert float(out.loc["Per Game Man", lineup.WEEK_VALUE]) == 21.5
+        assert out.loc["Per Game Man", lineup.WEEK_BASIS] == lineup.BASIS_ESPN
+
+    def test_the_per_game_rate_is_the_fallback_and_says_so(self):
+        # 639 of 1036 players in the live pull have no weekly projection, so
+        # this is the ordinary path rather than the exception.
+        out = lineup.week_value(self._rows(), 9, {}).set_index("name")
+        assert float(out.loc["Per Game Man", lineup.WEEK_VALUE]) == 12.0
+        assert out.loc["Per Game Man", lineup.WEEK_BASIS] == lineup.BASIS_PER_GAME
+
+    def test_the_season_projection_is_the_last_resort(self):
+        out = lineup.week_value(self._rows(), 9, {}).set_index("name")
+        assert float(out.loc["Season Only", lineup.WEEK_VALUE]) == 10.0
+        assert out.loc["Season Only", lineup.WEEK_BASIS] == lineup.BASIS_SEASON
+
+    def test_every_row_carries_a_basis(self):
+        out = lineup.week_value(self._rows(), 9, {})
+        assert out[lineup.WEEK_BASIS].notna().all()
+        assert (out[lineup.WEEK_BASIS].astype(str).str.len() > 0).all()
+
+    def test_an_empty_roster_gets_the_columns_anyway(self):
+        out = lineup.week_value(pd.DataFrame(), 9, {})
+        assert lineup.WEEK_VALUE in out.columns and lineup.WEEK_BASIS in out.columns
+
+
+class TestWeeklyLineupUsesTheWeeklyNumber:
+    def test_a_bye_week_starter_loses_his_slot_to_the_bench(self):
+        # The whole point of pricing a week rather than a season: the best
+        # receiver on the roster is worth nothing in his bye week.
+        rows = _rows([("WR1", "WR", 300.0), ("WR2", "WR", 290.0),
+                      ("WR3", "WR", 280.0), ("RB1", "RB", 260.0),
+                      ("RB2", "RB", 250.0), ("QB1", "QB", 240.0),
+                      ("TE1", "TE", 220.0), ("K1", "K", 120.0),
+                      ("DST1", "DST", 110.0)])
+        rows["bye_week"] = [9, 5, 5, 5, 5, 5, 5, 5, 5]
+        rows["adj_ppg"] = rows["proj_points"] / 17.0
+        rows["espn_injury"] = None
+        priced = lineup.week_value(rows, 9, {})
+        starters, bench = lineup.starting_lineup(priced, _league(),
+                                                 value=lineup.WEEK_VALUE)
+        assert "WR1" in set(bench["name"])
+        assert {"WR2", "WR3"} <= set(starters["name"])
+
+
+class TestAgainstEspn:
+    def test_the_swaps_and_the_gain_are_reported(self):
+        mine = pd.DataFrame([{"name": "A", lineup.WEEK_VALUE: 20.0},
+                             {"name": "B", lineup.WEEK_VALUE: 10.0}])
+        theirs = pd.DataFrame([{"name": "B", lineup.WEEK_VALUE: 10.0},
+                               {"name": "C", lineup.WEEK_VALUE: 5.0}])
+        out = lineup.against_espn(mine, theirs, lineup.WEEK_VALUE)
+        assert [s["player"] for s in out["start"]] == ["A"]
+        assert [s["player"] for s in out["bench"]] == ["C"]
+        assert out["gain"] == 15.0
+
+    def test_an_identical_lineup_gains_nothing_and_says_so(self):
+        same = pd.DataFrame([{"name": "A", lineup.WEEK_VALUE: 20.0}])
+        out = lineup.against_espn(same, same, lineup.WEEK_VALUE)
+        assert out["start"] == [] and out["bench"] == [] and out["gain"] == 0.0
+
+    def test_no_espn_lineup_is_said_rather_than_scored_as_zero(self):
+        mine = pd.DataFrame([{"name": "A", lineup.WEEK_VALUE: 20.0}])
+        out = lineup.against_espn(mine, mine.iloc[0:0], lineup.WEEK_VALUE)
+        assert out["espn_lineup_known"] is False
+        assert out["gain"] is None
+
+
+class TestAlternativesAndWhy:
+    def test_a_base_slot_offers_only_that_position(self):
+        rows = _rows(UNBALANCED)
+        rows[lineup.WEEK_VALUE] = rows["proj_points"] / 17.0
+        starters, bench = lineup.starting_lineup(rows, _league(),
+                                                 value=lineup.WEEK_VALUE)
+        k = starters[starters["position"] == "K"].iloc[0]
+        assert lineup.slot_alternatives(k, bench, _league(), lineup.WEEK_VALUE) == []
+        wr = starters[starters["position"] == "WR"].iloc[0]
+        alts = lineup.slot_alternatives(wr, bench, _league(), lineup.WEEK_VALUE)
+        assert [a["player"] for a in alts] == ["WR3", "WR4", "WR5"]
+
+    def test_every_alternative_costs_something(self):
+        # If one were positive the lineup would not be the best one, so the sign
+        # is a check on starting_lineup rather than decoration.
+        rows = _rows(UNBALANCED)
+        rows[lineup.WEEK_VALUE] = rows["proj_points"] / 17.0
+        starters, bench = lineup.starting_lineup(rows, _league(),
+                                                 value=lineup.WEEK_VALUE)
+        for _, s in starters.iterrows():
+            for alt in lineup.slot_alternatives(s, bench, _league(),
+                                                lineup.WEEK_VALUE):
+                assert alt["costs"] <= 0, (s["name"], alt)
+
+    def test_the_why_names_the_slot_the_basis_and_the_margin(self):
+        rows = _rows(UNBALANCED)
+        priced = lineup.week_value(rows.assign(espn_injury=None,
+                                               bye_week=5,
+                                               adj_ppg=rows["proj_points"] / 17.0),
+                                   9, {})
+        starters, bench = lineup.starting_lineup(priced, _league(),
+                                                 value=lineup.WEEK_VALUE)
+        wr = starters[starters["position"] == "WR"].iloc[0]
+        why = lineup.why_started(
+            wr, lineup.slot_alternatives(wr, bench, _league(), lineup.WEEK_VALUE),
+            lineup.WEEK_VALUE)
+        assert "expected in WR" in why
+        assert lineup.BASIS_PER_GAME in why
+        assert "more than" in why
+
+    def test_a_sole_eligible_player_is_told_he_is_the_only_one(self):
+        rows = _rows(UNBALANCED)
+        rows[lineup.WEEK_VALUE] = rows["proj_points"] / 17.0
+        rows[lineup.WEEK_BASIS] = lineup.BASIS_PER_GAME
+        starters, bench = lineup.starting_lineup(rows, _league(),
+                                                 value=lineup.WEEK_VALUE)
+        k = starters[starters["position"] == "K"].iloc[0]
+        why = lineup.why_started(k, [], lineup.WEEK_VALUE)
+        assert "the only one you have" in why
+
+
 class TestDroppable:
     def test_never_offers_a_player_whose_slot_nobody_else_can_fill(self):
         # The waiver defect, stated as the property that stops it.

@@ -21,6 +21,8 @@ view for `tradeBlock` and `waiverRank` and the wrong one for players.
 """
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import requests
 
@@ -166,6 +168,69 @@ def fetch_roster_teams(league_id: str, season: int = CURRENT_SEASON,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
     resp.raise_for_status()
     return resp.json().get("teams") or []
+
+
+def my_team_id(teams: list[dict], swid: str | None = None) -> int | None:
+    """The team owned by ESPN_SWID, or None when it owns none in this league.
+
+    The same owner match `board.sync_espn` makes, braces stripped from both
+    sides because ESPN wraps them in the cookie and not always in the payload.
+    None rather than a raise: a caller reading every roster does not need to own
+    one, and only the caller knows whether not owning a team is a failure.
+    """
+    target = (swid or os.environ.get("ESPN_SWID") or "").strip("{}").upper()
+    if not target:
+        return None
+    for team in teams:
+        owners = [str(o).strip("{}").upper() for o in (team.get("owners") or [])]
+        if target in owners and team.get("id") is not None:
+            return int(team["id"])
+    return None
+
+
+def fetch_weekly_projections(league_id: str, season: int = CURRENT_SEASON,
+                             week: int | None = None, swid: str | None = None,
+                             espn_s2: str | None = None) -> dict[str, float]:
+    """ESPN's own projection for one week, keyed by player id as a string.
+
+    `kona_player_info` carries `(statSourceId 1, statSplitTypeId 1)` rows whose
+    `scoringPeriodId` is the week, but only for the period the pull asks for --
+    one capture holds one week, so pricing week 9 means requesting week 9. The
+    live pull carried a weekly row for 397 of 1036 players, which is why every
+    caller of this needs a stated fallback rather than treating a miss as zero.
+    """
+    params: dict[str, str] = {"view": "kona_player_info"}
+    if week:
+        params["scoringPeriodId"] = str(int(week))
+    resp = requests.get(espn_league_url(league_id, season), params=params,
+                        cookies=espn_cookies(swid, espn_s2), timeout=30,
+                        headers={"User-Agent": "ffdraft-mcp/1.0",
+                                 "X-Fantasy-Source": "kona"})
+    resp.raise_for_status()
+    return weekly_projections(resp.json().get("players") or [], week)
+
+
+def weekly_projections(players: list[dict], week: int | None) -> dict[str, float]:
+    """The pure half: player id -> projected points for `week`.
+
+    Only `statSourceId` 1 (projected, not actual) and `statSplitTypeId` 1 (a
+    single scoring period, not a season total) count. Taking a season row here
+    would hand the lineup a number seventeen times too large without failing.
+    """
+    out: dict[str, float] = {}
+    for entry in players:
+        player = (entry.get("player") or {})
+        pid = player.get("id", entry.get("id"))
+        if pid is None:
+            continue
+        for stat in player.get("stats") or []:
+            if (stat.get("statSourceId") == 1 and stat.get("statSplitTypeId") == 1
+                    and (week is None or stat.get("scoringPeriodId") == week)):
+                total = stat.get("appliedTotal")
+                if total is not None:
+                    out[str(pid)] = float(total)
+                break
+    return out
 
 
 def rosters_by_team(teams: list[dict], board: pd.DataFrame,

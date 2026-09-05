@@ -16,10 +16,17 @@ superflex because its settings said so.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pandas as pd
 
 from .board import is_position
-from .config import LeagueSettings
+from .config import OUT_STATUSES, LeagueSettings
+
+# SEASON_GAMES is imported rather than restated: I wrote `= 17` here first,
+# which would have been a second copy of the number `roles` already owns, in the
+# same hour I was objecting to exactly that. A heavier import is worth it.
+from .roles import SEASON_GAMES
 
 # The slot a player fills, named on each starter. FLEX and superflex say so
 # rather than reporting the player's own position, because "your third receiver
@@ -128,6 +135,82 @@ def starting_lineup(rows: pd.DataFrame, league: LeagueSettings,
     return starters, bench
 
 
+WEEK_VALUE = "week_points"
+WEEK_BASIS = "week_points_basis"
+
+# Why a player is worth what he is worth this week, per row. A fallback applied
+# silently is #39's defect in a new place: the number is not wrong, it just
+# cannot be told apart from a measured one. 639 of the 1036 players in the live
+# pull carry no weekly projection at all, so the fallback is the ordinary case
+# here rather than the exception.
+BASIS_BYE = "bye week: he does not play"
+BASIS_OUT = "ESPN has him out"
+BASIS_ESPN = "ESPN's projection for this week"
+BASIS_PER_GAME = "the board's per-game rate; ESPN has no weekly projection"
+BASIS_SEASON = "the board's season projection spread over the season"
+BASIS_NONE = "nothing to price him with"
+
+
+def week_value(rows: pd.DataFrame, week: int,
+               espn_weekly: Mapping[str, float] | None = None) -> pd.DataFrame:
+    """What each player is worth in `week`, and on what basis, per row.
+
+    Order: a bye or an ESPN out-status is zero whatever else is known, because
+    a player who does not play scores nothing and no projection changes that.
+    Then ESPN's own weekly number if the pull carried one for him, then the
+    board's per-game rate, then the season projection spread over the season.
+
+    `OUT_STATUSES` comes from `config` -- the same list `waivers` uses, and
+    deliberately not including QUESTIONABLE, which by Friday describes half the
+    league and would bench a starter on a coin flip.
+
+    Returns the frame with two columns added rather than a bare series, because
+    the basis has to travel with the number. A caller that sees only the value
+    cannot tell a measured week from a season average divided by seventeen.
+    """
+    out = rows.copy()
+    if out.empty:
+        out[WEEK_VALUE] = pd.Series(dtype=float)
+        out[WEEK_BASIS] = pd.Series(dtype="object")
+        return out
+
+    weekly = {str(k): float(v) for k, v in (espn_weekly or {}).items()}
+    ids = (out["espn_id"].astype("object") if "espn_id" in out.columns
+           else pd.Series([None] * len(out), index=out.index))
+    bye = (pd.to_numeric(out["bye_week"], errors="coerce")
+           if "bye_week" in out.columns else pd.Series(float("nan"), index=out.index))
+    status = (out["espn_injury"].astype("object") if "espn_injury" in out.columns
+              else pd.Series([None] * len(out), index=out.index))
+    per_game = (pd.to_numeric(out["adj_ppg"], errors="coerce")
+                if "adj_ppg" in out.columns else pd.Series(float("nan"), index=out.index))
+    season = (pd.to_numeric(out["proj_points"], errors="coerce")
+              if "proj_points" in out.columns
+              else pd.Series(float("nan"), index=out.index))
+
+    values, bases = [], []
+    for i in out.index:
+        if pd.notna(bye.at[i]) and int(bye.at[i]) == int(week):
+            values.append(0.0), bases.append(BASIS_BYE)
+        elif is_out(status.at[i]):
+            values.append(0.0), bases.append(BASIS_OUT)
+        elif str(ids.at[i]) in weekly:
+            values.append(weekly[str(ids.at[i])]), bases.append(BASIS_ESPN)
+        elif pd.notna(per_game.at[i]):
+            values.append(float(per_game.at[i])), bases.append(BASIS_PER_GAME)
+        elif pd.notna(season.at[i]):
+            values.append(float(season.at[i]) / SEASON_GAMES), bases.append(BASIS_SEASON)
+        else:
+            values.append(0.0), bases.append(BASIS_NONE)
+    out[WEEK_VALUE] = values
+    out[WEEK_BASIS] = bases
+    return out
+
+
+def is_out(status: object) -> bool:
+    """Whether ESPN's injury status means he does not play."""
+    return isinstance(status, str) and status.upper() in OUT_STATUSES
+
+
 def unfilled_slots(starters: pd.DataFrame, league: LeagueSettings) -> dict[str, int]:
     """Starting slots the roster could not fill, by slot.
 
@@ -142,6 +225,83 @@ def unfilled_slots(starters: pd.DataFrame, league: LeagueSettings) -> dict[str, 
             else starters[SLOT_COLUMN].value_counts().to_dict())
     return {slot: n - int(have.get(slot, 0)) for slot, n in want.items()
             if n - int(have.get(slot, 0)) > 0}
+
+
+def slot_alternatives(starter: pd.Series, bench: pd.DataFrame,
+                      league: LeagueSettings, value: str) -> list[dict]:
+    """Who else could fill this starter's slot, and what it would cost.
+
+    Eligibility is the slot's, not the player's: a FLEX starter's alternatives
+    are everyone flex-eligible on the bench, while a K starter's are the other
+    kickers. `costs` is negative because these are alternatives to a lineup that
+    already maximises the total -- if any were positive the lineup would be
+    wrong, which makes the sign a check on the caller rather than decoration.
+    """
+    slot = str(starter.get(SLOT_COLUMN) or "")
+    if slot == FLEX_SLOT:
+        eligible = tuple(league.flex_eligible)
+    elif slot == SUPERFLEX_SLOT:
+        eligible = tuple(league.flex_eligible) + ("QB",)
+    else:
+        eligible = (slot,)
+    if bench.empty or "position" not in bench.columns:
+        return []
+    chunk = bench[bench["position"].isin(eligible)]
+    mine = float(starter.get(value) or 0.0)
+    return [{"player": str(r["name"]),
+             "week_points": round(float(r.get(value) or 0.0), 1),
+             "costs": round(float(r.get(value) or 0.0) - mine, 1)}
+            for _, r in chunk.sort_values(value, ascending=False).iterrows()]
+
+
+def why_started(row: pd.Series, alternatives: list[dict], value: str) -> str:
+    """Why this player is in this slot, in the numbers, direction spelled out.
+
+    The #39 pattern: never leave the comparison to a minus sign. "3.2 more than"
+    and "the only one eligible" are different reasons to start somebody and the
+    reader should not have to work out which one applies.
+    """
+    points = float(row.get(value) or 0.0)
+    basis = str(row.get(WEEK_BASIS) or "")
+    head = f"{points:.1f} expected in {str(row.get(SLOT_COLUMN))} ({basis})"
+    if not alternatives:
+        return f"{head}; the only one you have who can fill the slot"
+    best = alternatives[0]
+    if points <= 0:
+        return (f"{head}; {best['player']} is the alternative at "
+                f"{best['week_points']:.1f} and nobody here scores")
+    return (f"{head}; {best['week_points']:.1f} more than "
+            f"{best['player']}" if best["costs"] > 0 else
+            f"{head}; {abs(best['costs']):.1f} more than the next best, "
+            f"{best['player']} at {best['week_points']:.1f}")
+
+
+def against_espn(mine: pd.DataFrame, espn_started: pd.DataFrame,
+                 value: str) -> dict:
+    """This lineup against the one ESPN currently has set, on the same roster.
+
+    The control the task asks for. Two lineups over one roster differ only in
+    who is in and who is out, so the comparison is set arithmetic plus the
+    points those swaps are worth -- and the points are in OUR valuation, since
+    that is the number being defended. A positive `gain` is what this lineup
+    claims over ESPN's; if it is negative the recommendation is wrong and the
+    field says so rather than being omitted.
+    """
+    if espn_started.empty:
+        return {"espn_lineup_known": False, "bench": [], "start": [], "gain": None,
+                "note": "ESPN has no lineup set for this week yet"}
+    ours, theirs = set(mine["name"]), set(espn_started["name"])
+    points = {str(r["name"]): float(r.get(value) or 0.0)
+              for _, r in pd.concat([mine, espn_started]).iterrows()}
+    start = sorted(ours - theirs)
+    bench = sorted(theirs - ours)
+    return {"espn_lineup_known": True,
+            "start": [{"player": p, "week_points": round(points.get(p, 0.0), 1)}
+                      for p in start],
+            "bench": [{"player": p, "week_points": round(points.get(p, 0.0), 1)}
+                      for p in bench],
+            "gain": round(sum(points.get(p, 0.0) for p in start)
+                          - sum(points.get(p, 0.0) for p in bench), 1)}
 
 
 def droppable(rows: pd.DataFrame, league: LeagueSettings,
