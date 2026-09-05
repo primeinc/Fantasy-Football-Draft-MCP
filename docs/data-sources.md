@@ -90,6 +90,28 @@ The draft room gets its state over a websocket. `espn_live.py` speaks it.
    `LEFT <team> <swid> 2` then the socket drops without a close frame; a browser shows
    "Duplicate Connection". `watch.py` treats that LEFT as a pause signal.
 
+### Draft history: what ESPN keeps
+
+Enumerated 2026-09-04 from the kona bundles (draft, draftrecap, history pages) and the
+read API. No surface carries a timestamp per pick or a replay of room presence.
+
+| surface | has | lacks |
+|---|---|---|
+| socket commands (all 19 literals in the communicator) | ADJUST ASSIGN AUTODRAFT AUTO_NOMINATION BID CENSOR CHAT DRAFT_LIST JOIN LEAVE NOMINATE PAUSE PING PRENOMINATE RESET ROUTE SELECT SET UNDO | any history/replay request |
+| INIT snapshot | pick number, team, player, slot, keeper, autodraft type, selector profile id (0 in practice) | timestamps |
+| `mDraftDetail`, `kona_draft_detail` | 13 pick keys: autoDraftTypeId bidAmount id keeper lineupSlotId nominatingTeamId overallPickNumber playerId reservedForKeeper roundId roundPickNumber teamId tradeLocked | timestamps; `playerId` -1 mid-draft |
+| `draftInit` | pick `id`, `teamId` only | everything else |
+| draft recap page | `mDraftDetail`, `mSettings`, `mTeam` | anything beyond those |
+| `/communication/?view=kona_league_communication` | complete feed (count header == topics returned); ACTIVITY_SETTINGS and ACTIVITY_STATUS topics with ms dates | pick events, at least while the draft runs |
+| room chat | replayed on every join with ms timestamps | nothing |
+
+Open: the client also knows `ACTIVITY_TRANSACTIONS` and `ACTIVITY_SCHEDULE` topic types;
+none exist in this league yet. Whether completed drafts post picks as transactions is
+untested until a draft completes.
+
+Pick timing and presence over time exist only in a client that was connected; the watch
+records both from connect onward.
+
 The SSE variant `https://fantasydraft.espn.com/game-1/league-{league_id}/sse/JOIN?...`
 answers `ERROR 1 No team with ID {team_id} found` for the same parameters.
 
