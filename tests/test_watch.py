@@ -84,6 +84,49 @@ def test_other_teams_leaving_does_not_pause(tmp_path, monkeypatch):
     assert w.bumped is False
 
 
+def test_select_sends_and_resolves_on_own_selected(tmp_path, monkeypatch):
+    w, events = _watch(tmp_path, monkeypatch)
+    asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+    sent = []
+
+    class Ws:
+        async def send(self, text):
+            sent.append(text)
+            # ESPN answers on the same socket; feed it back as the server would.
+            await w.handle_line("SELECTED 3 4429795 2")
+
+    async def go():
+        w.ws = Ws()
+        return await w.select(4429795, timeout=2)
+
+    result = asyncio.run(go())
+    assert sent == ["SELECT 4429795\n"]
+    assert result == {"overall": 115, "player_id": 4429795, "name": "Jahmyr Gibbs"}
+    assert w.state.picks[-1]["slot"] == 4 and w.own_pick is None
+
+
+def test_select_surfaces_server_error(tmp_path, monkeypatch):
+    w, _ = _watch(tmp_path, monkeypatch)
+    asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+
+    class Ws:
+        async def send(self, text):
+            await w.handle_line("ERROR 1 Not+your+turn")
+
+    async def go():
+        w.ws = Ws()
+        return await w.select(4429795, timeout=2)
+
+    with pytest.raises(RuntimeError, match="Not\\+your\\+turn"):
+        asyncio.run(go())
+
+
+def test_select_without_connection_raises(tmp_path, monkeypatch):
+    w, _ = _watch(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="not connected"):
+        asyncio.run(w.select(1))
+
+
 def test_error_line_raises(tmp_path, monkeypatch):
     w, _ = _watch(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="No\\+team"):

@@ -7,6 +7,7 @@ here owns the socket; `server.watch_draft` supplies the notify callable.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from collections.abc import Awaitable, Callable
 
@@ -15,6 +16,8 @@ from websockets.asyncio.client import connect
 from . import board as bd
 from . import espn_live, model
 from .config import LeagueSettings
+
+log = logging.getLogger(__name__)
 
 Notify = Callable[[str, dict[str, str]], Awaitable[None]]
 
@@ -47,6 +50,9 @@ class DraftWatch:
         self.ready = asyncio.Event()
         # `LEFT <team> <swid> 2` for our own team precedes a duplicate-connection close.
         self.bumped = False
+        self.ws = None
+        # Set when a SELECTED for our own team arrives after select(); carries the pick.
+        self.own_pick: asyncio.Future | None = None
 
     # -- socket loop
 
@@ -60,6 +66,8 @@ class DraftWatch:
                 raise
             except Exception as exc:
                 self.connected = False
+                self.ws = None
+                log.exception("draft watch session for league %s ended", self.league_id)
                 if self.bumped:
                     # ESPN allows one draft-room connection per team. The user opened
                     # the room elsewhere; reconnecting would only throw them out again.
@@ -96,6 +104,7 @@ class DraftWatch:
         async with connect(uri, additional_headers=headers, user_agent_header="Mozilla/5.0",
                            open_timeout=15) as ws:
             self.connected = True
+            self.ws = ws
             while True:
                 try:
                     msg = await asyncio.wait_for(ws.recv(), timeout=PING_SECONDS)
@@ -138,6 +147,8 @@ class DraftWatch:
             name = self._name(pid)
             self.state.record(name, overall, self.slot_of.get(team_id))
             self.picks_seen += 1
+            if team_id == self.team_id and self.own_pick and not self.own_pick.done():
+                self.own_pick.set_result({"overall": overall, "player_id": pid, "name": name})
             await self._announce_pick(overall, team_id, name)
         elif kind == "UNDONE" and len(fields) >= 2:
             keep = int(fields[1])
@@ -150,7 +161,24 @@ class DraftWatch:
                     == self.swid.strip("{}").upper() and fields[3] == "2"):
                 self.bumped = True
         elif kind == "ERROR":
+            if self.own_pick and not self.own_pick.done():
+                self.own_pick.set_exception(RuntimeError(line))
+                return
             raise RuntimeError(line)
+
+    # -- actions
+
+    async def select(self, player_id: int, timeout: float = 10.0) -> dict:
+        """Make our pick: `SELECT <playerId>`, then wait for the server's SELECTED
+        for our team (or its ERROR line). Only valid while connected and on the clock."""
+        if self.ws is None:
+            raise RuntimeError("draft watch is not connected")
+        self.own_pick = asyncio.get_running_loop().create_future()
+        await self.ws.send(f"SELECT {player_id}\n")
+        try:
+            return await asyncio.wait_for(self.own_pick, timeout=timeout)
+        finally:
+            self.own_pick = None
 
     async def _announce_pick(self, overall: int, team_id: int, name: str) -> None:
         s = self.state.summary()

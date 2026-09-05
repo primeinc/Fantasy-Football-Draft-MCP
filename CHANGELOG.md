@@ -20,6 +20,10 @@ All notable changes to this project. Format follows
   recommendation once the user is within three picks. The server declares the
   `claude/channel` capability on both handshake eras; the session must start with
   `claude --dangerously-load-development-channels server:fantasy-draft`.
+  ESPN allows one draft-room connection per team, so the watch pauses when the
+  browser room is opened instead of fighting it.
+- `make_pick`: draft a player over the watch's socket (`SELECT <playerId>`), so
+  the browser room is not needed at all.
 - `docs/data-sources.md`: every external endpoint, fields used, state at
   2026-09-04. `just surfaces` re-probes them.
 

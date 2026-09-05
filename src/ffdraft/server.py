@@ -1196,9 +1196,10 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
     """Hold the ESPN draft room open and push every pick into this session as it
     happens, with a recommendation once you are within three picks of the clock.
 
-    Needs ESPN_SWID and ESPN_S2 and a team you own in the league. The browser
-    draft room shows a "Duplicate Connection" dialog when this connects; it
-    reconnects on its own. Events reach Claude only when the session was started
+    Needs ESPN_SWID and ESPN_S2 and a team you own in the league. ESPN allows one
+    draft-room connection per team: starting this closes the browser draft room
+    ("Duplicate Connection"), and opening the room again pauses the watch. Use
+    make_pick to draft without the room. Events reach Claude only when the session was started
     with `claude --dangerously-load-development-channels server:<this server's name>`;
     otherwise they are dropped and the board is still kept current for
     who_should_i_pick and draft_status. One watch per league; calling again
@@ -1206,33 +1207,38 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
     """
     import asyncio
     import os
+    import traceback
+
+    from mcp import types as _types
 
     from . import watch
 
     swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
     if not (swid and espn_s2):
         return json.dumps({"error": "watch_draft needs ESPN_SWID and ESPN_S2"})
-    ctx_info = bd.espn_league_context(league_id, season, swid, espn_s2)
-    if ctx_info["my_team_id"] is None:
-        return json.dumps({"error": "no team owned by ESPN_SWID in this league"})
+    try:
+        ctx_info = bd.espn_league_context(league_id, season, swid, espn_s2)
+        if ctx_info["my_team_id"] is None:
+            return json.dumps({"error": "no team owned by ESPN_SWID in this league"})
+        league, _ = _settings()
+        board_df = _build_board()
+        # The session outlives this request; a notification with no related request
+        # id rides the connection's standalone channel.
+        session = ctx.session
+        channel_event = _types.Notification[dict[str, Any], str]
 
-    from mcp import types as _types
+        async def notify(content: str, meta: dict[str, str]) -> None:
+            await session.send_notification(channel_event(
+                method="notifications/claude/channel",
+                params={"content": content, "meta": meta}))
 
-    league, _ = _settings()
-    board_df = _build_board()
-    # The session outlives this request; a notification with no related request
-    # id rides the connection's standalone channel.
-    session = ctx.session
-    channel_event = _types.Notification[dict[str, Any], str]
-
-    async def notify(content: str, meta: dict[str, str]) -> None:
-        await session.send_notification(channel_event(
-            method="notifications/claude/channel",
-            params={"content": content, "meta": meta}))
-
-    await stop_watch(league_id)
-    w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
-                         league, board_df, notify)
+        await stop_watch(league_id)
+        w = watch.DraftWatch(league_id, season, int(ctx_info["my_team_id"]), swid, espn_s2,
+                             league, board_df, notify)
+    except Exception as exc:
+        # The MCP SDK hides tool tracebacks behind "Error executing tool".
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}",
+                           "traceback": traceback.format_exc()})
     task = asyncio.create_task(w.run(), name=f"draft-watch-{league_id}")
     _WATCHES[league_id] = (w, task)
     return json.dumps({
@@ -1240,6 +1246,46 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
         "draft_slot": ctx_info["draft_slot"], "league_name": ctx_info["league_name"],
         "note": "picks arrive as channel messages; stop with stop_watch",
     }, indent=2)
+
+
+@mcp.tool()
+async def make_pick(league_id: str, player_name: str) -> str:
+    """Make your pick in the ESPN draft over the running watch's socket.
+
+    Sends `SELECT <playerId>` exactly as the draft room does and waits for
+    ESPN's acceptance. Needs an active watch_draft for the league, and it must
+    be your turn. Irreversible once ESPN accepts it. Confirm the player with the
+    user before calling this.
+    """
+    import traceback
+
+    entry = _WATCHES.get(league_id)
+    if entry is None:
+        return json.dumps({"error": "no active watch for this league; call watch_draft first"})
+    w, _task = entry
+    if not w.connected:
+        return json.dumps({"error": "draft watch is not connected right now"})
+    b = _build_board()
+    row = bd.match_player(player_name, b)
+    if row is None:
+        return json.dumps({"error": f"no board match for '{player_name}'"})
+    key = bd.norm_name(row["name"])
+    espn_id = next((pid for pid, nm in w.espn_map.items() if bd.norm_name(nm) == key), None)
+    if espn_id is None:
+        return json.dumps({"error": f"no ESPN id for '{row['name']}' in the crosswalk"})
+    s = w.state.summary()
+    if s["on_the_clock"] != s["my_next_pick"]:
+        return json.dumps({"error": f"not your turn: pick {s['on_the_clock']} is on the clock, "
+                                    f"yours is {s['my_next_pick']}"})
+    try:
+        accepted = await w.select(int(espn_id))
+    except TimeoutError:
+        return json.dumps({"error": "ESPN did not confirm the pick within 10s; check the room"})
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}",
+                           "traceback": traceback.format_exc()})
+    return json.dumps({"picked": accepted, "resolved_from": player_name,
+                       **w.state.summary()}, indent=2)
 
 
 @mcp.tool()

@@ -97,8 +97,14 @@ with `claude --dangerously-load-development-channels server:fantasy-draft`
 team: starting the watch closes your browser draft room with a "Duplicate
 Connection" dialog, and opening the room again pauses the watch (it pushes a
 "paused" event and does not fight back). Keep the room closed while the watch
-runs; open it to pick, then call `watch_draft` again. One watch per league;
-`stop_watch(league_id)` ends it.
+runs and draft with `make_pick`, or open it to pick, then call `watch_draft` again.
+One watch per league; `stop_watch(league_id)` ends it.
+
+### `make_pick`
+ESPN only, needs a running watch and your turn. Sends `SELECT <playerId>` on the
+watch's socket, exactly what the draft room sends, and waits up to ten seconds
+for ESPN's `SELECTED`. Irreversible once accepted. Claude confirms the player
+with you before calling it.
 
 ### `record_pick` / `undo_pick` / `reset_draft` / `draft_status`
 Manual board management. `record_pick` accepts shorthand.

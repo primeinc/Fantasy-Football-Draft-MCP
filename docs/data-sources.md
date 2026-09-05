@@ -79,7 +79,9 @@ The draft room gets its state over a websocket. `espn_live.py` speaks it.
    binary snapshot (big-endian ints, versioned transcoders) holding league, teams, rosters
    and all 224 pick slots. Then `TOKEN`, `CLOCK phase ms teamId playerId amount`,
    `SELECTED teamId playerId slotId`, `SELECTING teamId secs`, `CHAT`, `JOINED`, `LEFT`,
-   `STATE`, `UNDONE pick`, `PONG`. Client sends `PING <ms>` and `LEAVE`.
+   `STATE`, `UNDONE pick`, `PONG`, `ERROR severity text`. Client sends `PING <ms>`,
+   `LEAVE`, and `SELECT <playerId>` to make its pick (answered by `SELECTED`, or
+   `ERROR` when it is not that team's turn).
 4. Past picks are only in INIT; the server does not replay `SELECTED`. `JOINED`, `LEFT`
    and `CHAT` carry team id, owner SWID and (for chat) a millisecond timestamp, so a
    long-lived listener can log draft-room presence and chat per owner. Not built.
