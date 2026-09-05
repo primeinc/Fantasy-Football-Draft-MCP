@@ -50,6 +50,10 @@ class DraftWatch:
         # ESPN team id -> whether an owner is in the draft room. Seeded from the
         # INIT snapshot's owner flags, then JOINED/LEFT lines.
         self.online: dict[int, bool] = {}
+        # The same flags as the last INIT left them, never mutated afterwards.
+        # `online` answers "who is here now"; presence arithmetic over `lines`
+        # needs "who was already here when the log starts", which is this.
+        self.online_at_init: dict[int, bool] = {}
         # (epoch ms, team id, owner SWID, text), newest last. Room chat only.
         self.chat: list[tuple[int, int, str, str]] = []
         # (epoch ms, team id, "joined"|"left"), newest last, from this connection on.
@@ -166,6 +170,7 @@ class DraftWatch:
             teams = init.league.draft_teams if init.league is not None else []
             self.online = {t.team_id: any(o is not None and o.is_online for o in t.owners)
                            for t in teams if t is not None}
+            self.online_at_init = dict(self.online)
             picks = espn_live.picks_from_init(init)
             self.state.reset()
             for p in picks:

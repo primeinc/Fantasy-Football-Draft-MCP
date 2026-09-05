@@ -1530,6 +1530,36 @@ async def draft_room(league_id: str, chat_limit: int = 10) -> str:
 
 
 @mcp.tool()
+def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
+    """Who was in the ESPN draft room, for how long, and who talked. Per member,
+    by team and owner name: minutes in the room, joins and leaves with each
+    session, messages sent (and the last one), busiest hours in local time,
+    first and last seen, picks made and the seconds each took from the clock
+    starting, plus league activity from the read API. Uses the running watch for
+    `league_id` when there is one, else the dump directory (`dump_dir`, or the
+    newest `espn_dump_*` under the working directory). `table` is the same
+    numbers as plain text and `definitions` says what each number means, which
+    is worth reading: `clock_to_pick` cannot tell an autopick from a person, and
+    `active_hours` counts league activity that `first_seen` deliberately does
+    not. SWIDs are never reported."""
+    from . import roomstats
+
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None:
+        w, _task = entry
+        log = roomstats.from_watch(w)
+    else:
+        root = roomstats.find_dump(dump_dir or ".")
+        if root is None:
+            return json.dumps({"error": "no watch for this league and no espn_dump_* directory; "
+                                        "call watch_draft or dump_draft first, or pass dump_dir"})
+        log = roomstats.from_dump(root)
+    stats = roomstats.room_stats(log)
+    stats["table"] = roomstats.format_table(stats)
+    return json.dumps(stats, indent=2)
+
+
+@mcp.tool()
 def draft_replay(league_id: str = "", picks: int = 0) -> str:
     """Replay every recorded pick through the model for the team that made it:
     the model's choice at that moment, the model's rank of the real pick,
