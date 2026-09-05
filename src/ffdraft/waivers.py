@@ -28,12 +28,50 @@ tool in `server.py` fetches them.
 """
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+import requests
 
 from . import roles
+from .config import CURRENT_SEASON
+
+READS_HOST = "https://lm-api-reads.fantasy.espn.com"
+# The same filter `espn_dump` uses, so the pool here is the pool that dump
+# captured and the field shapes in docs/data-sources.md describe both.
+POOL_FILTER = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS", "ONTEAM"]},
+                           "limit": 2000,
+                           "sortDraftRanks": {"sortPriority": 100, "sortAsc": True,
+                                              "value": "PPR"}}}
+
+
+def fetch_pool_and_settings(league_id: str, season: int = CURRENT_SEASON,
+                            swid: str | None = None,
+                            espn_s2: str | None = None) -> tuple[list[dict], dict]:
+    """The free-agent pool and the league's settings, in one place.
+
+    Two views, because a claim needs both: `kona_player_info` for who is
+    available and `mSettings` for what a claim priority even means here. Split
+    out from the tool so the tool is composition and the network is one function
+    a test can replace.
+    """
+    swid = swid or os.environ.get("ESPN_SWID") or ""
+    espn_s2 = espn_s2 or os.environ.get("ESPN_S2") or ""
+    cookies = {"SWID": swid if swid.startswith("{") else f"{{{swid}}}",
+               "espn_s2": espn_s2} if swid and espn_s2 else {}
+    url = f"{READS_HOST}/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league_id}"
+    headers = {"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona"}
+    pool = requests.get(url, params={"view": "kona_player_info"}, cookies=cookies,
+                        timeout=30,
+                        headers={**headers, "X-Fantasy-Filter": json.dumps(POOL_FILTER)})
+    pool.raise_for_status()
+    settings = requests.get(url, params={"view": "mSettings"}, cookies=cookies,
+                            timeout=30, headers=headers)
+    settings.raise_for_status()
+    return (pool.json().get("players") or []), (settings.json().get("settings") or {})
 
 # What is known about a score's accuracy. A score with no backtest says so in
 # every row it appears in rather than in a docstring nobody reads at 11am on a
@@ -325,7 +363,21 @@ def drop_candidate(bench: pd.DataFrame, league, mine: pd.DataFrame | None = None
     # every head this runs against yet. A frame without the column simply has no
     # stand-ins in it, which is the honest answer for a board that prices
     # everyone it holds.
-    unpriced = bool(worst.get("unpriced", False))
+    #
+    # Reading by name buys four states where an imported constant had two:
+    # absent, np.False_, np.True_, and NaN. A bench assembled from two sources —
+    # one frame carrying the flag, one not — concatenates to object dtype with
+    # NaN in the rows that lacked it, and NaN is truthy, so a bare `bool()`
+    # labels a real board-priced player a stand-in. That inverts what this note
+    # is for: it would tell the user the figure is not a projection of his own
+    # when it is, and a note that fires wrongly teaches the reader to discount
+    # the honest ones. marge, who also caught that it becomes reachable at
+    # exactly the wiring milestone.
+    #
+    # `is True` does not work here either: a real bool column yields `np.True_`,
+    # which is not the Python singleton, so it would silently stop firing on the
+    # path that matters. notna first, then truth.
+    unpriced = bool(pd.notna(worst.get("unpriced")) and worst.get("unpriced"))
     return {
         "player": str(worst["name"]),
         "position": str(worst.get("position")),

@@ -929,6 +929,59 @@ this is what shows it concretely instead of leaving it to speculation.
 ### `resolve_names`
 Check how names resolve before trusting a paste sync. Reports match type per name.
 
+## In season
+
+### `waiver_targets` / `just waivers <week> [league_id] [limit]`
+Who to claim off waivers this week, at what priority, dropping whom. Weeks 1-15.
+The pool is ESPN's `kona_player_info` with ownership; the settings are
+`mSettings`.
+
+A player is on the list for one of two named reasons and `reason` says which:
+his **role moved** — snap share and target share over the last
+`waivers.RECENT_WEEKS` (2) against the `waivers.PRIOR_WEEKS` (3) before them —
+or a **starter ahead of him is out**. The two are listed rather than traded off,
+because trading them off needs a rate nobody has measured. A player with neither
+reason is not a claim and is not listed.
+
+`census` is what makes an empty list readable: `considered`, `with_weekly_usage`,
+`role_moved`, `starter_out`, `claimed`, and a named `status`. A quiet week and a
+broken free-agent pull both produce `claims: []`, and those are the two most
+different answers this tool has; `status` tells them apart rather than leaving
+it to be inferred from a zero.
+
+**Three of the four scores are `unmeasured` and every row says so.** Role
+change, projection lag and contingent value have no backtest, so the ranking is
+by a quantity whose predictive value is unknown; `evidence.role_entropy` alone
+carries a real result. Ordering is role-movers by `role_change` first, then live
+contingencies by `contingent_value` — weight 1 on one term and 0 on the rest,
+which is a stated policy about which question to read first, not a measurement.
+The four numbers stay in the row where a human can override them rather than
+being blended into one score nobody can decompose. What licenses changing that
+is the role-change backtest, not a preference.
+
+`shape` marks `free_agent_pool` and `ownership_move` `unverified-shape`: the
+capture these were written against was taken mid-draft, when ESPN reports every
+player as a free agent, so the split this selects on has not been exercised
+against a real in-season pull.
+
+**Claim priority is a waiver order, not a bid**, when `isUsingAcquisitionBudget`
+is false — which it is in this league. `acquisitionBudget` (100) and
+`minimumBid` are populated and inert beside it, and reading those first is how a
+tool recommends FAAB to a league that does not use it; `faab_bid` is null unless
+FAAB is actually on. **Every claim names a drop**, because `isBenchUnlimited` is
+true while `lineupSlotCounts["20"]` is 6 — the slot count is the fact. The drop
+is the lowest `bench_value` on the roster, which prices the weeks he would
+actually start rather than his projection, and it is checked against ESPN's
+undroppable list (`player.droppable`); a player the pull did not carry is
+offered with `undroppable_checked` false rather than assumed droppable, and a
+bench row the board cannot price says so in `projection_basis`.
+
+`starters_out` reads "is out now", not "changed this week" — detecting a change
+needs last week's statuses and nothing stores them yet, so the claim is the
+weaker one and is labelled as such. `QUESTIONABLE` is deliberately not an out
+status: by Friday it describes half the league and would make every backup a
+handcuff.
+
 ## Environment variables
 
 | Variable | Purpose |

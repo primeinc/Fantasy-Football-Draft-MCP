@@ -162,6 +162,37 @@ All notable changes to this project. Format follows
   disagree about what a week was worth. It returns None rather than zeros when
   the season has no rows, and None rather than raising when the source is
   unavailable.
+**`waiver_targets`: the claim list, wired to a tool that says what it does not know**
+- `waiver_targets(league_id, week)` and `just waivers <week>` (#45). The pool is
+  `kona_player_info` with ownership, the settings are `mSettings`, and the
+  network is one function (`waivers.fetch_pool_and_settings`) so the tool itself
+  is composition and a test replaces the pull whole.
+- Two named reasons, never blended: a role that moved (snap and target share over
+  2 recent weeks against the 3 before them) or a starter who is out. Ordering is
+  weight 1 on `role_change` and 0 on the rest — a stated policy about which
+  question to read first, not a measurement, and the docstring says it that way
+  so the next reader does not mistake it for the absence of a decision. Three of
+  the four scores carry `unmeasured` in **every row**; `role_entropy` carries its
+  real result (0.381/0.529/0.707 MAPE by tercile in 2024, 0.366/0.510/0.704 in
+  2025). No weight from anyone until the role-change backtest lands.
+- The payload leaves through `_emit`. Verified rather than asserted: with
+  sanitising off the fixture week emits a bare `NaN` for `handcuff_for`, which
+  `rank_claims` fills by `.map` and which is therefore missing on every claim
+  that is *not* a handcuff — the ordinary case, not the exotic one. The control
+  test turns sanitising off and requires the break, so the round trip above it
+  cannot quietly go vacuous.
+- Fixture week asserts the three-way discrimination at the tool's exit: the
+  breakout claims on "role moved", the injury handcuff on "starter out" with
+  `handcuff_for` naming his starter, and the noise mover — 28 points on flat
+  usage — is not a claim at all. Both claims name the same drop and priorities
+  come out 1, 2 with `faab_bid` null.
+- The traps are in the docstring because they are the ones a reader would
+  otherwise walk into: `isUsingAcquisitionBudget` is false here while
+  `acquisitionBudget` (100) and `minimumBid` sit populated and inert beside it,
+  so priority is a **waiver order and not a bid**; and `isBenchUnlimited` is
+  true while `lineupSlotCounts["20"]` is 6, so the slot count is the fact and
+  **every claim names a drop**.
+- A failed pull returns an error payload naming the exception, not a traceback.
 
 **The recommendation says which way its own numbers point**
 - Incident (#39): at pick 132 `who_should_i_pick` reported

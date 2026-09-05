@@ -1899,6 +1899,83 @@ async def draft_room(league_id: str, chat_limit: int = 10) -> str:
     return _emit(w.room(chat_limit), indent=2, default=str)
 
 
+def _waiver_inputs(league_id: str, week: int, season: int):
+    """Everything `waivers.waiver_report` needs, assembled from board and ESPN.
+
+    Separate from the tool so the tool is composition: this is the only part
+    that touches the network or the caches, and a test replaces it whole.
+    """
+    from . import sources, waivers
+
+    league, _ = _settings()
+    board = _build_board()
+    state = _state()
+    players, settings = waivers.fetch_pool_and_settings(league_id, season)
+    pool = waivers.free_agents(players)
+    if not pool.empty:
+        # ESPN's numeric position id, mapped to the names the rest of the model
+        # uses. A row the map does not cover keeps an empty position rather than
+        # a guessed one.
+        pool["position"] = pool["position_id"].map(
+            {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DST"}).fillna("")
+    changes = waivers.role_change(sources.weekly_stats([season]),
+                                  sources.snap_counts([season]), season, week)
+    injury = {} if pool.empty else dict(zip(pool["name"], pool["injury_status"]))
+    contingency = waivers.contingent_value(board, waivers.starters_out(board, injury))
+    mine = state.my_rows(board)
+    starters = league.starters
+    bench = mine.iloc[sum(v for k, v in starters.items() if k != "FLEX"):] \
+        if len(mine) else mine
+    return {"pool": pool, "changes": changes, "contingency": contingency,
+            "league": league, "rules": waivers.league_rules_from_settings(settings),
+            "mine": mine, "bench": bench}
+
+
+@mcp.tool()
+def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
+                   limit: int = 8) -> str:
+    """Who to claim off waivers this week, at what priority, dropping whom.
+
+    A player is in the list for one of two named reasons: his role moved — snap
+    and target share against the previous three weeks — or a starter ahead of him
+    is out. The two are listed rather than traded off, because trading them off
+    needs a rate nobody has measured. A player with neither reason is not a
+    claim and is not listed; `census` says how many were considered, so an empty
+    list is readable as a quiet week rather than a broken pull.
+
+    **Read the labels.** Three of the four scores carry `unmeasured` in every
+    row: role change, projection lag and contingent value have no backtest, so
+    the ranking is by a quantity whose predictive value is unknown. Role entropy
+    carries its real result. `shape` marks the free-agent pool and the ownership
+    move `unverified-shape`: the capture these were written against was taken
+    mid-draft, when ESPN reports every player as a free agent, so the split this
+    selects on has not been exercised against a real in-season pull.
+
+    **Claim priority is a waiver order, not a bid**, when
+    `isUsingAcquisitionBudget` is false — which it is in this league.
+    `acquisitionBudget` and `minimumBid` are populated and inert beside it, and
+    reading them first is how a tool recommends FAAB to a league that does not
+    use it. **Every claim names a drop**, because `isBenchUnlimited` is true
+    while there are six bench slots and the slot count is the fact. A drop is
+    checked against ESPN's undroppable list (`player.droppable`); a player the
+    pull did not carry is offered with `undroppable_checked` false rather than
+    assumed droppable.
+    """
+    from . import waivers
+
+    try:
+        parts = _waiver_inputs(league_id, week, season)
+    except Exception as exc:
+        return _emit({"error": f"could not assemble the waiver inputs: "
+                               f"{type(exc).__name__}: {exc}"}, indent=2)
+    out = waivers.waiver_report(parts["pool"], parts["changes"], parts["contingency"],
+                                parts["league"], parts["rules"], parts["mine"],
+                                parts["bench"], limit=limit)
+    return _emit({"week": week, "season": season,
+                  "claim_priority_basis": parts["rules"].priority_basis,
+                  "bench_slots": parts["rules"].bench_slots, **out}, indent=2)
+
+
 @mcp.tool()
 def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
     """Who was in the ESPN draft room, for how long, and who talked. Per member,

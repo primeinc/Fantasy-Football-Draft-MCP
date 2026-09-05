@@ -971,6 +971,48 @@ takerate:
               f"value {float(head['pick_value']):.2f} survives "
               f"{float(head['p_available_next']):.2f}")
 
+# Who to claim off waivers this week, at what priority, dropping whom
+[script]
+waivers $week $league_id='' $limit='8':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import server
+
+    league_id = os.environ["league_id"] or env.get("ESPN_LEAGUE_ID", "")
+    if not league_id:
+        sys.exit("no league id: pass one or set ESPN_LEAGUE_ID in .mcp.json")
+    out = json.loads(server.waiver_targets(league_id, int(os.environ["week"]),
+                                           limit=int(os.environ["limit"])))
+    if "error" in out:
+        sys.exit(out["error"])
+    c = out["census"]
+    print(f"week {out['week']}: {c['considered']} free agents considered, "
+          f"{c['role_moved']} with a moved role, {c['starter_out']} with a starter out, "
+          f"{c['claimed']} claimed  [{c['status']}]")
+    print(f"claim priority: {out['claim_priority_basis']}; {out['bench_slots']} bench slots, "
+          f"so every claim names a drop")
+    if not out["claims"]:
+        print("nothing worth claiming this week" if c["considered"]
+              else "the pool came back empty -- check the pull before reading this as quiet")
+    hdr = (f"{'#':>2}  {'player':<24}{'pos':<5}{'reason':<22}{'role':>7}{'cont':>7}"
+           f"{'owned':>7}  drop")
+    print()
+    print(hdr)
+    print("-" * len(hdr))
+    for c_ in out["claims"]:
+        drop = c_["drop"]["player"] or "-"
+        print(f"{c_['claim_priority']['order']:>2}  {c_['player'][:23]:<24}{c_['position']:<5}"
+              f"{c_['reason']:<22}{c_['role_change']:>7.3f}{c_['contingent_value']:>7.1f}"
+              f"{(c_['percent_owned'] or 0):>6.1f}%  {drop}")
+    print()
+    print("measured: role entropy only. role change, projection lag and contingent "
+          "value are unmeasured; the pool shape is unverified until an in-season pull.")
+
 # Probe every external data surface; see docs/data-sources.md
 [script]
 surfaces:

@@ -5,12 +5,14 @@ the handcuff's role has not moved at all and is worth something only because his
 starter is out; the noise mover put up one loud week on unchanged usage, which is
 the case a points-based waiver tool gets wrong.
 """
+import json
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from ffdraft import board as bd
 from ffdraft import waivers
 from ffdraft.config import LeagueSettings, Scoring
 
@@ -406,6 +408,141 @@ class TestRankedClaims:
                                    pd.DataFrame(), league(), rules, None, None) == []
 
 
+class TestTheTool:
+    """`waiver_targets` on the fixture week, with the network replaced.
+
+    The payload has to survive a strict parser: `json.dumps` writes a float NaN
+    as a bare `NaN` literal, Python reads it back, and every conforming client
+    rejects it — so the failure is invisible from inside the process and total
+    from outside. `_emit` is the single exit that sanitises, and
+    `test_json_payloads` keeps a handler from going around it.
+    """
+
+    def _reject(self, constant):
+        raise AssertionError(f"payload carried a bare {constant}, which is not JSON")
+
+    def wire(self, monkeypatch, pool_rows, injury=("OUT",)):
+        from ffdraft import server, sources
+
+        players = [{"status": "FREEAGENT", "onTeamId": 0,
+                    "player": {"id": i, "fullName": n, "defaultPositionId": p,
+                               "injuryStatus": s, "droppable": True,
+                               "ownership": {"percentOwned": o, "percentChange": ch,
+                                             "percentStarted": 0.1}}}
+                   for i, (n, p, s, o, ch) in enumerate(pool_rows)]
+        settings = {"acquisitionSettings": {"isUsingAcquisitionBudget": False,
+                                            "acquisitionType": "WAIVERS_TRADITIONAL",
+                                            "acquisitionBudget": 100, "minimumBid": 1},
+                    "rosterSettings": {"lineupSlotCounts": {"20": 6},
+                                       "isBenchUnlimited": True,
+                                       "isUsingUndroppableList": True,
+                                       "positionLimits": {}}}
+        monkeypatch.setattr(waivers, "fetch_pool_and_settings",
+                            lambda *a, **k: (players, settings))
+        monkeypatch.setattr(sources, "weekly_stats", lambda *a, **k: weekly())
+        monkeypatch.setattr(sources, "snap_counts", lambda *a, **k: snaps())
+        # A board with a hole in the columns the claim rows are built from, so
+        # the round trip is exercised rather than asserted.
+        board = pd.DataFrame({
+            "name": ["Starter Back", "Handcuff Guy", "Bench Man"],
+            "position": ["RB", "RB", "WR"], "team": ["BBB", "BBB", np.nan],
+            "proj_points": [250.0, 90.0, 40.0], "adj_ppg": [16.0, 6.0, np.nan],
+            "exp_games": [14.0, 17.0, 17.0], "injury_risk": [0.3, 0.2, np.nan],
+            "bye_week": [np.nan, 7, np.nan], "draft_score": [90.0, 10.0, np.nan],
+            "adp": [20.0, 150.0, np.nan],
+        })
+        board["_key"] = board["name"].map(bd.norm_name)
+        monkeypatch.setattr(server, "_build_board", lambda *a, **k: board)
+        monkeypatch.setattr(
+            server, "_settings",
+            lambda: (league(starters={"QB": 1, "RB": 1, "WR": 0, "TE": 0,
+                                      "FLEX": 0, "K": 0, "DST": 0}), None))
+
+        class FakeState:
+            def my_rows(self, b):
+                return b
+
+        monkeypatch.setattr(server, "_state", lambda: FakeState())
+        return server
+
+    def rows(self):
+        return [("Breakout Guy", 3, "ACTIVE", 3.1, 2.6),
+                ("Handcuff Guy", 2, "ACTIVE", 1.4, 0.1),
+                ("Noise Guy", 3, "ACTIVE", 22.0, 4.0),
+                ("Starter Back", 2, "OUT", 99.0, -0.2)]
+
+    def test_the_tool_round_trips_strict_json(self, monkeypatch):
+        server = self.wire(monkeypatch, self.rows())
+        raw = server.waiver_targets("1", WEEK)
+        out = json.loads(raw, parse_constant=self._reject)
+        assert out["week"] == WEEK
+        assert "error" not in out
+
+    def test_the_tool_reports_the_census_and_the_waiver_order(self, monkeypatch):
+        server = self.wire(monkeypatch, self.rows())
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["census"]["considered"] == 4
+        assert "FAAB is off" in out["claim_priority_basis"]
+        assert out["bench_slots"] == 6
+
+    def test_the_tool_carries_the_labels_into_the_payload(self, monkeypatch):
+        server = self.wire(monkeypatch, self.rows())
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["claims"], "the fixture week must produce a claim to label"
+        ev = out["claims"][0]["evidence"]
+        assert ev["role_change"] == waivers.UNMEASURED
+        assert "0.381/0.529/0.707" in ev["role_entropy"]
+        assert out["claims"][0]["shape"]["free_agent_pool"] == waivers.UNVERIFIED_SHAPE
+
+    def test_the_round_trip_would_catch_a_regression(self, monkeypatch):
+        """The control. Turn the sanitising off and the payload must break.
+
+        A round trip that cannot fail proves nothing. Measured when written: the
+        bare NaN is `handcuff_for`, which `rank_claims` fills by `.map` and which
+        is missing for every claim that is not a handcuff — so the field is NaN
+        on the ordinary case rather than the exotic one.
+        """
+        server = self.wire(monkeypatch, self.rows())
+        monkeypatch.setattr(server, "_emit",
+                            lambda payload, **kw: json.dumps(payload, **kw))
+        with pytest.raises(AssertionError):
+            json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+
+    def test_the_fixture_week_tells_the_three_apart_through_the_tool(self, monkeypatch):
+        """The whole point of the fixture, asserted at the exit rather than inside.
+
+        The breakout is a claim because his role moved, the handcuff because his
+        starter is out, and the noise mover -- 28 points on unchanged usage -- is
+        not a claim at all. Each reason is named in the row.
+        """
+        server = self.wire(monkeypatch, self.rows())
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        by_name = {c["player"]: c for c in out["claims"]}
+        assert "Noise Guy" not in by_name, "a loud week on flat usage is not a claim"
+        assert by_name["Breakout Guy"]["reason"] == "role moved"
+        assert by_name["Handcuff Guy"]["reason"] == "starter out"
+        assert by_name["Handcuff Guy"]["handcuff_for"] == "Starter Back"
+        assert out["claims"][0]["player"] == "Breakout Guy"
+        assert [c["claim_priority"]["order"] for c in out["claims"]] == [1, 2]
+        assert all(c["claim_priority"]["faab_bid"] is None for c in out["claims"])
+        assert all(c["drop"]["player"] == "Bench Man" for c in out["claims"])
+
+    def test_an_empty_pool_still_round_trips_and_says_it_is_broken(self, monkeypatch):
+        server = self.wire(monkeypatch, [])
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["claims"] == []
+        assert out["census"]["status"] == "no free agents in the pool"
+
+    def test_a_failed_pull_is_an_error_payload_not_a_traceback(self, monkeypatch):
+        from ffdraft import server
+
+        monkeypatch.setattr(server, "_waiver_inputs",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert "could not assemble the waiver inputs" in out["error"]
+        assert "boom" in out["error"]
+
+
 class TestDropCandidate:
     def bench(self, **over):
         b = pd.DataFrame({
@@ -475,6 +612,23 @@ class TestDropCandidate:
         out = waivers.drop_candidate(self.unpriced_bench(90.0), league(), self.held())
         assert out["player"] == "Deep Back"
         assert out["projection_basis"] == "board projection"
+
+    def test_a_bench_from_mixed_sources_does_not_invent_a_stand_in(self):
+        # Concatenating a frame that carries the flag with one that does not
+        # gives object dtype and NaN in the rows that lacked it. NaN is truthy,
+        # so bool() labelled a real board-priced player a stand-in -- telling
+        # the user his figure is not a projection of his own when it is.
+        flagged = self.unpriced_bench(180.0).iloc[[0]]
+        unflagged = pd.DataFrame({
+            "name": ["From Another Source"], "position": ["RB"],
+            "proj_points": [40.0], "exp_games": [17.0], "bye_week": [np.nan],
+            "droppable": [True]})
+        mixed = pd.concat([flagged, unflagged], ignore_index=True)
+        assert mixed["unpriced"].isna().any(), "the fixture must reproduce the NaN"
+        out = waivers.drop_candidate(mixed, league(), self.held())
+        assert out["player"] == "From Another Source"
+        assert out["projection_basis"] == "board projection"
+        assert "cannot price this player" not in out["reason"]
 
     def test_a_board_that_prices_everyone_has_no_stand_ins(self):
         out = waivers.drop_candidate(self.bench(), league(), self.held())
