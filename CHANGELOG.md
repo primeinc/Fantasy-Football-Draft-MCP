@@ -189,18 +189,38 @@ All notable changes to this project. Format follows
   repairs change nothing measurable on this record and the whole difference
   below is the tail shape.
   logistic: Brier 0.129 -> 0.127, log loss 0.416 -> 0.401, against a base rate
-  of 0.250. The clearest number is the lowest-probability bucket, which is what
-  the change is about: on forecasts between 0 and 0.2 the normal predicted 0.040
-  against 0.080 observed, the logistic predicts 0.050 against 0.070 — half the
-  calibration error, on 329 and 334 forecasts. Log loss improves in five of
-  seven rounds, and for QB (0.836 -> 0.760), WR (0.289 -> 0.275) and K
-  (0.187 -> 0.170); RB (0.473) and TE (0.361) are unchanged; DST is worse
-  (0.568 -> 0.618) on 17 forecasts. The `espn_list` (3.358) and `adp` (3.333)
-  predictors are bit-identical, which is the control.
-  Read the per-position rows with care: the replay re-derives its
+  of 0.250. Log loss improves in five of seven rounds, and for QB
+  (0.836 -> 0.760), WR (0.289 -> 0.275) and K (0.187 -> 0.170); RB (0.473) and
+  TE (0.361) are unchanged; DST is worse (0.568 -> 0.618) on 17 forecasts. The
+  `espn_list` (3.358) and `adp` (3.333) predictors are bit-identical, which is
+  the control.
+  **Those aggregates are not a demonstrated improvement, and the change does not
+  rest on them.** This is one draft. Treating the seven rounds as blocks, the
+  per-round log-loss deltas are -0.080, -0.014, -0.001, +0.014, -0.019, +0.007,
+  -0.014: mean -0.015, and t = -1.3 on 6 degrees of freedom. Brier gives
+  t = -1.6. Neither is distinguishable from zero, and dropping round 1 — which
+  contributes more than half the total — leaves t = -0.8. Five of seven rounds
+  and four of six positions move the right way, which is direction, not
+  significance.
+  What the change actually rests on is that the old answers were wrong
+  independently of any score: a defense demonstrably on the board at pick 123
+  was assigned survival 0.00, and past z = 8 the arithmetic returned 1.0 for a
+  player who was certainly gone. A model that says 0.00 about something that is
+  visibly true is worth replacing whether or not one draft's Brier can prove it.
+  The supporting evidence is the mechanism (constant hazard rather than a cliff)
+  and the lowest-probability bucket, where the normal predicted 0.040 against
+  0.080 observed and the logistic predicts 0.050 against 0.070 — half the
+  calibration error, on 329 and 334 forecasts, in the exact region the change
+  targets. That bucket is also a single draft.
+  Read the per-position rows with more care still: the replay re-derives its
   recommendations from the survival numbers, so the two runs do not score
   identical forecast sets (DST n 17 vs 18, K 9 vs 11) and the small positions
-  are not paired samples.
+  are not paired samples at all.
+  Prompted by lena finding that `roles.weight_backtest`'s seed-to-seed spread at
+  8-12 paired drafts is about the size of every effect measured with it. None of
+  the numbers in these entries come from that harness — every one is a
+  deterministic re-run over one recorded draft or one board, with no seeds — but
+  "deterministic" is not "well evidenced", and the correction applies.
 - The K/DST pricing below was re-measured on the fixed tail, because the two
   interacted: the thin tail was inflating D/ST marginal value at the same time
   the carve-out was deflating its raw-value share. It still earns its keep. With
