@@ -1294,6 +1294,19 @@ All notable changes to this project. Format follows
 - Availability draws are keyed by (seed, player, week) rather than taken from a
   sequential stream, so a player the trade does not touch has an identical season
   on both sides of it and the delta is the trade rather than the reshuffle.
+- The bye is charged once and it is not obvious: the simulation skips the bye week
+  *and* applies availability from a 17 denominator, which is correct only because
+  `roles.SEASON_GAMES` counts games and the season is 18 weeks. Said at both
+  points of use, because it reads like a double count and was audited as one.
+- `adp.block_agreement` carries the calibration rule every caller is held to:
+  points only when the blocks agree in sign and each block beats its own mean out
+  of sample, ordinal otherwise. Sign agreement alone is one coin flip at two
+  blocks, which `blocks_agree_p_null` already states.
+- Rosters come from the draft record. The in-season path needs an ESPN roster
+  reader (`rosters.py`, with the weekly lineup work) and ESPN's `mRoster` is empty
+  for every team until a draft completes, so no fixture here can show the live
+  parse works: a green fixture shows the code does what we jointly believed the
+  payload looks like, which is not the same claim.
 
 **Draft dump**
 - `dump_draft` tool and `just dump <league_id> [out_dir]` (`espn_dump.py`):

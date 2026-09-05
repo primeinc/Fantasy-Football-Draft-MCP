@@ -117,6 +117,18 @@ class TestAvailabilityIsNotChargedTwice:
         # turn a whole roster's season into NaN.
         assert roster[2].adj_ppg == 0.0
 
+    def test_no_games_to_divide_by_is_not_a_derived_row(self):
+        """No division happened, so the result is a BASIS_NONE outcome and must
+        not wear the derived label. `model.project` clips exp_games to [7, 17],
+        but `resolve` takes any board and fixtures are built by hand."""
+        b = _board([{"name": "Zero Games", "position": "WR", "adj_ppg": np.nan,
+                     "exp_games": 0.0, "bye_week": None, "proj_points": 100.0,
+                     "adp": 90.0}])
+        player = trade.resolve(b, ["Zero Games"])[0][0]
+
+        assert player.adj_ppg == 0.0
+        assert player.basis == trade.BASIS_NONE
+
     def test_availability_comes_from_the_same_mapping_the_board_uses(self, fixture_board):
         hurt = _board([{"name": "Fragile", "position": "WR", "adj_ppg": 10.0,
                         "exp_games": 8.5, "bye_week": None, "proj_points": 85.0, "adp": 50.0}])
@@ -263,6 +275,28 @@ class TestBothSidesAreScoredOnTheirOwnLineup:
 
         mine, theirs = out["you"]["improvement"], out["counterparty"]["improvement"]
         assert mine != -theirs, "the sides were scored as a transfer, not on their lineups"
+
+
+class TestTheWindowIsStatedWhereAHumanReadsIt:
+    def test_the_verdict_names_the_weeks_that_were_scored(self, fixture_board, by_slot):
+        """The structured field and the sentence must not disagree. The sentence
+        used to say 14 whatever the run did, which is a window stated wrong in
+        the one place nobody checks against the data."""
+        out = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"], n_trials=20, blocks=2,
+                             seed=0, weeks=10)
+
+        assert out["weeks"] == {"from": 1, "to": 10}
+        for side in ("you", "counterparty"):
+            said = out[side]["verdict"]
+            assert "over 10 weeks" in said, said
+            assert "14 weeks" not in said
+
+    def test_a_no_call_verdict_needs_no_window(self, fixture_board):
+        summary = {"improvement": 3.0, "block_improvements": [12.0, -6.0],
+                   "block_spread": 18.0, "blocks_agree": False, "blocks_agree_p_null": 0.5}
+        assert "no call" in trade.verdict(summary, "you", weeks=10)
 
 
 class TestRefusals:

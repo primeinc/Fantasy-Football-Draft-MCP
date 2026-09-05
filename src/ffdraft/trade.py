@@ -113,8 +113,14 @@ def resolve(board: pd.DataFrame, names: list[str]) -> tuple[list[Player], list[s
             # roster can mix bases, and which rows were derived is exactly what a
             # reader needs to weigh a delta built from them.
             proj = row.get("proj_points")
-            basis = BASIS_DERIVED if proj is not None and np.isfinite(
-                _finite(proj, np.nan)) else BASIS_NONE
+            have_proj = proj is not None and np.isfinite(_finite(proj, np.nan))
+            # `exp_games > 0` is part of the condition, not a guard after it: with
+            # no games to divide by, no division happens and the result is 0, so
+            # labelling it derived would put a `BASIS_NONE` outcome under the
+            # derived name. `model.project` clips exp_games to [7, 17] so the live
+            # board cannot produce this, but `resolve` accepts any board and the
+            # fixtures build them by hand.
+            basis = BASIS_DERIVED if have_proj and exp_games > 0 else BASIS_NONE
             adj = _finite(proj, 0.0) / exp_games if exp_games > 0 else 0.0
         bye = row.get("bye_week")
         bye = int(bye) if bye is not None and np.isfinite(_finite(bye, np.nan)) else None
@@ -147,6 +153,16 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
     otherwise he scores his per-game rate. Kicker and defense slots are not
     scored, which is `adp.best_weekly_lineup`'s existing behaviour rather than a
     choice made here.
+
+    THE BYE IS CHARGED ONCE, and the reason is not obvious enough to leave
+    implicit. This both skips the bye week and applies an availability derived
+    from a 17 denominator, which looks like charging it twice. It is not:
+    `roles.SEASON_GAMES` is 17 *games*, and the NFL season is 18 weeks with one
+    bye, so `exp_games / 17` is the chance he is available in a week he has a
+    game at all. The bye is the eighteenth week, and the `continue` below is the
+    only thing that prices it. Were the denominator weeks, this would be a double
+    count. Measured: a player at `exp_games` 17 with a bye scores exactly 13
+    weeks of his rate over a 14-week window.
     """
     positions = {p.key: p.position for p in roster}
     total, empty = 0.0, 0
@@ -232,13 +248,17 @@ def priced_by(roster: list[Player]) -> dict:
                                    for p in roster if p.basis != BASIS_BOARD]}
 
 
-def verdict(summary: dict, side: str) -> str:
+def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
     """What may be said about this side, given whether the blocks agree.
 
     A mean whose blocks disagree in sign is a measurement of the harness, not of
     the trade, and this refuses to call it either way. Agreement is not a pass
     either: at two blocks it is one coin flip, which `blocks_agree_p_null` states
     beside it.
+
+    `weeks` is the window that was actually scored, passed in rather than read
+    off the module constant. The sentence a human reads is the last place a
+    window may be stated wrong, and it used to say 14 whatever the run did.
     """
     gain = summary.get("improvement")
     spread = summary.get("block_spread")
@@ -250,7 +270,7 @@ def verdict(summary: dict, side: str) -> str:
                 f"this harness's own noise rather than a result.")
     direction = "gains" if gain > 0 else "loses"
     p_null = summary.get("blocks_agree_p_null")
-    return (f"{side} {direction} {abs(gain):.1f} points over {FANTASY_WEEKS} weeks, "
+    return (f"{side} {direction} {abs(gain):.1f} points over {weeks} weeks, "
             f"blocks {summary['block_improvements']}, spread {spread}. Blocks of a "
             f"trade worth nothing agree in sign with probability {p_null}, so read "
             f"the spread before the mean.")
@@ -323,14 +343,14 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
             "depth_before": depth(resolved["mine_before"], league),
             "depth_after": depth(resolved["mine_after"], league),
             "priced_by": priced_by(resolved["mine_after"]),
-            "verdict": verdict(yours, "you"),
+            "verdict": verdict(yours, "you", weeks),
         },
         "counterparty": {
             "slot": counterparty_slot, **theirs_cmp,
             "depth_before": depth(resolved["theirs_before"], league),
             "depth_after": depth(resolved["theirs_after"], league),
             "priced_by": priced_by(resolved["theirs_after"]),
-            "verdict": verdict(theirs_cmp, f"slot {counterparty_slot}"),
+            "verdict": verdict(theirs_cmp, f"slot {counterparty_slot}", weeks),
             "tendencies": counterparty_tendencies(
                 picks_by_slot.get(counterparty_slot, []), board),
         },

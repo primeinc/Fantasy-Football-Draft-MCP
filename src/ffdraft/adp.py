@@ -989,6 +989,23 @@ def block_agreement(gains: list[float]) -> dict:
     to be read against. Extracted so a harness that is not a paired draft --
     `trade.py` scores two fixed rosters over simulated seasons -- states
     agreement the same way rather than growing a second dialect of it.
+
+    THE CALIBRATION RULE, which every caller of this is held to:
+
+        Points only when the blocks agree in sign and each block beats its own
+        mean out of sample; ordinal otherwise.
+
+    Sign agreement is necessary and not sufficient. Two blocks of a term that
+    does nothing agree half the time, which `blocks_agree_p_null` states in the
+    output, so agreement alone buys one coin flip. What earns the right to report
+    a quantity in points rather than as an ordering is the second clause: each
+    block also beating its own mean out of sample. That is what separated
+    defences from kickers in the streaming work -- both had agreeing blocks, only
+    defences beat their own mean, and kickers ship ordinal and labelled as such.
+
+    This function reports the first clause. The second belongs to whoever holds
+    the out-of-sample scores, and a caller that cannot show it may not print
+    points.
     """
     agree = bool(gains) and (all(g > 0 for g in gains) or all(g < 0 for g in gains))
     return {

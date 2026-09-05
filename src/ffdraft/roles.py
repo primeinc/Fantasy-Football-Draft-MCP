@@ -108,7 +108,14 @@ ENTROPY_KIND_FLOOR = 0.22314355131420976  # ln 1.25
 
 
 def weekly_availability(exp_games: float) -> float:
-    """Chance a player is available in a given week, from his expected games."""
+    """Chance a player is available in a week he has a game, from his expected games.
+
+    The denominator is `SEASON_GAMES`, which counts GAMES, not weeks: the season
+    is 18 weeks and 17 games, so the bye is the extra week and is not priced
+    here. A caller simulating weeks must skip the bye itself, and doing both is
+    charging it once rather than twice. Reading this as a per-week probability
+    over an 18-week season is the mistake it is worth spelling out against.
+    """
     if not np.isfinite(exp_games):
         return 1.0
     return float(np.clip(exp_games / SEASON_GAMES, 0.0, 1.0))
