@@ -44,3 +44,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ty.src]
+# Agent worktrees are whole checkouts with their own pyproject.toml; each is
+# its own ty project when checked from inside. Checked from here they resolve
+# against this checkout's src and every relative import fails. gitignore only
+# governs discovery; an explicit exclude also stops the language server from
+# publishing diagnostics for these files.
+exclude = [".claude/worktrees/"]
