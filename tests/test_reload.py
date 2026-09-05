@@ -93,6 +93,10 @@ def test_reload_code_tool_reports_and_notifies():
 
 
 def test_reload_survives_a_module_that_fails_to_import(monkeypatch):
+    # reload_package skips modules not yet imported, so make sure the one the
+    # fake failure targets is loaded; run alone, this file would otherwise
+    # never import ffdraft.choice and the test would pass for the wrong reason.
+    importlib.import_module("ffdraft.choice")
     real_reload = importlib.reload
 
     def broken(module):
