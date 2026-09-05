@@ -333,7 +333,10 @@ def _longest_list(payload: Any) -> tuple[str, Any, Any, list] | None:
     def walk(node: Any, holder: Any, key: Any, path: str) -> None:
         nonlocal best
         if isinstance(node, list):
-            if len(node) > 1:
+            # `holder is None` only at the root, which has nothing to assign
+            # back into. `_under_the_cap` wraps a bare list before it gets here,
+            # so this is the belt to that braces (lena).
+            if len(node) > 1 and holder is not None:
                 size = len(json.dumps(node, default=str))
                 if best is None or size > best[0]:
                     best = (size, path, holder, key, node)
@@ -360,36 +363,73 @@ def _under_the_cap(payload: Any, dumps_kwargs: dict) -> str:
     `truncated` naming each path and how much of it survived. A payload that
     cannot be made to fit even with every list at one row is reported as that
     rather than as a mangled answer.
+
+    THE NOTE IS INSIDE THE MEASUREMENT. It used to be added after the size check
+    and returned without re-checking, so the sentence explaining the trim could
+    push the answer back over the limit and this returned it anyway -- the cap
+    failing in the case it exists for. It is not a narrow window: the note costs
+    230 to 400 characters at `indent=2`, and because each pass halves exactly one
+    list, a payload of many small tables descends in small steps and tends to
+    stop just under the line, which is precisely where it lands. Found by lena,
+    reproduced at 21,064 characters against a 20,000 cap on 40 tables of 30 rows.
+
+    There is no pass counter. Every pass strictly shrinks one list and a list
+    drops out at length one, so the loop is monotone and cannot cycle;
+    `_longest_list` returning None is the real terminating condition. A count of
+    400 was not a safety net but a second exit, and it fell through into the
+    message below -- which then said "even with every table cut to one row" about
+    a payload that was still shrinking. An honest-looking sentence about a state
+    the code never reached is the failure this whole file exists to avoid.
     """
     trimmed = copy.deepcopy(payload)
+    if not isinstance(trimmed, dict):
+        # A bare array has nowhere to carry the note that it was cut, and
+        # cutting it silently is the one thing this must not do. Wrapping is a
+        # visible change of shape, which is the point: no handler emits a
+        # top-level list today, and one that starts to will see this rather
+        # than the `TypeError` the old code raised from inside the one exit.
+        trimmed = {"items": trimmed}
     original: dict[str, int] = {}
     kept: dict[str, int] = {}
-    # Bounded: each pass halves one list, so this terminates well inside the
-    # limit even for a payload that is nothing but deeply nested tables.
-    for _ in range(400):
-        text = json.dumps(trimmed, **dumps_kwargs)
+    while True:
+        text = json.dumps(_with_the_note(trimmed, original, kept), **dumps_kwargs)
         if len(text) <= PAYLOAD_LIMIT:
-            if kept:
-                trimmed["truncated"] = {
-                    "note": f"cut to fit the client's {PAYLOAD_LIMIT:,}-character "
-                            f"limit, longest tables first; ask for fewer weeks or "
-                            f"positions to see a full one",
-                    "paths": {p: f"{kept[p]} of {original[p]}" for p in sorted(kept)},
-                }
-                text = json.dumps(trimmed, **dumps_kwargs)
             return text
         found = _longest_list(trimmed)
         if found is None:
-            break
+            return json.dumps({"error": f"this answer does not fit the client's "
+                                        f"{PAYLOAD_LIMIT:,}-character limit even "
+                                        f"with every table cut to one row",
+                               "limit": PAYLOAD_LIMIT}, **dumps_kwargs)
         path, holder, key, rows = found
         original.setdefault(path, len(rows))
         keep = max(1, len(rows) // 2)
         kept[path] = keep
         holder[key] = rows[:keep]
-    return json.dumps({"error": f"this answer does not fit the client's "
-                                f"{PAYLOAD_LIMIT:,}-character limit even with every "
-                                f"table cut to one row",
-                       "limit": PAYLOAD_LIMIT}, **dumps_kwargs)
+
+
+def _with_the_note(trimmed: dict, original: dict[str, int],
+                   kept: dict[str, int]) -> dict:
+    """`trimmed` with the note that says what was cut, ready to be measured.
+
+    A shallow copy, so the note never reaches `_longest_list` and cannot become
+    the table this trims next. An answer that already has a `truncated` key of
+    its own keeps it, under a name that says which one is which -- overwriting a
+    tool's own field to report on the tool would be its own small lie.
+    """
+    if not kept:
+        return trimmed
+    note = {
+        "note": f"cut to fit the client's {PAYLOAD_LIMIT:,}-character limit, "
+                f"longest tables first; ask for fewer weeks or positions to see "
+                f"a full one",
+        "paths": {p: f"{kept[p]} of {original[p]}" for p in sorted(kept)},
+    }
+    out = dict(trimmed)
+    if "truncated" in out:
+        out["truncated_before_the_cap"] = out["truncated"]
+    out["truncated"] = note
+    return out
 
 
 def _emit(payload: Any, **dumps_kwargs: Any) -> str:

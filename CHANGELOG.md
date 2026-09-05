@@ -31,6 +31,25 @@ All notable changes to this project. Format follows
   handler inherits the guarantee rather than being trusted to remember it. It cuts
   the head of the longest table rather than dropping a key, because dropping a key
   keeps the footnotes and loses the answer.
+- **The note that said the answer was cut could push it back over the cap**, and
+  `_under_the_cap` returned it anyway — the cap failing in the case it exists
+  for. lena found it; reproduced at **21,064** characters against a 20,000 limit
+  on forty tables of thirty rows, **19,736** after. Not a narrow window: the note
+  costs 230 to 400 characters at `indent=2`, and because each pass halves exactly
+  one list, a payload of many small tables descends in small steps and stops just
+  under the line, which is where it lands. The note is now inside the measured
+  payload rather than appended after it.
+- The pass counter is gone with it. Every pass strictly shrinks one list and a
+  list drops out at length one, so termination is structural and `_longest_list`
+  returning `None` is the real exit; the count of 400 was a second exit that fell
+  through into a message asserting "even with every table cut to one row" about a
+  payload that was still shrinking. An honest-looking sentence about a state the
+  code never reached is the failure this file exists to avoid.
+- A top-level list used to raise `TypeError` from inside the one exit every
+  payload goes through — `holder is None` at the root. Nothing emits one today,
+  which is the worst kind of latent. It is wrapped as `{"items": ...}` so the cut
+  has somewhere to be declared, and a payload with its own `truncated` key keeps
+  it under `truncated_before_the_cap` rather than being overwritten.
 - The whole-league fixture is the point of the test rather than an incidental
   detail. The existing fixture ranks two defences and was structurally incapable
   of showing this — the same lesson as a board fixture carrying every optional

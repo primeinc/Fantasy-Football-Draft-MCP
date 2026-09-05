@@ -224,6 +224,58 @@ class TestThePayloadCap:
         assert "does not fit" in out["error"]
         assert out["limit"] == server.PAYLOAD_LIMIT
 
+    def test_the_note_explaining_the_cut_is_inside_the_cap(self):
+        """The blocker lena found, on the payload shape that provokes it.
+
+        The note used to be added after the size check and returned without
+        re-checking, so the sentence explaining the trim pushed the answer back
+        over the limit and the cap failed in the case it exists for. Many small
+        tables is the shape that lands in that window: each pass halves exactly
+        one list, so the descent is gradual and the first size under the cap
+        tends to be just under it. Forty tables of thirty rows measured 21,064
+        against a 20,000 cap before the fix.
+
+        The single-list payload above cannot show this -- it halves to far below
+        the limit and never approaches the boundary -- which is why this fixture
+        exists beside it rather than instead of it.
+        """
+        payload = {f"table_{i:02d}": [{"name": f"row {j}", "note": "n" * 30}
+                                      for j in range(30)]
+                   for i in range(40)}
+        assert len(json.dumps(payload, indent=2)) > server.PAYLOAD_LIMIT
+        text = server._emit(payload, indent=2)
+        assert len(text) <= server.PAYLOAD_LIMIT, (
+            f"emitted {len(text):,} characters against a "
+            f"{server.PAYLOAD_LIMIT:,} cap; the note that says the answer was "
+            f"cut is not inside the size it reports on")
+        body = json.loads(text)
+        assert body["truncated"]["paths"]
+        # And it landed close enough to the line that the note's own length
+        # mattered, which is what makes this fixture the right one.
+        assert len(text) > server.PAYLOAD_LIMIT - 1_000
+
+    def test_a_bare_array_is_wrapped_rather_than_raising(self):
+        # `holder is None` at the root, so the old code raised TypeError from
+        # inside the one exit every payload goes through. No handler emits a
+        # top-level list today; this is latent in `_emit`, which is the worst
+        # place for it to be latent.
+        rows = [{"name": f"row {j}", "note": "x" * 300} for j in range(200)]
+        body = json.loads(server._emit(rows, indent=2))
+        assert len(json.dumps(body)) <= server.PAYLOAD_LIMIT
+        assert body["items"][0]["name"] == "row 0"
+        assert len(body["items"]) < 200
+        assert body["truncated"]["paths"]
+
+    def test_a_payload_with_its_own_truncated_key_keeps_it(self):
+        # Overwriting a tool's own field in order to report on the tool would be
+        # its own small lie.
+        payload = {"truncated": "mine",
+                   "ranked": [{"name": f"P {i}", "note": "y" * 200}
+                              for i in range(400)]}
+        body = json.loads(server._emit(payload, indent=2))
+        assert body["truncated_before_the_cap"] == "mine"
+        assert body["truncated"]["paths"]["ranked"]
+
     def test_a_payload_already_under_the_cap_is_untouched(self):
         # The guarantee costs nothing on the answers that never needed it, and
         # `truncated` must not appear on an answer that was not truncated.
