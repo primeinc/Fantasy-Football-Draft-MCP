@@ -625,6 +625,35 @@ def score_special_teams(special: pd.DataFrame, board: pd.DataFrame,
     return out
 
 
+# No multiplier applied by _discount comes near zero -- need bottoms out at 0.02,
+# role at ROLE_FLOOR, bye at 0.5 -- but np.where evaluates both branches, so a
+# zero would emit a divide warning and put inf in a row the branch never picks.
+DISCOUNT_FLOOR = 1e-6
+
+
+def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
+    """Apply a pick_value multiplier so that below 1 always means further down
+    the list, and above 1 always means further up.
+
+    Multiplication alone does not do that. Almost every candidate on a live
+    board has a negative pick_value -- 564 of 577 available rows at pick 123 of
+    the recorded draft -- because most players are worth less than what waiting
+    is expected to return. Multiplying a negative number by a discount moves it
+    *toward* zero, so the ordering inside the negative half comes out inverted:
+    with need_mult 0.04 for a second quarterback, the worse the backup the
+    higher he ranked, and recommendation ranks 17 to 22 were six consecutive
+    backup QBs ordered by how bad they are. Dividing is the same penalty with
+    the sign the other way round.
+
+    Every multiplier in `recommend` goes through here, so the three of them
+    cannot drift apart on this.
+    """
+    v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
+    m = np.where(np.abs(m) < DISCOUNT_FLOOR, DISCOUNT_FLOOR, m)
+    return np.where(v >= 0, v * m, v / m)
+
+
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
@@ -687,20 +716,12 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     # option from the middle rounds and wins the last pick, which is where the
     # league actually forces the slot.
     raw_share = np.where(avail["position"].isin(SPECIAL_POSITIONS), 0.0, 0.20)
-    avail["pick_value"] = (
-        (1 - raw_share) * avail["marginal_value"] + raw_share * avail["draft_score"]
-    ) * avail["need_mult"]
+    avail["pick_value"] = _discount(
+        (1 - raw_share) * avail["marginal_value"] + raw_share * avail["draft_score"],
+        avail["need_mult"])
 
     avail["role_mult"] = role_multiplier(avail)
-    # Applied so that below 1 always means "further down the list". pick_value
-    # goes negative deep in the board -- a candidate worth less than what waiting
-    # is expected to return -- and multiplying a negative number by 0.2 moves it
-    # *toward* zero, which would promote exactly the players the discount exists
-    # to bury. Dividing is the same penalty with the sign the other way round,
-    # and it keeps a multiplier above 1 a promotion in both halves.
-    pv = avail["pick_value"].to_numpy(dtype=float)
-    rm = avail["role_mult"].to_numpy(dtype=float)
-    avail["pick_value"] = np.where(pv >= 0, pv * rm, pv / rm)
+    avail["pick_value"] = _discount(avail["pick_value"], avail["role_mult"])
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -716,7 +737,7 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
             mults.append(max(0.5, 1 - bye_weight * (len(same_pos) + 0.5 * len(other))))
         avail["bye_conflicts"] = names
         avail["bye_mult"] = mults
-        avail["pick_value"] = avail["pick_value"] * avail["bye_mult"]
+        avail["pick_value"] = _discount(avail["pick_value"], avail["bye_mult"])
     return avail.sort_values("pick_value", ascending=False).head(top_n)
 
 

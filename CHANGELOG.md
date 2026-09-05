@@ -207,14 +207,49 @@ All notable changes to this project. Format follows
   (105.42). Picks 125/132/157/189 are unchanged — no role-unknown player was in
   those top fives. `plan_my_draft` changes at 164 (Jared Wayne -> Dalton
   Schultz).
-- `recommend` divides by `role_mult` where `pick_value` is already negative
-  instead of multiplying. A candidate worth less than waiting has a negative
-  pick_value, and multiplying that by 0.2 moves it toward zero — so a discount
-  promoted exactly the players it exists to bury. Dividing is the same penalty
-  with the sign the other way round, and keeps a multiplier above 1 a promotion
-  in both halves. No live top-five order changes from this on its own (the
-  affected rows are far below zero either way); it is what makes the
-  role-unknown discount mean what it says.
+- Every pick_value multiplier goes through `model._discount`, which multiplies
+  a non-negative value and divides a negative one, so below 1 always means
+  further down the list and above 1 always means further up. Plain
+  multiplication does not: almost every candidate on a live board has a
+  negative pick_value (564 of 577 available rows at pick 123 of the recorded
+  draft) because most players are worth less than what waiting returns, and
+  multiplying a negative number by a discount moves it *toward* zero. The
+  ordering inside the negative half came out inverted — the more a player was
+  discounted, the higher he ranked.
+  Found first on `role_mult`, where it was fixed alone; otto's review caught
+  that `need_mult` had the same defect, is always on, and does far more damage,
+  since `BACKUP_DECAY["QB"]` is 0.04. `bye_mult` had it too — inert only
+  because `bye` defaults to 0. All three now go through the one helper, so they
+  cannot drift apart on this again.
+  A/B on the live board at pick 123, same board both arms, only the sign rule
+  varying. Recommendation ranks 14 to 20 before were Justin Fields
+  (marginal_value -33.9), Hunter Henry (-7.8), Shane Buechele (-50.4), J.J.
+  McCarthy (-52.1), Daniel Jones (-20.9), Tua Tagovailoa (-27.6) and Carson
+  Wentz (-68.8): six backup quarterbacks, ordered by how bad they were, sitting
+  above candidates several times better. After, those ranks are Evan Engram,
+  four kickers and three defenses, ordered by marginal value, and the backups
+  fall to 221, 266, 320, 329 and 365 of 577. C.J. Stroud, a starter the model
+  rates, holds rank 8 in both. The first eleven are identical, because a
+  positive pick_value multiplies either way; the entire difference is in the
+  negative half, which is 98.1% of the board.
+  This reaches past the top of `who_should_i_pick`: `choice.py`'s
+  `log_model_rank` feature ranks the whole pool by pick_value, and
+  `plan_my_draft`, `mock_draft` and `draft_counterfactual` read the full
+  ordering. `just replay`, 119 picks scored out of sample, before -> after:
+  the `model` predictor's log loss 4.690 -> 4.324, its top-1/3/5 and median
+  rank unchanged; the `blend` 3.189 -> 3.192 with top-1 0.210 -> 0.193 and
+  top-5 0.555 -> 0.580. Stated plainly: the predictor that reads the model's
+  order directly gets materially better calibrated, and the blend moves within
+  noise on 119 picks rather than improving. `espn_list` and `adp` are
+  bit-identical (3.358 and 3.333), as are the survival Brier (0.129) and log
+  loss (0.416), which is the control — nothing that does not read pick_value
+  moved. The case for the change is that the ordering was wrong, not that the
+  blend got better.
+  One consequence to know: dividing inflates the magnitude of an already
+  negative pick_value (Cam Ward reads -892 where he read -1.43), so `replay`'s
+  `pick_regret` against a deeply negative actual pick is now a much larger
+  number. Ordering is what pick_value is for and it is now right; magnitudes on
+  the negative side are not comparable with earlier runs.
 - Known limitation this exposed, not fixed here: `plan_my_draft`'s availability
   filter drops the pool to 9 rows by pick 189, all of them role-unknown, so its
   last three picks are forced rather than chosen and the scaling cannot change

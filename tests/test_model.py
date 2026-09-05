@@ -5,13 +5,66 @@ import pandas as pd
 from ffdraft.board import FORMAT_SHIFT_DAMPING, convert_adp_format, synthetic_adp
 from ffdraft.config import LeagueSettings
 from ffdraft.model import (
+    _discount,
     _positional_need,
     apply_current_team,
     expected_best_at_next_pick,
+    recommend,
     survival_probability,
     survival_probability_vec,
     touchdown_luck_multiplier,
 )
+
+
+class TestDiscount:
+    def test_a_discount_lowers_a_value_of_either_sign(self):
+        out = _discount(pd.Series([10.0, -10.0]), pd.Series([0.2, 0.2]))
+        assert abs(out[0] - 2.0) < 1e-9
+        assert abs(out[1] + 50.0) < 1e-9
+        # Both moved down the list, which is what a discount has to mean.
+        assert out[0] < 10.0 and out[1] < -10.0
+
+    def test_a_boost_raises_a_value_of_either_sign(self):
+        out = _discount(pd.Series([10.0, -10.0]), pd.Series([1.3, 1.3]))
+        assert out[0] > 10.0 and out[1] > -10.0
+
+    def test_a_neutral_multiplier_changes_nothing(self):
+        values = pd.Series([10.0, 0.0, -10.0])
+        assert list(_discount(values, pd.Series([1.0, 1.0, 1.0]))) == [10.0, 0.0, -10.0]
+
+    def test_a_heavier_discount_cannot_promote_a_worse_candidate(self):
+        # The live case at pick 123: Daniel Jones, marginal_value -20.9, at a
+        # need of 0.04 for a second quarterback, against Juwan Johnson at -10.4
+        # and a tight-end need of 0.28. Multiplied, the quarterback lands nearer
+        # zero and outranks the better candidate purely because he was
+        # discounted harder.
+        qb, te = -20.9, -10.4
+        mult = pd.Series([0.04, 0.28])
+        naive = pd.Series([qb, te]) * mult
+        assert naive[0] > naive[1]
+        fixed = _discount(pd.Series([qb, te]), mult)
+        assert fixed[1] > fixed[0]
+
+    def test_a_zero_multiplier_does_not_produce_inf(self):
+        out = _discount(pd.Series([-10.0]), pd.Series([0.0]))
+        assert np.isfinite(out[0])
+
+    def test_recommend_buries_a_backup_quarterback(self):
+        league = LeagueSettings(name="t", teams=12)
+        b = pd.DataFrame({
+            "name": ["Real WR", "Backup QB A", "Backup QB B"],
+            "position": ["WR", "QB", "QB"], "team": ["A", "B", "C"],
+            "proj_points": [150.0, 300.0, 250.0], "draft_score": [20.0, 60.0, 40.0],
+            "adp": [80.0, 120.0, 140.0], "pos_rank": [30, 12, 20],
+            "overall_rank": [90, 130, 160], "consistency": [0.5, 0.5, 0.5],
+            "adj_ppg": [10.0, 18.0, 15.0], "drafted": [False, False, False],
+        })
+        b["_key"] = b["name"].map(lambda n: n.lower())
+        # A quarterback already rostered: BACKUP_DECAY["QB"] puts need at 0.04.
+        out = recommend(b, league, current_pick=100, next_pick=120,
+                        roster={"QB": 1, "RB": 2, "WR": 2, "TE": 1}, top_n=3)
+        assert out["name"].iloc[0] == "Real WR"
+        assert out["name"].tolist()[1:] == ["Backup QB A", "Backup QB B"]
 
 
 class TestSurvival:
