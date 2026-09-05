@@ -1416,6 +1416,13 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
     board and 15 teams still needing one, the plan is offered the sixteenth best
     and not the first — an honest expectation from arithmetic, with no threshold
     to choose.
+
+    The count of what the league has already taken comes from the recorded
+    picks' own positions, so a pick logged without one makes this rule more
+    conservative, not less: `league_need` rises toward `starters * teams` and
+    the position is left to the availability filter that just emptied it. That
+    is why `record_pick` has to store the position it resolves, which it did
+    not until lena's 053290b.
     """
     pool = avail[~avail["_key"].isin(taken)]
     if pool.empty:
@@ -1424,7 +1431,7 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
     keep = pool[survives >= PLAN_SURVIVAL]
     unfilled = _unfilled_starters(league, roster)
     drafted_by_position = Counter(str(p.get("position")) for p in state.picks)
-    for pos, short in unfilled.items():
+    for pos in unfilled:
         if (keep["position"] == pos).any():
             continue
         chunk = pool[pool["position"] == pos].sort_values("draft_score", ascending=False)
@@ -1433,7 +1440,6 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
         if len(chunk) <= league_need:
             continue  # the league really can exhaust this position; the filter stands
         keep = pd.concat([keep, chunk.iloc[league_need:]])
-        _ = short
 
     # With no more picks than empty required slots, every remaining pick has to
     # fill one -- that is arithmetic, not a preference, and the recommender

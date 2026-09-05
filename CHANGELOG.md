@@ -621,15 +621,21 @@ All notable changes to this project. Format follows
   Jets D/ST, 221 Nick Folk — one kicker, one defense, every name a player ESPN
   projects.
 - `expected_best_at_next_pick` no longer values an exhausted position at its own
-  worst remaining player. That was a real defect independent of the above, and
-  the general case of it: `marginal_value` is `draft_score - fallback`, so a
-  position with 265 receivers trailing to -145 showed a far larger margin than
-  one with 32 defenses trailing to -25 — tail length, not opportunity cost. It
-  is worst with no next pick, where every survival is 0 and every fallback was
-  therefore its floor: the last pick's top five were five receivers, and are now
-  Meyers, the top defense, Deebo and two more defenses. It also fixes a one-man
-  position, whose fallback used to be that man's own score, making the marginal
-  value of taking him ~0 when in fact losing him leaves nothing.
+  worst remaining player. A position expected to be empty now contributes 0, and
+  **0 is the correct value, not merely a less wrong one**: `draft_score` is value
+  over replacement, replacement level is therefore 0 by construction, and a
+  position that empties out is exactly the case where you stream a
+  replacement-level player off waivers. Stating it that way is lena's, and it
+  matters — read as "a tail-length artefact was removed", someone re-adds a
+  floor later on the reasoning that motivated the first one.
+  What it replaced was a real defect independent of everything above:
+  `marginal_value` is `draft_score - fallback`, so a position with 265 receivers
+  trailing to -145 showed a far larger margin than one with 32 defenses trailing
+  to -25. Worst with no next pick, where every survival is 0 and every fallback
+  was its floor — the last pick's top five were five receivers, and are now
+  Meyers, the top defense, Deebo and two more defenses. A one-man position was
+  the sharpest case: its fallback was that man's own score, so taking him scored
+  a marginal value of ~0 when losing him leaves nothing at all.
 - The replay barely exercises any of this and does not move: blend 3.182 both
   ways, model 4.309 -> 4.310, survival Brier 0.131 -> 0.132, log loss
   0.412 -> 0.414 over the same 119 scored picks. Stated rather than dressed up —
