@@ -1132,6 +1132,20 @@ or a **starter ahead of him is out**. The two are listed rather than traded off,
 because trading them off needs a rate nobody has measured. A player with neither
 reason is not a claim and is not listed.
 
+**The list is ordered by `recent_points_per_game`, and role change carries
+weight 0.** That is the alternative the backtest measured as better, and
+`ranked_by` in the payload says so with the numbers attached. Role change is
+still one of the two reasons a player is ON the list; it is never a rank input.
+Zero rather than negative: the sign is consistent and nobody can explain it, and
+inverting a term we cannot explain would be fitting the direction of a result
+rather than acting on a mechanism.
+
+A consequence worth knowing before Sunday: a handcuff whose starter is out has
+low recent points *by construction* — not playing is what makes him a handcuff —
+so he sorts down the list. His `contingent_value` is still in the row, unmeasured
+and visible, to override on. Nothing measured says where he belongs; what is
+measured is only that role change is the wrong key.
+
 `census` is what makes an empty list readable: `considered`, `with_weekly_usage`,
 `role_moved`, `starter_out`, `claimed`, and a named `status`. A quiet week and a
 broken free-agent pull both produce `claims: []`, and those are the two most
@@ -1142,12 +1156,13 @@ it to be inferred from a zero.
 the top ten by role change scored 6.4 to 10.1 fewer PPR points over the following
 four weeks than the top ten by recent points per game drawn from the same
 undrafted pool — every season, both blocks, and all eight `(recent, prior)`
-windows tried, 64 blocks in all. `just rolechange` reproduces it and
-`just rolechange names` prints the rows behind one Tuesday. Projection lag and
-contingent value remain `unmeasured`; `evidence.role_entropy` carries a positive
-result. The list is still ordered by role change, because what should replace
-that ordering is a product decision nobody has made yet — but every row now says
-what the evidence found rather than that there is none. Ordering is role-movers by `role_change` first, then live
+windows tried, 64 blocks in all, with block spreads of 0.48 to 1.06. That is not
+"no signal": it is signal pointing the wrong way, and the tight spreads are what
+make it readable as such. `just rolechange` reproduces it and
+`just rolechange names` prints the rows behind one Tuesday. The ordering was
+changed to recent points per game as a result, and `ROLE_CHANGE_RANK_WEIGHT` is
+0. Projection lag and contingent value remain `unmeasured`;
+`evidence.role_entropy` carries a positive result. Ordering is role-movers by `role_change` first, then live
 contingencies by `contingent_value` — weight 1 on one term and 0 on the rest,
 which is a stated policy about which question to read first, not a measurement.
 The four numbers stay in the row where a human can override them rather than

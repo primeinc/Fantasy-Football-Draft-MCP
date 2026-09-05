@@ -360,13 +360,34 @@ All notable changes to this project. Format follows
   statement about a score whose evidence exists and is negative — worse than the
   honest absence it replaced. Three tests that asserted `== UNMEASURED` were
   updated to assert the measured value, not loosened.
-- **The ordering is not changed here.** `rank_claims` still orders by role change
-  with weight 1, and its docstring said the backtest was what licensed that
-  weight. The backtest has run and does not license it — but what replaces it
-  (rank by recent points, blend, keep role change as a tiebreak, drop it from the
-  ordering and leave it as a column) is a product decision with more than one
-  defensible answer, so it is escalated rather than settled unilaterally. What is
-  settled is that nobody may now call this ordering merely unmeasured.
+- **The weight is now 0 and the ordering is recent points per game**, the
+  alternative that beat it in 64 of 64 blocks. `ROLE_CHANGE_RANK_WEIGHT` and
+  `RANK_BY` name the decision so a future edit has to change a constant rather
+  than quietly reorder everyone's claim list, and `ranked_by` in the payload
+  states it with the numbers attached. Role change stays in every row as a
+  labelled observation and is never a rank input. `just rolechange` is the
+  licence for the weight being 0, exactly as the backtest was named as the
+  licence for it being 1.
+- **Zero rather than negative.** The sign is consistent across 64 blocks and
+  nobody can say why. A term we cannot explain is not a feature because it points
+  somewhere reliably; inverting it would be fitting the direction of a result
+  rather than acting on a mechanism.
+- Role change is still one of the two reasons a player is *on* the list. Only the
+  order changed — and the first version of that edit replaced the two tiers with
+  a bare sort and dropped the filter along with them, because the filter had been
+  living inside the tier membership rather than anywhere it could be seen. Eight
+  tests caught it; the filter is now written down as a filter.
+- A consequence stated rather than discovered: a handcuff whose starter is out
+  has low recent points by construction, so he sorts down the list.
+  `contingent_value` is still in his row, unmeasured and visible. Nothing
+  measured says where he belongs; what is measured is only that role change is
+  the wrong key.
+- `test_a_role_mover_still_outranks_a_contingency` was renamed and rewritten: it
+  was named for a policy that no longer exists and **kept passing after that
+  policy was deleted**, because the fixture's breakout tops both orderings. A
+  test that passes under either rule tests neither. The new
+  `TestTheOrderingFollowsPoints` builds the disagreement on purpose, and both of
+  its behavioural tests fail when the old ordering is restored.
 
 **A traded player was two players, and it crashed the tool (#45 M3)**
 - Found by the backtest, not by reading: Cam Akers occupied two of one ranked

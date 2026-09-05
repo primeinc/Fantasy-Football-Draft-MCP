@@ -353,8 +353,15 @@ class TestRankedClaims:
         # With his starter healthy he has no reason to be claimed either.
         assert "Handcuff Guy" not in [c["player"] for c in self.claims(out_now=())]
 
-    def test_a_role_mover_still_outranks_a_contingency(self):
-        # Listed rather than traded off, but role-movers are read first.
+    def test_the_breakout_leads_because_of_his_points_not_his_role(self):
+        """He is first either way on this fixture, which is why it cannot decide.
+
+        This assertion used to be named for a policy that no longer exists --
+        "role movers are read first" -- and it kept passing after that policy was
+        deleted, because the breakout happens to top both orderings. A test that
+        passes under either rule is not testing the rule.
+        `TestTheOrderingFollowsPoints` below is the one that decides it.
+        """
         assert self.claims()[0]["player"] == "Breakout Guy"
 
     def test_every_claim_carries_a_priority_in_this_league_s_units(self):
@@ -726,6 +733,85 @@ class TestTheTool:
         out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
         assert "could not assemble the waiver inputs" in out["error"]
         assert "boom" in out["error"]
+
+
+class TestTheOrderingFollowsPoints:
+    """Role change has weight 0 and the list is ordered by recent points per game.
+
+    The backtest is the reason and `just rolechange` reproduces it: ordering by
+    role change lost to ordering by recent points per game in 64 of 64 blocks --
+    four seasons, both blocks, all eight (recent, prior) windows -- by 6.4 to
+    10.1 PPR points over the following four weeks, with block spreads of 0.48 to
+    1.06.
+
+    The fixture in `TestRankedClaims` cannot test this, because its breakout tops
+    both orderings. These build the disagreement on purpose.
+    """
+
+    def disagreeing_changes(self):
+        """Two claims whose two orderings are opposite.
+
+        `Big Role Small Points` has four times the role change and a quarter of
+        the points; `Small Role Big Points` the reverse. Under the old weight the
+        first led; under the measured one the second does.
+        """
+        return pd.DataFrame([
+            {"name": "Big Role Small Points", "role_change": 0.480,
+             "target_share_change": 0.30, "snap_share_change": 0.18,
+             "recent_games": 2, "prior_games": 3, "recent_points": 9.0},
+            {"name": "Small Role Big Points", "role_change": 0.120,
+             "target_share_change": 0.08, "snap_share_change": 0.04,
+             "recent_games": 2, "prior_games": 3, "recent_points": 37.0},
+        ])
+
+    def pool(self):
+        return pd.DataFrame([
+            {"name": "Big Role Small Points", "position": "WR",
+             "percent_owned": 2.0, "percent_change": 1.0},
+            {"name": "Small Role Big Points", "position": "WR",
+             "percent_owned": 5.0, "percent_change": 2.0},
+        ])
+
+    def bench(self):
+        return pd.DataFrame({"name": ["Spare Guy"], "position": ["WR"],
+                             "proj_points": [40.0], "exp_games": [17.0],
+                             "injury_risk": [0.2], "bye_week": [np.nan]})
+
+    def claims(self):
+        return waivers.rank_claims(self.pool(), self.disagreeing_changes(),
+                                   pd.DataFrame(), league(), waivers.LeagueRules(),
+                                   mine=None, bench=self.bench())
+
+    def test_the_list_follows_recent_points_not_role_change(self):
+        order = [c["player"] for c in self.claims()]
+        assert order == ["Small Role Big Points", "Big Role Small Points"], (
+            "the claim list is ordered by role change again; the backtest says "
+            "that ordering is worse by 6.4 to 10.1 points over four weeks")
+
+    def test_the_row_reports_role_change_without_ranking_on_it(self):
+        """Reported, not ranked on. Both have to be true at once."""
+        top = self.claims()[0]
+        assert top["role_change"] == 0.12, "the observation is still in the row"
+        assert top["recent_points_per_game"] == 18.5
+        assert top["evidence"]["role_change"] == waivers.ROLE_CHANGE_EVIDENCE
+
+    def test_role_change_carries_no_weight_and_the_report_says_so(self):
+        """The guard against it quietly coming back.
+
+        A future edit that reintroduces a nonzero weight has to change this
+        constant, and changing it fails here rather than silently reordering
+        everyone's claim list. The ordering test above catches the same thing
+        behaviourally; this one names it, so the failure says what was decided
+        rather than only that an order moved.
+        """
+        assert waivers.ROLE_CHANGE_RANK_WEIGHT == 0.0
+        assert waivers.RANK_BY == "recent_points_per_game"
+        out = waivers.waiver_report(self.pool(), self.disagreeing_changes(),
+                                    pd.DataFrame(), league(), waivers.LeagueRules(),
+                                    mine=None, bench=self.bench())
+        assert out["ranked_by"].startswith("recent_points_per_game")
+        assert "weight 0" in out["ranked_by"]
+        assert "MEASURED AND NEGATIVE" in out["ranked_by"]
 
 
 class TestDropCandidate:

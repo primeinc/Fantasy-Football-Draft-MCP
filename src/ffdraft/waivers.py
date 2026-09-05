@@ -108,6 +108,22 @@ ROLE_CHANGE_EVIDENCE = (
 # than three weeks stops being "this changed" and becomes "this is who he is".
 RECENT_WEEKS = 2
 PRIOR_WEEKS = 3
+
+# What the claim list is ordered by, and what it is NOT ordered by.
+#
+# `role_change` had weight 1 here until its backtest ran. It lost to recent
+# points per game in 64 of 64 blocks -- four seasons, both blocks, all eight
+# (recent, prior) windows -- by 6.4 to 10.1 PPR points over the following four
+# weeks, with block spreads of 0.48 to 1.06. So the ordering is the alternative
+# that beat it, and the weight on role change is 0.
+#
+# Zero, not negative. The sign is consistent and we do not know why, and a term
+# nobody can explain is not a feature just because it points somewhere reliably;
+# inverting it would be fitting the direction of a result rather than acting on
+# an understood mechanism. `just rolechange` is the licence for this weight
+# being 0, the way the backtest was the licence for it being 1.
+RANK_BY = "recent_points_per_game"
+ROLE_CHANGE_RANK_WEIGHT = 0.0
 # Below this many recent appearances there is no week-over-week anything.
 MIN_RECENT_GAMES = 1
 
@@ -464,9 +480,11 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
     them off needs a rate — how much contingent value equals how much role
     change — and no such rate has been measured.
 
-    Ordering inside the list is role-movers first by `role_change`, then live
-    contingencies by `contingent_value`. That is a stated policy about which
-    question to read first, not a claim that one is worth more.
+    Ordering is by `recent_points_per_game`, over both reasons together, because
+    that is the alternative that beat `role_change` in the backtest. Role change
+    still decides who is ON the list -- a role that moved is one of the two
+    reasons a player is a claim at all -- but it no longer decides the order of
+    it, and `ROLE_CHANGE_RANK_WEIGHT` is 0.
 
     There is no weighted blend, and that is deliberate — but it is not the
     absence of a choice. It is weight 1 on `role_change` and 0 on the rest for
@@ -476,16 +494,24 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
     where a soft blend would hide four invented weights inside one score nobody
     can decompose.
 
-    THE BACKTEST THAT WAS SUPPOSED TO LICENSE THAT WEIGHT HAS RUN, AND IT DOES
-    NOT. `role_change_backtest` finds this ordering worse than ranking the same
-    pool by recent points per game by 6.4 to 10.1 points over the next four
-    weeks, in all four seasons and at all eight windows tried; see
-    `ROLE_CHANGE_EVIDENCE`, which every claim row now carries. What replaces the
-    ordering is a product decision with more than one defensible answer -- rank
-    by recent points, blend, keep role change only as a tiebreak, or drop the
-    score from the ordering and leave it as a column -- so it is not settled
-    here unilaterally. What is settled is that nobody may now describe this
-    ordering as merely unmeasured.
+    THE BACKTEST THAT WAS SUPPOSED TO LICENSE THAT WEIGHT HAS RUN, AND IT
+    REFUSED IT. `role_change_backtest` found ordering by role change worse than
+    ordering the same pool by recent points per game -- by 6.4 to 10.1 PPR points
+    over the following four weeks, in all four seasons, both blocks, and all
+    eight `(recent, prior)` windows tried: 64 blocks, every one negative, block
+    spreads 0.48 to 1.06. `just rolechange` reproduces it and
+    `just rolechange names` prints the rows behind one Tuesday.
+
+    So the weight is now 0 and the order is the alternative that beat it. Role
+    change stays in every row as a labelled observation carrying
+    `ROLE_CHANGE_EVIDENCE`, and it is never a rank input. `just rolechange` is
+    the licence for the weight being 0, exactly as the backtest was named as the
+    licence for it being 1.
+
+    Zero rather than negative, deliberately. The sign is consistent and nobody
+    can say why, and a term we cannot explain is not a feature because it points
+    somewhere reliably -- inverting it would be fitting the direction of a
+    result rather than acting on an understood mechanism.
 
     The contingency is resolved for the **whole pool before truncation**. It used
     to be read after `.head(limit)`, which meant it was only ever consulted for
@@ -515,6 +541,10 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
                                   if pd.notna(c["snap_share_change"]) else None),
             "recent_games": int(c["recent_games"]),
             "prior_games": int(c["prior_games"]),
+            # What the list is ordered by. Measured to beat role change over the
+            # next four weeks in every season and at every window tried.
+            "recent_points_per_game": round(
+                float(c["recent_points"]) / max(1, int(c["recent_games"])), 2),
         })
     if not rows:
         return []
@@ -535,16 +565,31 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
         np.where(frame["role_change"] > 0, "role moved; starter out", "starter out"),
         "role moved")
 
-    # mergesort is stable and name breaks the remaining ties, so the answer does
-    # not depend on the order of rows in the pool. Most of a real Tuesday pool
-    # ties at role_change 0.000, and quicksort's ordering inside a tie is an
-    # implementation detail — it decided which claims the user saw at all.
-    movers = frame[frame["role_change"] > 0].sort_values(
-        ["role_change", "player"], ascending=[False, True], kind="mergesort")
-    contingents = frame[(frame["contingent_value"] > 0) & (frame["role_change"] <= 0)] \
-        .sort_values(["contingent_value", "player"], ascending=[False, True],
-                     kind="mergesort")
-    out = pd.concat([movers, contingents]).head(limit)
+    # One ordering, by the measured-better number, over both reasons together.
+    # It used to be two tiers -- role movers by `role_change`, then live
+    # contingencies by `contingent_value` -- and the tiers were themselves a
+    # role-change ordering, since tier membership was `role_change > 0`. Weight 0
+    # means neither the key nor the tier.
+    #
+    # A consequence worth stating rather than discovering: a handcuff whose
+    # starter is out has low recent points BY CONSTRUCTION -- he has not been
+    # playing, which is what makes him a handcuff -- so he now sorts down the
+    # list. `contingent_value` is still in his row, unmeasured and visible, for a
+    # human to override on. Nothing measured says where he belongs; what is
+    # measured is only that role change is the wrong key.
+    #
+    # mergesort is stable and `player` breaks the remaining ties, so the answer
+    # does not depend on the order of rows in the pool. Most of a real Tuesday
+    # pool ties, and quicksort's ordering inside a tie is an implementation
+    # detail that decided which claims the user saw at all.
+    # The two reasons are still the FILTER -- a player with neither is not a
+    # claim and is not listed. Only the order changed. The first version of this
+    # edit replaced the two tiers with a bare sort and silently dropped the
+    # filter with them, because the filter had been living inside the tier
+    # membership rather than anywhere it could be seen; eight tests caught it.
+    has_reason = (frame["role_change"] > 0) | (frame["contingent_value"] > 0)
+    out = frame[has_reason].sort_values([RANK_BY, "player"], ascending=[False, True],
+                                        kind="mergesort").head(limit)
 
     drop = drop_candidate(bench, league, mine) if bench is not None else {
         "player": None, "reason": "no bench supplied"}
@@ -610,6 +655,9 @@ def waiver_report(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.Dat
         live = contingency[contingency["name"].astype(str).isin(names)]
         out_now = int(live["starter_is_out"].fillna(False).sum())
     return {
+        "ranked_by": (f"{RANK_BY}; role change carries weight "
+                      f"{ROLE_CHANGE_RANK_WEIGHT:.0f} and is reported, not ranked on "
+                      f"-- {ROLE_CHANGE_EVIDENCE}"),
         "census": {
             "considered": considered,
             "with_weekly_usage": with_usage,
