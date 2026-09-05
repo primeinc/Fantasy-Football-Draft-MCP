@@ -182,21 +182,22 @@ All notable changes to this project. Format follows
   playing less. Unclipped it lifted them, and a receiver the term does not touch
   fell from rank 1 to rank 13 while his own value had not changed at all; that
   one was found by printing a control row, not by reasoning.
-  Measured at pick 125 holding two backs who never miss a game, 553 of 575 rows
-  negative: the bench RB goes from `pick_value` 7.3 at **rank 3** to 0.6 at
-  **rank 16**, and the control receiver stays at rank 1 on an unchanged 13.3.
+  Measured on the merged board at pick 125 holding two backs who never miss a
+  game, 560 of 575 rows negative: the bench RB goes from `pick_value` 7.2 at
+  **rank 3** to 0.5 at **rank 9**, and the control receiver stays at rank 1 on
+  an unchanged 12.7.
 - **What that does not fix, stated because an earlier draft of this entry
-  claimed it did.** Rank 16 is still ahead of 553 negative rows, and the
-  `rank 204` this entry previously reported came from the derived-difference
-  version, which scaled the candidate while holding the fallback fixed. That was
-  inconsistent: every candidate at a full position is behind the same held
-  players, so they all take the same factor, and what the position offers at your
-  next pick shrinks with them. The honest number is 16, and it is smaller than
-  the wrong one. `pick_value`'s zero means "exactly as good as waiting", so
-  anything positive outranks the whole negative field however small — ranking a
-  barely-starting bench player against a starter is a property of comparing
-  marginal-over-waiting across positions, not of this term, and it is not solved
-  here.
+  claimed it did.** The value is cut by 93% and the rank moves six places,
+  because 0.5 is still ahead of 560 negative rows. The `rank 204` this entry
+  previously reported came from the derived-difference version, which scaled the
+  candidate while holding the fallback fixed. That was inconsistent: every
+  candidate at a full position is behind the same held players, so they all take
+  the same factor, and what the position offers at your next pick shrinks with
+  them. The honest number is far smaller than the wrong one. `pick_value`'s zero
+  means "exactly as good as waiting", so anything positive outranks the whole
+  negative field however small — ranking a barely-starting bench player against a
+  starter is a property of comparing marginal-over-waiting across positions, not
+  of this term, and it is not solved here.
 - `roles.START_PROB_FLOOR` (0.05) keeps start probability off exactly zero. The
   model sees a man ahead injured or on his bye and nothing else — not a trade, a
   cut, a benching or a mid-season role loss — and `start_probability`'s own
