@@ -3123,8 +3123,11 @@ def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
     for t in fresh_tools:
         if t.name in live_names:
             live.remove_tool(t.name)
+        # Text answers, never {"result": <str>}: the same switch every
+        # @mcp.tool carries, or a reload would put the wrapper back.
         live.add_tool(t.fn, name=t.name, title=t.title, description=t.description,
-                      annotations=t.annotations, icons=t.icons, meta=t.meta)
+                      annotations=t.annotations, icons=t.icons, meta=t.meta,
+                      structured_output=False)
     return {"added": sorted(fresh_names - live_names),
             "removed": sorted(live_names - fresh_names),
             "reloaded": sorted(fresh_names & live_names)}

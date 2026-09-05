@@ -53,6 +53,9 @@ def test_sync_tools_replaces_adds_and_removes():
     assert _names(live) == {"stays", "arrives"}
     stays = live._tool_manager.get_tool("stays")
     assert stays is not None and stays.fn() == "new"
+    # A re-registered tool answers as text, as every @mcp.tool does.
+    assert all(getattr(t, "output_schema", None) is None
+               for t in live._tool_manager.list_tools())
 
 
 def test_reload_keeps_state_and_server_object():
