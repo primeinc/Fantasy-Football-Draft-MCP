@@ -181,9 +181,16 @@ rather than as pick 170, and the survival model gains an exponential right tail.
 Tests: `tests/test_board.py`, `tests/test_bye.py`, `tests/test_model.py`.
 
 Two negative results belong in the description because they are why defaults
-ship as they do: the bye-stacking penalty measured -2.1 weekly points over
-2022-2025 and stays at 0, and the survival-tail aggregates were reported as
-proving nothing rather than as support.
+ship as they do: the bye-stacking penalty stays at 0, and the survival-tail
+aggregates were reported as proving nothing rather than as support.
+
+Take the bye figures from CHANGELOG.md when the description is written, and do
+not restate them here. This paragraph quoted -2.1 weekly points over 2022-2025
+long after two re-runs had replaced it, most recently with three of the four
+seasons showing their two blocks pointing opposite ways by 8.0, 10.5 and 31.8.
+The conclusion never moved; every magnitude behind it did, twice. A number
+copied into a second place is a number that will disagree with the first, and
+this one is measured by a harness that changes whenever `recommend` does.
 
 ## PR 5 — Replay, room drift, choice model, counterfactual, snapshots
 
