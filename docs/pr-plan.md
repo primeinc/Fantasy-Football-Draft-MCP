@@ -152,10 +152,21 @@ which then raised `TypeError: '<' not supported between instances of 'str' and
 'float'` when the tool sorted its own output.
 
 The remedy is the same each time and it is not a style choice. Ask the question
-you mean: `pd.notna(x)` for presence, `x is True` for a flag, `x is None` for
-absence of a key. Never let truthiness stand in for any of them. On review, the
-grep is cheap and worth running over any diff that reads a frame:
-`\bor\b.*get\(|bool\(.*get\(`.
+you mean: `pd.notna(x)` for presence, `x is None` for absence of a key, and
+`bool(pd.notna(x) and x)` for a flag read out of a frame. Never let truthiness
+stand in for any of them. On review, the grep is cheap and worth running over
+any diff that reads a frame: `\bor\b.*get\(|bool\(.*get\(`.
+
+**Not `x is True`.** That was written here first and it is wrong on the path
+that matters. A real bool column hands back `np.True_`, which is not the Python
+singleton, so `is True` is `False` for a flag that is genuinely set — it stops
+firing on every frame that carries the column on every row, which is the normal
+case, and keeps working only on the mixed-source frame the defect was found in.
+It therefore fails silently in exactly the direction a reviewer will not look.
+Measured on pandas 3.0.5 / numpy 2.5.2 across all six states — bool column
+True/False, object column with a Python `True`, object column with NaN, the
+concat that leaves NaN in the row lacking the flag, and no column at all:
+`bool(pd.notna(x) and x)` is right in all six, `is True` in four.
 
 Serialisation is the same hazard wearing different clothes: `json.dumps` writes
 a float NaN as a bare `NaN` literal, which Python reads back and every other
@@ -369,13 +380,18 @@ parallel.
 
 ## PR 10 — Waiver targets from role change
 
-Stack, and incomplete on purpose. Sources: `805c4f5`, `1fc0acf`, `0bbd699`,
-`8f328a7`, `a7b0a0e`, as landed.
+Stack. Sources: `805c4f5`, `1fc0acf`, `0bbd699`, `8f328a7`, `a7b0a0e`, and the
+wiring commit, as landed.
 
 A new `waivers.py` scores a free-agent claim on the role moving rather than on
 the points scored, with `roles.handcuff_table` and `roles.bench_values` behind
-it. Nothing user-facing yet: no MCP tool, and `server.py` gains one line adding
-the module to `RELOAD_ORDER`. The claim list says which kind of empty it is when
+it. `server.py` adds `_waiver_inputs` — the only part that touches the network
+or the caches, so a test replaces it whole — and the `waiver_targets` tool,
+which goes out through `_emit` like every other payload; `just waivers <week>`
+prints the ranked table. The round trip is covered by a control that turns
+sanitising off and requires the break, so it cannot go vacuous if the fixture
+stops carrying a hole: today that hole is `handcuff_for`, filled by `.map` and
+therefore NaN on every claim that is not a handcuff. The claim list says which kind of empty it is when
 it is empty, the contingency is resolved before the cut rather than after it —
 a handcuff's `role_change` is 0 by construction, so cutting first dropped him
 before his contingency was read — and a drop says when it rests on a
@@ -396,15 +412,19 @@ carries `unverified-shape`, because the capture was taken mid-draft and reports
 every player as a free agent, so the split the tool selects on has never been
 exercised. Those labels ship; they are not placeholders to quietly drop.
 
-Open before the tool is wired, found on review and reproduced here:
-`drop_candidate` reads `bool(worst.get("unpriced", False))`, and NaN is truthy.
-A bench assembled from two sources where only one carries the column concatenates
-to dtype object holding `[False, nan]`, and the row with no flag reports
-`unpriced` True — labelling a board-priced player a replacement-level stand-in
-and telling the user his number is not real when it is. Not reachable today,
-because every frame out of `my_rows` carries the column on every row. It becomes
-reachable the moment a bench is assembled from mixed sources, which is the
-wiring. The fix is `worst.get("unpriced") is True`.
+Found on review by marge and landed with the wiring: `drop_candidate` read
+`bool(worst.get("unpriced", False))`, and NaN is truthy. A bench assembled from
+two sources where only one carries the column concatenates to dtype object
+holding `[False, nan]`, and the row with no flag reported `unpriced` True —
+labelling a board-priced player a replacement-level stand-in and telling the
+user his number is not real when it is. It was unreachable while every frame out
+of `my_rows` carried the column on every row, and became reachable at the wiring.
+
+The fix is `bool(pd.notna(worst.get("unpriced")) and worst.get("unpriced"))`,
+**not** the `is True` this document recommended until it was measured; see the
+section above for the six states and why `is True` fails on the ordinary frame
+rather than the odd one. Regression test:
+`test_a_bench_from_mixed_sources_does_not_invent_a_stand_in`.
 
 ## Open
 
