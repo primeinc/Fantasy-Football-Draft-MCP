@@ -564,7 +564,16 @@ def record_pick(player_name: str, overall_pick: int | None = None,
     b = _build_board()
     row = bd.match_player(player_name, b)
     resolved = row["name"] if row is not None else player_name
-    pick = state.record(resolved, overall_pick, team_slot)
+    # Store the position, the way `sync_draft` does. It was reported in the
+    # answer below and thrown away, which was invisible until something counted
+    # picks by position: `plan_my_draft` decides whether a required position can
+    # still be exhausted by comparing what is left against what the league has
+    # already taken, and a draft logged by hand answered "none taken" for every
+    # position. Late in such a draft that turns into `continue` and the position
+    # is dropped from the plan entirely -- the bug #26 exists to fix, reappearing
+    # for anyone not auto-syncing.
+    pick = state.record(resolved, overall_pick, team_slot,
+                        position=(str(row["position"]) if row is not None else None))
     return json.dumps({
         "recorded": pick,
         "matched_to": resolved if row is not None else "no model match (logged as typed)",
