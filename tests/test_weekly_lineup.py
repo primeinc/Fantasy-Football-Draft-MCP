@@ -1,4 +1,4 @@
-"""`set_lineup` end to end: what the tool emits, not what a helper returns.
+"""`weekly_lineup` end to end: what the tool emits, not what a helper returns.
 
 The invariant the task specifies is about the payload, so it is asserted at the
 tool's exit. The network is replaced at the two functions that touch it, which
@@ -71,7 +71,7 @@ def _wire(monkeypatch, *, weekly=None, entries=None, board=None, league=None):
 
 
 def _call(week=9):
-    return json.loads(server.set_lineup("123", week))
+    return json.loads(server.weekly_lineup("123", week))
 
 
 class TestThePayload:
@@ -127,6 +127,34 @@ class TestThePayload:
         assert row["basis"] == lineup.BASIS_ESPN
         assert row["week_points"] == 40.0
 
+    def test_each_slot_carries_the_label_espn_shows(self, monkeypatch):
+        # `slot` is the league's internal name; ESPN's UI shows its own, and this
+        # output is now instructions a human retypes into that UI. A flex slot
+        # reads "RB/WR/TE" on the screen and "FLEX" here.
+        league = _league(starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1,
+                                   "K": 1, "DST": 1})
+        _wire(monkeypatch, league=league)
+        by_slot = {s["slot"]: s["slot_label"] for s in _call()["lineup"]}
+        assert by_slot["K"] == "K"
+        assert by_slot["FLEX"] == "RB/WR/TE"
+
+    def test_the_flex_label_follows_the_league_not_a_fixed_string(self, monkeypatch):
+        # Derived from `league.flex_eligible`, so a league whose flex excludes
+        # tight ends gets a label saying so rather than ESPN's generic one.
+        league = _league(starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1,
+                                   "K": 1, "DST": 1},
+                         flex_eligible=("RB", "WR"))
+        _wire(monkeypatch, league=league)
+        by_slot = {s["slot"]: s["slot_label"] for s in _call()["lineup"]}
+        assert by_slot["FLEX"] == "RB/WR"
+
+    def test_versus_espn_leads_the_payload(self, monkeypatch):
+        # It is the actionable part now that the tool advises rather than acts:
+        # "start these, bench those" is what a human retypes, and the lineup
+        # below is the reasoning behind it.
+        _wire(monkeypatch)
+        assert list(_call())[:3] == ["week", "season", "versus_espn"]
+
     def test_alternatives_are_slot_eligible_and_never_positive(self, monkeypatch):
         _wire(monkeypatch)
         for slot in _call()["lineup"]:
@@ -137,7 +165,7 @@ class TestThePayload:
         board = _board()
         board.loc[board["name"] == "WR One", "adj_ppg"] = float("nan")
         _wire(monkeypatch, board=board)
-        raw = server.set_lineup("123", 9)
+        raw = server.weekly_lineup("123", 9)
         assert "NaN" not in raw
         json.loads(raw)
 

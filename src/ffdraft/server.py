@@ -2414,7 +2414,7 @@ def _waiver_inputs(league_id: str, week: int, season: int):
     # receiver-heavy roster it called TE1, K1 and DST1 the bench and offered the
     # only defense as the drop, in a row that simultaneously reported he starts
     # every week. Found by marge; `lineup.droppable` is the shared answer, and
-    # #44's set_lineup asks the same question of the same function.
+    # #44's weekly_lineup asks the same question of the same function.
     #
     # `mine` goes to `drop_candidate` WHOLE, alongside the bench, and has to stay
     # that way: `roles.start_probabilities` reads it for "the players I already
@@ -2504,7 +2504,7 @@ def _lineup_inputs(league_id: str, week: int, season: int):
 
 
 @mcp.tool()
-def set_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
+def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     """The lineup that maximises expected points this week, and why each slot.
 
     Every starter carries `week_points`, the `basis` that number came from, the
@@ -2559,8 +2559,25 @@ def set_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     slots = []
     for _, row in starters.iterrows():
         alts = lineup.slot_alternatives(row, bench, league, lineup.WEEK_VALUE)
+        slot_name = str(row[lineup.SLOT_COLUMN])
         slots.append({
-            "slot": str(row[lineup.SLOT_COLUMN]),
+            "slot": slot_name,
+            # The label ESPN's UI shows, because `slot` is the league's internal
+            # name and this output is now instructions a human retypes into that
+            # UI -- a label that does not match the screen is where a
+            # hand-applied lineup goes wrong. This league's flex reads
+            # "RB/WR/TE" there and "FLEX" here. Flagged by lena.
+            #
+            # Built from `league.flex_eligible` rather than from a table of
+            # ESPN's slot names, because the two can disagree: `_ESPN_SLOT_NAMES`
+            # calls slot 23 "FLEX" while this league displays its eligible
+            # positions, and only the league's own settings say which positions
+            # those are. Derived, not guessed at.
+            "slot_label": ("/".join(league.flex_eligible)
+                           if slot_name == lineup.FLEX_SLOT
+                           else "/".join((*league.flex_eligible, "QB"))
+                           if slot_name == lineup.SUPERFLEX_SLOT
+                           else slot_name),
             "player": str(row["name"]),
             "position": str(row["position"]),
             "week_points": round(float(row[lineup.WEEK_VALUE]), 1),
@@ -2570,6 +2587,12 @@ def set_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         })
     return _emit(_jsonable({
         "week": week, "season": season,
+        # `versus_espn` leads, because since the rename this tool advises rather
+        # than acts: "start these, bench those" is the part a human retypes, and
+        # the full lineup below is the reasoning behind it. It read as a control
+        # at the bottom when the tool was going to set the lineup itself.
+        "versus_espn": lineup.against_espn(starters, rosters.started(priced),
+                                           lineup.WEEK_VALUE),
         "projected_points": round(float(starters[lineup.WEEK_VALUE].sum()), 1)
         if not starters.empty else 0.0,
         "lineup": slots,
@@ -2579,8 +2602,6 @@ def set_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
                   for _, r in bench.iterrows()],
         "unfilled_slots": lineup.unfilled_slots(starters, league),
         "unplaceable": [str(n) for n in lineup.unplaceable(priced).get("name", [])],
-        "versus_espn": lineup.against_espn(starters, rosters.started(priced),
-                                           lineup.WEEK_VALUE),
         # How many of the pool ESPN gave a weekly projection for, so the reader
         # can see how much of the lineup rests on the fallback.
         "espn_weekly_projections_seen": weekly_seen,
