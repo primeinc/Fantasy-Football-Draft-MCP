@@ -534,12 +534,11 @@ def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
 # cannot see); above ROLE_GROWTH it has grown (a rookie or a new starter the
 # box scores have not caught up with). Replaying the live draft showed both:
 # Tyrone Tracy at 41 vs 185, KC Concepcion at 156 vs 102.
-# Clamp on a pick_value multiplier's magnitude. `np.where` evaluates both
-# branches, so a multiplier of exactly 0 would produce inf in rows the branch
-# never selects. A start probability of exactly 0 is a real answer — "he can
-# never enter the lineup" — and this sends him as far down the list as the
-# arithmetic allows, which is what that means.
-DISCOUNT_FLOOR = 1e-6
+# A multiplier above this would flip the sign of a negative pick_value rather
+# than push it further down. Nothing in `recommend` comes close -- role caps at
+# ROLE_CEILING 1.3, need at 1.18 -- but the reflection below is only monotone
+# while it holds.
+DISCOUNT_CEILING = 2.0
 ROLE_DISAGREEMENT = 0.70
 ROLE_FLOOR = 0.20
 ROLE_GROWTH = 1.30
@@ -571,20 +570,33 @@ def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
     the list, and above 1 always means further up.
 
     Multiplication alone does not do that. Almost every candidate on a live
-    board has a negative pick_value -- most players are worth less than what
-    waiting is expected to return -- and multiplying a negative number by a
-    discount moves it *toward* zero, so the ordering inside the negative half
-    comes out inverted: the worse the player, the higher the discount ranks him.
-    Dividing is the same penalty with the sign the other way round.
+    board has a negative pick_value -- 564 of 577 available rows at pick 123 of
+    the recorded draft -- because most players are worth less than what waiting
+    is expected to return. Multiplying a negative number by a discount moves it
+    *toward* zero, so the ordering inside the negative half comes out inverted:
+    with need_mult 0.04 for a second quarterback, the worse the backup the
+    higher he ranked, and recommendation ranks 17 to 22 were six consecutive
+    backup QBs ordered by how bad they are.
+
+    A multiplier of `m` is read as "move this by (1 - m) of its own size", which
+    is what multiplying already means for a positive value and is applied by
+    reflection to a negative one: `v * (2 - m)`. Dividing would express the same
+    ordering, and was the first fix here, but it is unbounded -- `need_mult`
+    bottoms out at 0.02, so a negative value could be inflated fiftyfold. That
+    is invisible in a ranking and ruinous in a sum: `replay` sums `pick_regret`
+    per team and sorts the team table on it, and one backup quarterback at pick
+    108 gave his team a regret of 8641 against 398 for the next worst. The
+    reflection is bounded at twice the magnitude, so no single pick can take
+    over an aggregate.
 
     Every multiplier in `recommend` goes through here, so they cannot drift
-    apart on this. The same defect was found independently in `role_mult`,
+    apart on this. The defect was found independently in `role_mult`,
     `need_mult` and `roles_mult`; it is one missing invariant, not three bugs.
     """
     v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
     m = pd.to_numeric(mult, errors="coerce").fillna(1.0).to_numpy(dtype=float)
-    m = np.where(np.abs(m) < DISCOUNT_FLOOR, DISCOUNT_FLOOR, m)
-    return np.where(v >= 0, v * m, v / m)
+    m = np.clip(m, 0.0, DISCOUNT_CEILING)
+    return np.where(v >= 0, v * m, v * (2.0 - m))
 
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,

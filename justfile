@@ -363,9 +363,7 @@ roles $what='all' $seasons='2024,2025' $trials='8' $seed='0':
             print(f"  overall improvement {out['overall_improvement']}, blocks agree "
                   f"{out['blocks_agree']}, worst block spread {out['worst_block_spread']}, "
                   f"{out['players_swapped']} players swapped")
-            if not out["blocks_agree"]:
-                print("  the blocks disagree in sign: this improvement is inside the "
-                      "harness's own noise and supports nothing")
+            print("  " + adp_mod.block_verdict(out))
 
 # Does the bye-week stacking penalty win weekly lineup points? Two disjoint seed
 # blocks per season, both reported: a mean whose blocks disagree is noise.
@@ -403,9 +401,7 @@ bye $seasons='2022,2023,2024,2025' $trials='12' $weight='0.08' $seed='0':
                   f"{blk['empty_slots_on']}")
     print(f"  overall improvement {out['overall_improvement']}, blocks agree "
           f"{out['blocks_agree']}, worst block spread {out['worst_block_spread']}")
-    if not out["blocks_agree"]:
-        print("  the blocks disagree in sign in at least one season: this improvement is "
-              "inside the harness's own noise and supports nothing")
+    print("  " + adp.block_verdict(out))
 
 # Probe every external data surface; see docs/data-sources.md
 [script]

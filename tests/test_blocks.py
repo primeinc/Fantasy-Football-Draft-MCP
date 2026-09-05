@@ -93,6 +93,31 @@ class TestBlocks:
         assert out["blocks_agree"] is False
 
 
+class TestAgreementIsNotAPass:
+    def test_agreement_carries_what_it_is_worth_under_the_null(self):
+        # Two blocks of a term that does nothing agree in sign half the time,
+        # so `blocks_agree: true` at the default is one coin flip. The field
+        # sits beside it so a reader does not need the docs open.
+        assert run({0: 5, 1: 5, 2: 5, 3: 5})["blocks_agree_p_null"] == 0.5
+        assert run({i: 5 for i in range(8)}, blocks=4)["blocks_agree_p_null"] == 0.125
+        assert run({0: 5, 1: 5}, blocks=1)["blocks_agree_p_null"] == 1.0
+
+    def test_the_verdict_refuses_the_word_pass(self):
+        out = {"seasons": [run({0: 5, 1: 5, 2: 5, 3: 5})], "blocks_agree": True}
+        out["seasons"][0]["season"] = 2024
+        verdict = adp.block_verdict(out)
+        assert "not a pass" in verdict
+        assert "0.5" in verdict
+
+    def test_the_verdict_says_disagreement_supports_nothing(self):
+        out = {"seasons": [run({0: 18, 1: 18, 2: -21, 3: -21})], "blocks_agree": False}
+        assert "supports nothing" in adp.block_verdict(out)
+
+    def test_nothing_scored_is_not_a_verdict(self):
+        assert adp.block_verdict({"seasons": [], "blocks_agree": False}) == \
+            "nothing scored: no verdict"
+
+
 class TestSummaryShape:
     def test_the_summary_carries_every_field_the_callers_print(self):
         out = run({0: 5, 1: 5, 2: 5, 3: 5})
