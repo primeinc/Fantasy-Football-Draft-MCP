@@ -607,6 +607,19 @@ class TestSpecialTeams:
         assert "Jakobi Meyers" not in out["name"].tolist()
         assert out["proj_points"].tolist() == out["espn_proj"].tolist()
 
+    def test_rows_carry_the_boolean_flags_so_the_board_stays_maskable(self):
+        # A column the appended rows leave empty widens to object, and pandas
+        # refuses to mask with an object column holding None: b[b["is_rookie"]]
+        # then raises for every caller, not just for kickers.
+        out = board.espn_special_teams(self._adp())
+        assert out["is_rookie"].dtype == bool and not out["is_rookie"].any()
+        assert out["off_roster"].dtype == bool and not out["off_roster"].any()
+        modelled = pd.DataFrame({"name": ["Jakobi Meyers"], "position": ["WR"],
+                                 "is_rookie": [False], "off_roster": [False]})
+        combined = pd.concat([modelled, out], ignore_index=True)
+        assert combined["is_rookie"].dtype == bool
+        assert len(combined[combined["is_rookie"]]) == 0
+
     def test_no_market_frame_gives_an_empty_frame_not_a_crash(self):
         assert board.espn_special_teams(None).empty
         assert board.espn_special_teams(pd.DataFrame()).empty

@@ -205,7 +205,16 @@ def _add_special_teams(board: pd.DataFrame, adp: pd.DataFrame | None,
     for col in ("key_version", "market_join_version", "adp_format"):
         if col in board.columns and len(board):
             special[col] = board[col].iloc[0]
+    # Appending rows that have no value for a boolean flag widens the column to
+    # object, and pandas refuses to mask with an object column holding None --
+    # `b[b["is_rookie"]]` raises for every caller, not just the new rows. Any
+    # flag the appended rows do not carry is False for them by construction:
+    # they are not rookies, not off a depth chart, not drafted yet.
+    flags = {c for c in board.columns if board[c].dtype == bool}
+    flags.update({"is_rookie", "off_roster"} & set(board.columns))
     out = pd.concat([board, special], ignore_index=True)
+    for col in flags:
+        out[col] = out[col].fillna(False).astype(bool)
     out["overall_rank"] = out["draft_score"].rank(ascending=False, method="min").astype(int)
     out["adp_delta"] = out["adp"] - out["overall_rank"]
     return out.sort_values("draft_score", ascending=False).reset_index(drop=True)

@@ -375,7 +375,7 @@ KEY_ONLY_JOIN = "key_only"
 # the same reason names.KEY_VERSION exists: the projections in the parquet are
 # still good, but the market columns beside them were derived by rules that no
 # longer hold, and nothing else in the cache gate would notice.
-MARKET_JOIN_VERSION = 3
+MARKET_JOIN_VERSION = 4
 
 
 def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
@@ -1041,6 +1041,13 @@ def espn_special_teams(adp: pd.DataFrame | None) -> pd.DataFrame:
                                                                  method="min")
     out["adp_source"] = "espn"
     out["adp_match"] = EXACT_JOIN
+    # Facts, and they keep the board's boolean columns boolean: a team defense
+    # is not a rookie and is not a player who has fallen off a depth chart.
+    # Left as NaN they widen `is_rookie` and `off_roster` to object, and pandas
+    # refuses to mask with an object column holding None, so `b[b["is_rookie"]]`
+    # raises on the whole board.
+    out["is_rookie"] = False
+    out["off_roster"] = False
     out["_key"] = out["name"].map(norm_name)
     return out.drop_duplicates("_key").reset_index(drop=True)
 

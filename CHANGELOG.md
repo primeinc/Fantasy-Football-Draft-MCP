@@ -165,8 +165,14 @@ All notable changes to this project. Format follows
 - `board.load_espn_adp` carries `pro_team_id`, and `board._ESPN_TEAM_ABBR` maps
   it to the abbreviation the board and the nfldata schedule use, so a kicker or
   a defense gets a real team and therefore a real bye week.
-- `MARKET_JOIN_VERSION` 3: a cached board built before this has no K or D/ST
-  rows and reprices on load.
+- The appended rows carry `is_rookie` and `off_roster` as False rather than
+  leaving them empty, and `_add_special_teams` restores every boolean flag the
+  board had after the concat. Left empty they widen the column to object, and
+  pandas refuses to mask with an object column holding None — `b[b["is_rookie"]]`
+  raised `Cannot mask with non-boolean array containing NA / NaN values` for
+  every caller on the board, not just for kickers.
+- `MARKET_JOIN_VERSION` 4: a cached board built before this has no K or D/ST
+  rows (or has them without the boolean flags) and reprices on load.
 
 **ESPN projections as a role check**
 - `load_espn_adp` also carries `espn_proj` (ESPN's season projection under the
