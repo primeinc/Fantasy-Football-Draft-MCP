@@ -348,6 +348,37 @@ answer also carries the walk-forward `predictors` score sheet, `predictor_rows`
 (each predictor's rank of and probability for every real pick) and the
 `forecast` for the pick on the clock; see `predict_pick`.
 
+### `stream_kdst`
+Which kicker and defence to start or pick up **this week**, by that week's
+matchup. Not by season projection, and not by the draft's counting model — that
+one answers whether a required position can still be filled at all (`#26`/`#32`)
+and is not consulted here. Ranked on the implied points the book has posted: a
+defence wants an opponent expected to score little, a kicker wants his own
+offence expected to score a lot. `look_ahead` weeks come back beside this one so
+a waiver claim can be judged against the bye it has to cover.
+
+**Read `margin_units` per position before reading any margin.** The score is
+calibrated against real results under this league's own K and D/ST bands, in two
+disjoint blocks of weeks, and a margin ships in points only when *both* hold:
+every coefficient keeps its sign across the blocks, **and** each block predicts
+the other better than that block's own average does. Sign agreement alone is not
+enough — a fit can agree with itself and still be worse than guessing the mean,
+which is exactly what kickers do. Where either test fails the ranking still
+stands and the margin is withheld rather than dressed up as points.
+
+On the current data: **defences calibrate** (signs agree, variance explained
+0.186 and 0.125 across blocks, coefficient spread 0.13) and ship points.
+**Kickers do not** (signs agree but variance explained 0.02 and −0.014, so one
+block is worse than its own mean) and ship ordinal.
+
+`line_basis` on every row says whether the book had posted a line for that game.
+Lines cover the whole board about six weeks out and thin to nothing after week
+seven, filling in as each week approaches; a row without one is ranked on what
+remains and **never** given a season number in its place. Weather is not
+available at all — `temp` and `wind` are recorded after kickoff and only
+outdoors, so no future game has them from this source and only the stadium roof
+is known in advance. `just stream <week> [league_id] [look_ahead]` prints it.
+
 ### `draft_retrospective`
 Your draft, pick by pick, against what the model would have taken. Each of your
 picks is replayed twice through the same walk `draft_replay` uses: once priced

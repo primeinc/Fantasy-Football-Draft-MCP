@@ -8,6 +8,53 @@ All notable changes to this project. Format follows
 
 ### Added
 
+**Weekly K and D/ST streaming**
+- `stream_kdst(league_id, week)` (`stream.py`, `just stream <week>`): which
+  kicker and defence to start this week, ranked by that week's matchup with a
+  two-week look-ahead so a waiver claim can cover a bye. Neither the draft's
+  counting model nor any season projection is consulted — both answer "is this
+  player good" where the question is "is this week good for this player".
+- Scored against **this league's own bands** out of `mSettings`, not a generic
+  template, so the calibration target is what the league would actually have
+  paid: the points-allowed and yards-allowed bands, sacks, takeaways, safeties,
+  blocks and return touchdowns for defences; the distance buckets, missed-kick
+  penalty and extra points for kickers.
+- **Kickers ship ordinal, defences ship points, and the data decided.** The
+  score is fitted against 2025 results in two disjoint blocks of weeks (odd
+  against even, so a block is not also a slice of the season) and a margin is
+  reported in points only when every coefficient keeps its sign across both
+  blocks *and* each block predicts the other better than that block's own mean.
+  Defences: signs agree, variance explained 0.186 and 0.125, coefficient spread
+  0.13 — points. Kickers: signs agree but variance explained 0.02 and **−0.014**,
+  so one block is worse than guessing the average — ordinal, and the margin is
+  withheld rather than dressed up.
+- That second test is not what the task specified and was added because the
+  first was not sufficient. Sign agreement alone passes a fit that has learned
+  nothing, which is precisely the kicker case: it agrees with itself and cannot
+  predict. A rule that only checks agreement would have shipped kicker margins
+  in points.
+- Features earned their place or were dropped, measured not assumed. Kept:
+  opponent implied points for defences, own implied points for kickers. Dropped:
+  `home` (signs flip, +0.71 against −0.66, and held-out RMSE gets *worse*) and
+  opponent offensive-yards form (signs flip, RMSE worse). The single-feature fit
+  is both the one that agrees and the most accurate out of sample, which is the
+  usual shape when a feature is noise.
+- Two things the task assumed about the data that measurement changed. **Weather
+  does not exist pre-game**: `temp` and `wind` are populated after kickoff and
+  only outdoors — 0 of 272 rows for the current season — so the stadium roof is
+  the only weather-shaped fact available in advance, and live forecasts would
+  need a source this project does not have. And **no play-by-play is required**:
+  team defence is not a position in `weekly_stats`, but every component the
+  bands need is (`def_sacks`, `def_interceptions`, `def_fumbles`,
+  `def_safeties`, `def_tds`, the block columns), with the opponent's offensive
+  yards giving yards allowed and the final scores in `schedules` giving points
+  allowed. The 48,771-row play-by-play download the task anticipated is not
+  needed and the shared cache is untouched.
+- Implied totals cover the whole board about six weeks out and thin to nothing
+  after week seven, filling in as each week approaches. `line_basis` says per
+  row whether a line existed and a season number is never substituted for a
+  missing one.
+
 **Draft retrospective**
 - `draft_retrospective` (`replay.draft_retrospective`, `just retrospective
   [league_id] [slot]`): one team's picks against what the model would have

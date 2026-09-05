@@ -1972,6 +1972,69 @@ def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> st
 
 
 @mcp.tool()
+def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
+                look_ahead: int = 2) -> str:
+    """Which kicker and defence to start or pick up **this week**, by that
+    week's matchup — not by season projection and not by the draft's supply
+    model, neither of which answers "is this a good week for this player".
+
+    Ranked on the implied points the book has posted for the game: a defence
+    wants an opponent expected to score little, a kicker wants his own offence
+    expected to score a lot. `line_basis` on every row says whether a line
+    existed; books post them a few weeks out, and a row without one is never
+    given a season number in its place.
+
+    **Read `margin_units` per position before the margins.** The score is
+    calibrated to this league's own K and D/ST scoring bands against real
+    results, in two disjoint blocks of weeks, and a margin is reported in points
+    only when every coefficient keeps its sign across both blocks *and* each
+    block predicts the other better than its own average does. Where it does
+    not, the ranking still stands and the margin is withheld rather than dressed
+    up as points. On the current data defences calibrate and kickers do not.
+
+    `look_ahead` weeks are returned beside this one, so a waiver claim can be
+    judged against the bye it has to cover. Weather is not available: `temp` and
+    `wind` are recorded after kickoff, so only the stadium roof is known in
+    advance."""
+    from . import stream
+
+    league, _ = _settings()
+    state = _state()
+    b = _mark_drafted(_build_board(), state)
+    try:
+        rules = bd.espn_league_rules(league_id, season)
+        scoring = rules["scoring"]
+        bands = (scoring.get("slot_overrides") or {}).get("DST") or {}
+        items = scoring.get("kicker_and_dst_items") or {}
+    except Exception as exc:
+        return _emit({"error": f"could not read this league's K/D-ST scoring: "
+                               f"{type(exc).__name__}: {exc}"})
+    if not bands:
+        return _emit({"error": "this league publishes no D/ST scoring bands; the "
+                               "ranking would have nothing to calibrate against"})
+
+    free = b[~b["drafted"]]
+    available = {
+        "DST": [str(t) for t in free[free["position"] == "DST"]["team"].dropna().unique()],
+        "K": [str(n) for n in free[free["position"] == "K"]["name"]],
+    }
+    team_of = {str(r["name"]): str(r["team"])
+               for _, r in free[free["position"] == "K"].iterrows()
+               if pd.notna(r.get("team"))}
+    mine = state.my_rows(b)
+    starters = {}
+    for pos in ("DST", "K"):
+        held = mine[mine["position"] == pos]
+        if len(held):
+            row = held.iloc[0]
+            starters[pos] = str(row["team"]) if pos == "DST" else str(row["name"])
+    out = stream.stream_kdst(season, week, bands, items, available,
+                             history_seasons=[season - 1], starters=starters,
+                             team_of=team_of, look_ahead=max(1, look_ahead))
+    return _emit(_jsonable(out), indent=2)
+
+
+@mcp.tool()
 def draft_retrospective(league_id: str = "", slot: int = 0, around: int = 2) -> str:
     """Your draft, pick by pick, against what the model would have taken.
 
@@ -2193,7 +2256,7 @@ async def stop_watch(league_id: str) -> str:
 # dependencies. server.py itself is reloaded last, in place.
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
-                "watch", "roomstats", "roles", "trade", "waivers")
+                "watch", "roomstats", "roles", "stream", "trade", "waivers")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

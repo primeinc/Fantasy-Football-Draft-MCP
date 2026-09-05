@@ -274,6 +274,49 @@ asof $league_id='':
         p = out["predictors"]["predictors"]
         print("   " + "  ".join(f"{n} {s['log_loss']}" for n, s in p.items()))
 
+# This week's kicker and defence pickups by matchup, with the two-week
+# look-ahead and the calibration report that says whether a margin is in points.
+# $league_id defaults to ESPN_LEAGUE_ID.
+[script]
+stream $week $league_id='' $look_ahead='2':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import server
+
+    league_id = os.environ["league_id"] or env.get("ESPN_LEAGUE_ID", "")
+    out = json.loads(server.stream_kdst(league_id, int(os.environ["week"]),
+                                        look_ahead=int(os.environ["look_ahead"])))
+    if "error" in out:
+        sys.exit(out["error"])
+    print(f"weeks {out['weeks_covered']}")
+    print(out["not_the_draft_model"])
+    for wk in [out["this_week"], *out["look_ahead"]]:
+        cov = wk["line_coverage"]
+        print(f"\n=== week {wk['week']}: {cov['rows_with_a_line']} of "
+              f"{cov['rows_with_a_line'] + cov['rows_without']} rows had a posted line")
+        for pos in ("DST", "K"):
+            p = wk["positions"][pos]
+            cal = p["calibration"]
+            ve = [b["variance_explained"] for b in cal.get("blocks", [])]
+            print(f"-- {pos}: margins in {p['margin_units']}; your starter "
+                  f"{p['your_starter'] or 'none held'}")
+            print(f"   calibration: signs agree {cal.get('all_signs_agree')}, "
+                  f"beats own mean {cal.get('beats_its_own_mean_out_of_sample')}, "
+                  f"variance explained per block {ve}, spread {cal.get('spread')}")
+            print(f"   {p['note']}")
+            for r in p["ranked"][:8]:
+                margin = ("" if r["margin_over_your_starter"] is None
+                          else f"  {r['margin_over_your_starter']:+.2f} vs yours")
+                print(f"   {r['rank']:>2} {r['name']:<26} vs {r['opponent']!s:<4} "
+                      f"score {r['score']:>6.2f}  {r['line_basis']}{margin}")
+            for r in p["unrankable"]:
+                print(f"    - {r['name']:<26} {r['line_basis']}")
+
 # Your draft pick by pick against what the model would have taken, priced both
 # from the snapshot recorded at each pick and from today's board. $league_id
 # locates the snapshots; without it every row is priced from today's board.
