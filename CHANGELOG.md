@@ -607,6 +607,36 @@ All notable changes to this project. Format follows
   never arose there; the cause was this same availability filter, applied to K
   and D/ST whose ADPs are real but do not describe a real room.
 
+**Measured and not adopted: a data-derived K/D-ST absorption curve (#33)**
+
+- `_absorbed_by` assumes the league takes a required position evenly across the
+  remaining picks. The live record rejects that flatly: through 122 picks — 54%
+  of the draft — the room has taken **2 of its 32** K and D/ST slots (Brandon
+  Aubrey at 86, the Broncos D/ST at 119), where even absorption predicts 17.4.
+  Across 122 picks that is not noise, and the first five tenths of the draft
+  contain one K/D-ST pick between them.
+- So the curve is wrong, and replacing it with one that fits the data makes the
+  plan **worse**. Using the parameter-free lower bound the data points at — the
+  league defers a required position until it must take one every remaining pick
+  — the offered index becomes 0 at every turn until the very end, and three of
+  four strategies then take the best defense at **pick 132, round 9 of 14**.
+  A defense that is genuinely available at every remaining pick is one you take
+  *last*, so a plan that takes it ninth-round is not reading its own inputs.
+- The reason is not the curve, and this is the finding: **pool membership and
+  survival are decided by two models that disagree about the same players.** The
+  counting rule puts a defense in the pool — "you can still have one" — while
+  `p_available_next` for that same defense at that same pick comes from ADP and
+  says 0.11 to 0.26. The low survival collapses `expected_best_at_next_pick` for
+  the position (fallback 22.2 rather than near the best defense's own score),
+  which inflates `marginal_value`, which pulls the defense earlier. Making the
+  curve *more* accurate widens the disagreement and pulls it earlier still.
+- Left as it is. Even absorption is wrong in the safe direction — pessimistic
+  early, so the plan is offered a worse defense than it would really get and
+  fills the slot slightly sooner than necessary — and the accurate curve is
+  wrong in the unsafe one until the availability/urgency inconsistency above is
+  resolved. Offered index at the seven remaining picks, for the record: even
+  0, 1, 5, 6, 9, 10, 14; deferral bound 0, 0, 0, 0, 0, 0, 12.
+
 **The plan's view of a required position degrades, instead of falling off a cliff**
 
 - otto found that the two mechanisms below hand over discontinuously. While the
