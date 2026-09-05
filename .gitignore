@@ -30,3 +30,6 @@ espn_cookies.json
 
 # MCP registration carries ESPN cookies
 .mcp.json
+
+# per-machine Claude Code permissions
+.claude/settings.local.json
