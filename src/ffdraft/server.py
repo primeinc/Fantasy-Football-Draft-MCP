@@ -1423,6 +1423,18 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
     the position is left to the availability filter that just emptied it. That
     is why `record_pick` has to store the position it resolves, which it did
     not until lena's 053290b.
+
+    Known and not yet fixed (#32, otto's finding): the two mechanisms hand over
+    discontinuously. While the filter still keeps a defense the counting rule
+    does not fire and the plan is offered the *best* one; the turn the filter
+    empties the position, the rule fires and offers the *sixteenth*. On the live
+    board that is picks 157 and 189, so the offered player jumps from #1 to #16
+    between consecutive turns — the wrong direction for a quantity that should
+    decay as the draft goes on. It does not bite here, because defenses lose to
+    real players at 157 either way, but a board that priced the top defense
+    above them at that turn would have the plan draft a defense it could never
+    have had. Until then: the early answer is still ADP's, and only the late one
+    is arithmetic.
     """
     pool = avail[~avail["_key"].isin(taken)]
     if pool.empty:
@@ -1460,6 +1472,24 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
 # "More likely than not to still be there" is the plainest reading of a
 # simulation that has to commit to one roster; the cut it replaces was
 # `adp > pick - 1.1*sqrt(pick)`, whose meaning nobody could state.
+#
+# This constant does NOT make the required-position rule work, and reading it
+# that way is the misunderstanding worth heading off. otto measured the K/D-ST
+# rows the filter alone keeps at each of a live slot's remaining picks:
+#
+#   threshold   125  132  157  164  189  196  221
+#   0.0          62   62   62   62   62   62   62
+#   0.2          62   62   55   55   45   44    0
+#   0.5          62   61   49   45    0    0    0
+#   0.8          62   55    0    0    0    0    0
+#
+# Every non-zero threshold empties both positions before the last pick, and 0.0
+# is no filter at all. So the counting rule below does all of the work on
+# whether a required slot can be filled; the threshold decides something else
+# entirely -- which real players the plan believes can still reach it. At 0.0 it
+# plans Ja'Marr Chase in the sixth round, which is a fantasy; at 0.95 it plans
+# around Cam Skattebo, which is over-conservative. 0.5 is a policy choice about
+# realism, and it was not tuned to make kickers and defenses come out right.
 PLAN_SURVIVAL = 0.5
 
 
