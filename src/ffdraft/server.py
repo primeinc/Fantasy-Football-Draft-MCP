@@ -2852,6 +2852,9 @@ def predict_pick(league_id: str = "", slot: int = 0) -> str:
     state = _state()
     b = _build_board()
     league = _settings()[0]
+    if "_key" in b.columns and not (~b["_key"].isin(state.taken_keys())).any():
+        return _emit({"error": "no undrafted rows: every board row is taken, so there "
+                               "is no pick to predict", "picks_made": len(state.picks)})
     slot = slot or state.slot_for_pick(state.on_the_clock)
     shift = replay.room_drift(b, state)["shift"]
     out = replay.predict_pick(b, state, league, slot, adp_shift=shift)

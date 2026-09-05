@@ -99,6 +99,11 @@ class ConditionalLogit:
         self.train: list[tuple[np.ndarray, int]] = []
 
     def probabilities(self, x: np.ndarray, slot: int | None = None) -> np.ndarray:
+        if len(x) == 0:
+            # No candidates: a distribution over nothing. `s.max()` raises
+            # "zero-size array to reduction operation" here, which reached
+            # predict_pick as a traceback on a board with every row taken.
+            return np.zeros(0, dtype=float)
         s = x @ self.weights_for(slot)
         s = s - s.max()
         p = np.exp(s)
@@ -236,6 +241,10 @@ class WalkForward:
         team on the clock; only `blend_team` uses it."""
         f = features(recs, recent_positions)
         out: dict = {}
+        if len(recs) == 0:
+            # Said rather than raised: the caller reports it as a refusal.
+            out["refused"] = "no undrafted rows: nothing to forecast a pick from"
+            return out
         for name, m in self.models.items():
             p = m.probabilities(f[list(m.cols)].to_numpy(dtype=float), slot)
             order = np.argsort(-p)[:top]
