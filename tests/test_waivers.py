@@ -421,7 +421,7 @@ class TestTheTool:
     def _reject(self, constant):
         raise AssertionError(f"payload carried a bare {constant}, which is not JSON")
 
-    def wire(self, monkeypatch, pool_rows, injury=("OUT",)):
+    def wire(self, monkeypatch, pool_rows, board=None, starters=None):
         from ffdraft import server, sources
 
         players = [{"status": "FREEAGENT", "onTeamId": 0,
@@ -443,20 +443,22 @@ class TestTheTool:
         monkeypatch.setattr(sources, "snap_counts", lambda *a, **k: snaps())
         # A board with a hole in the columns the claim rows are built from, so
         # the round trip is exercised rather than asserted.
-        board = pd.DataFrame({
-            "name": ["Starter Back", "Handcuff Guy", "Bench Man"],
-            "position": ["RB", "RB", "WR"], "team": ["BBB", "BBB", np.nan],
-            "proj_points": [250.0, 90.0, 40.0], "adj_ppg": [16.0, 6.0, np.nan],
-            "exp_games": [14.0, 17.0, 17.0], "injury_risk": [0.3, 0.2, np.nan],
-            "bye_week": [np.nan, 7, np.nan], "draft_score": [90.0, 10.0, np.nan],
-            "adp": [20.0, 150.0, np.nan],
-        })
+        if board is None:
+            board = pd.DataFrame({
+                "name": ["Starter Back", "Handcuff Guy", "Bench Man"],
+                "position": ["RB", "RB", "WR"], "team": ["BBB", "BBB", np.nan],
+                "proj_points": [250.0, 90.0, 40.0], "adj_ppg": [16.0, 6.0, np.nan],
+                "exp_games": [14.0, 17.0, 17.0], "injury_risk": [0.3, 0.2, np.nan],
+                "bye_week": [np.nan, 7, np.nan], "draft_score": [90.0, 10.0, np.nan],
+                "adp": [20.0, 150.0, np.nan],
+            })
+        board = board.copy()
         board["_key"] = board["name"].map(bd.norm_name)
+        slots = starters or {"QB": 1, "RB": 1, "WR": 0, "TE": 0,
+                             "FLEX": 0, "K": 0, "DST": 0}
         monkeypatch.setattr(server, "_build_board", lambda *a, **k: board)
-        monkeypatch.setattr(
-            server, "_settings",
-            lambda: (league(starters={"QB": 1, "RB": 1, "WR": 0, "TE": 0,
-                                      "FLEX": 0, "K": 0, "DST": 0}), None))
+        monkeypatch.setattr(server, "_settings",
+                            lambda: (league(starters=slots), None))
 
         class FakeState:
             def my_rows(self, b):
@@ -554,6 +556,88 @@ class TestTheTool:
         assert bd._ESPN_POSITION_NAMES["3"] == "WR", (
             "the board's map is the one source; if its keys stop being strings "
             "the tool's lookup goes silently blank rather than raising")
+
+    def unbalanced(self):
+        """A receiver-heavy roster in BOARD order, which is what `my_rows` gives.
+
+        Not a corner case: this is what drafting best-available produces, and it
+        is the shape in which "outside my top eight by rank" and "not a starter"
+        come apart. The only kicker and the only defense are the two lowest rows
+        on it, as they are on every roster ever assembled.
+        """
+        rows = [("WR One", "WR", 260.0), ("WR Two", "WR", 240.0),
+                ("WR Three", "WR", 210.0), ("WR Four", "WR", 195.0),
+                ("RB One", "RB", 190.0), ("RB Two", "RB", 175.0),
+                ("QB One", "QB", 170.0), ("WR Five", "WR", 160.0),
+                ("TE One", "TE", 150.0), ("Kicker One", "K", 130.0),
+                ("DST One", "DST", 110.0)]
+        board = pd.DataFrame(rows, columns=["name", "position", "proj_points"])
+        board["team"] = "AAA"
+        board["adj_ppg"] = board["proj_points"] / 17.0
+        board["exp_games"] = 17.0
+        board["injury_risk"] = 0.2
+        board["bye_week"] = np.nan
+        board["draft_score"] = board["proj_points"] - 100.0
+        board["adp"] = np.arange(1.0, len(board) + 1.0)
+        return board
+
+    REAL_STARTERS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 0, "K": 1, "DST": 1}
+
+    def test_the_only_kicker_and_defense_are_never_the_drop(self, monkeypatch):
+        """The defect the rank slice shipped, asserted at the tool's exit.
+
+        `mine.iloc[8:]` on board order called TE One, Kicker One and DST One the
+        bench, and `drop_candidate` takes the lowest bench value of those three --
+        which is a kicker or a defense on any roster, by construction. The tool
+        could tell the user to drop their only defense to make room for a claim
+        and leave a starting slot nothing can fill.
+
+        Measured on this exact roster before the fix: drop was DST One, bench
+        value 110.0. The league starts one of him.
+        """
+        server = self.wire(monkeypatch, self.rows(), board=self.unbalanced(),
+                           starters=self.REAL_STARTERS)
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["claims"], "the fixture week must produce a claim to carry a drop"
+        dropped = {c["drop"]["player"] for c in out["claims"]}
+        assert not dropped & {"Kicker One", "DST One", "TE One"}, (
+            f"offered a player the league starts as the drop: {sorted(dropped)}")
+        assert dropped <= {"WR Three", "WR Four", "WR Five"}, (
+            f"the drop must come from the receivers nothing starts: {sorted(dropped)}")
+
+    def test_a_drop_is_never_a_player_the_same_row_says_starts(self, monkeypatch):
+        """The general property, not this roster's shape.
+
+        `starts_in_a_given_week` and the drop recommendation are computed from the
+        same roster and were free to contradict each other: the offered drop came
+        back with p_start 1.0, correctly saying he starts every week, in the row
+        recommending he be cut. Neither number was wrong; the set they were taken
+        over was. This fails on any future bench that admits a starter, whatever
+        the position, where the assertion above only catches this one shape.
+        """
+        server = self.wire(monkeypatch, self.rows(), board=self.unbalanced(),
+                           starters=self.REAL_STARTERS)
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        for claim in out["claims"]:
+            drop = claim["drop"]
+            assert drop["starts_in_a_given_week"] < 1.0, (
+                f"{drop['player']} is offered as the drop while the same row says "
+                f"he starts {drop['starts_in_a_given_week']:.2f} of the time")
+
+    def test_a_roster_row_with_no_position_is_named_not_cut(self, monkeypatch):
+        """A row the lineup cannot place is not therefore spare.
+
+        It matches no slot, so it can never be a starter, so a bench taken as the
+        complement of the starters swallows it -- and it may be the only kicker on
+        the roster with a broken board row. It is reported instead.
+        """
+        board = self.unbalanced()
+        board.loc[board["name"] == "Kicker One", "position"] = np.nan
+        server = self.wire(monkeypatch, self.rows(), board=board,
+                           starters=self.REAL_STARTERS)
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["unplaceable_on_my_roster"] == ["Kicker One"]
+        assert all(c["drop"]["player"] != "Kicker One" for c in out["claims"])
 
     def test_an_empty_pool_still_round_trips_and_says_it_is_broken(self, monkeypatch):
         server = self.wire(monkeypatch, [])

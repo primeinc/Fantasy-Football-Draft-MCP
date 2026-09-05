@@ -969,12 +969,32 @@ is false — which it is in this league. `acquisitionBudget` (100) and
 `minimumBid` are populated and inert beside it, and reading those first is how a
 tool recommends FAAB to a league that does not use it; `faab_bid` is null unless
 FAAB is actually on. **Every claim names a drop**, because `isBenchUnlimited` is
-true while `lineupSlotCounts["20"]` is 6 — the slot count is the fact. The drop
-is the lowest `bench_value` on the roster, which prices the weeks he would
-actually start rather than his projection, and it is checked against ESPN's
-undroppable list (`player.droppable`); a player the pull did not carry is
-offered with `undroppable_checked` false rather than assumed droppable, and a
-bench row the board cannot price says so in `projection_basis`.
+true while `lineupSlotCounts["20"]` is 6 — the slot count is the fact.
+
+The drop is the lowest `bench_value` among the players `lineup.droppable` says
+the league's slots are filled without — **by position against `league.starters`,
+never by board rank**. The two are not the same list. `DraftState.my_rows`
+returns board order, which is rank order, so taking the bench as "everything
+after the first N rows" means "outside my top N by rank"; that diverges from
+"not a starter" the moment a roster is unbalanced across positions, and rosters
+are always unbalanced because people draft best available. On an ordinary
+receiver-heavy roster it called TE1, K1 and DST1 the bench, and since a kicker
+and a defense carry the lowest projections on any roster by construction, the
+tool would offer the user's only defense as the drop — in a row that
+simultaneously reported `starts_in_a_given_week` 1.0. Found by marge on review;
+`lineup.starting_lineup` is the shared answer and #44's `set_lineup` asks the
+same question of the same function.
+
+`bench_value` prices the weeks he would actually start rather than his
+projection, so a fourth running back who projects well is still a fourth running
+back. The drop is checked against ESPN's undroppable list (`player.droppable`);
+a player the pull did not carry is offered with `undroppable_checked` false
+rather than assumed droppable, and a bench row the board cannot price says so in
+`projection_basis`. A roster row carrying no usable position is named in
+`unplaceable_on_my_roster` rather than treated as spare: it matches no slot, so
+it can never be a starter, so a bench taken as the complement of the starters
+would swallow it — and it may be the only kicker on the roster with a broken
+board row.
 
 `starters_out` reads "is out now", not "changed this week" — detecting a change
 needs last week's statuses and nothing stores them yet, so the claim is the

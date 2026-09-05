@@ -1905,7 +1905,7 @@ def _waiver_inputs(league_id: str, week: int, season: int):
     Separate from the tool so the tool is composition: this is the only part
     that touches the network or the caches, and a test replaces it whole.
     """
-    from . import sources, waivers
+    from . import lineup, sources, waivers
 
     league, _ = _settings()
     board = _build_board()
@@ -1934,12 +1934,31 @@ def _waiver_inputs(league_id: str, week: int, season: int):
     injury = {} if pool.empty else dict(zip(pool["name"], pool["injury_status"]))
     contingency = waivers.contingent_value(board, waivers.starters_out(board, injury))
     mine = state.my_rows(board)
-    starters = league.starters
-    bench = mine.iloc[sum(v for k, v in starters.items() if k != "FLEX"):] \
-        if len(mine) else mine
+    # The bench by the league's own slots, not by rank order. What stood here was
+    # `mine.iloc[sum(starters):]`, and `my_rows` carries the BOARD's order, so it
+    # meant "outside my top n by rank" -- which stops being "not a starter" the
+    # moment a roster is unbalanced across positions, and rosters are always
+    # unbalanced because people draft best available. On an ordinary
+    # receiver-heavy roster it called TE1, K1 and DST1 the bench and offered the
+    # only defense as the drop, in a row that simultaneously reported he starts
+    # every week. Found by marge; `lineup.droppable` is the shared answer, and
+    # #44's set_lineup asks the same question of the same function.
+    #
+    # `mine` goes to `drop_candidate` WHOLE, alongside the bench, and has to stay
+    # that way: `roles.start_probabilities` reads it for "the players I already
+    # hold at his position who project for more points than he does". A `mine`
+    # trimmed to the bench would price a deep bench player as though the starters
+    # ahead of him were absent -- this same defect from the other end.
+    bench = lineup.droppable(mine, league) if len(mine) else mine
+    # Rows the lineup cannot place carry no usable position, so they are neither
+    # starters nor droppable. Reported rather than dropped from the answer: an
+    # empty list means the roster is understood, and a non-empty one is a board
+    # defect for whoever built it, not a set of players to cut.
+    stranded = lineup.unplaceable(mine) if len(mine) else mine
     return {"pool": pool, "changes": changes, "contingency": contingency,
             "league": league, "rules": waivers.league_rules_from_settings(settings),
-            "mine": mine, "bench": bench}
+            "mine": mine, "bench": bench,
+            "unplaceable": [str(n) for n in stranded.get("name", [])]}
 
 
 @mcp.tool()
@@ -1971,6 +1990,14 @@ def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
     checked against ESPN's undroppable list (`player.droppable`); a player the
     pull did not carry is offered with `undroppable_checked` false rather than
     assumed droppable.
+
+    The drop comes from the players `lineup.droppable` says the league's slots
+    are filled without -- by position against `league.starters`, never by board
+    rank. Rank order is not lineup order, and on a receiver-heavy roster the two
+    differ by the whole tail: the only kicker and the only defense are the lowest
+    rows on any roster and are starters on every one of them. Roster rows the
+    lineup cannot place are named in `unplaceable_on_my_roster` rather than being
+    treated as spare.
     """
     from . import waivers
 
@@ -1984,7 +2011,11 @@ def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
                                 parts["bench"], limit=limit)
     return _emit({"week": week, "season": season,
                   "claim_priority_basis": parts["rules"].priority_basis,
-                  "bench_slots": parts["rules"].bench_slots, **out}, indent=2)
+                  "bench_slots": parts["rules"].bench_slots,
+                  # Empty on a roster the board understands. Non-empty means
+                  # those players were left out of both the lineup and the drop
+                  # candidates, which is worth seeing rather than inferring.
+                  "unplaceable_on_my_roster": parts["unplaceable"], **out}, indent=2)
 
 
 @mcp.tool()

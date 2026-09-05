@@ -193,6 +193,47 @@ All notable changes to this project. Format follows
   true while `lineupSlotCounts["20"]` is 6, so the slot count is the fact and
   **every claim names a drop**.
 - A failed pull returns an error payload naming the exception, not a traceback.
+- **The drop comes from the lineup, not from board rank.** Found by marge on
+  review of the wiring: the bench was `my_rows.iloc[n_starters:]`, and `my_rows`
+  carries the *board's* order, so it meant "outside my top N by rank". That
+  stops being "not a starter" as soon as a roster is unbalanced across
+  positions, and rosters are always unbalanced because people draft best
+  available. Reproduced on an ordinary receiver-heavy roster, 8 starting slots:
+  the slice called TE1, K1 and DST1 the bench, and `drop_candidate` returned
+  **DST One, bench value 110.0** — the user's only defense, offered as the cut
+  that makes room for a claim, leaving a starting slot nothing could fill.
+- The row said so itself and nothing was reading it: the offered drop carried
+  `starts_in_a_given_week` **1.0** in the same payload. Neither number was
+  wrong — he does start every week — and the set they were computed over was.
+  Every mechanism worked: `bench_values` ranked a p_start of 1.0 correctly, the
+  undroppable check is about elite players rather than your roster shape, the
+  census and the labels were accurate. Wrong input, right arithmetic, three
+  correct guards, no alarm.
+- Fixed by `lineup.droppable` (marge's shared helper, `7dfaec9`), which fills
+  base slots by position, then FLEX from the best remaining eligible, and calls
+  only the leftover droppable. The three regression tests were controlled
+  against the old slice and all three fail on it, with the literal message
+  "DST One is offered as the drop while the same row says he starts 1.00 of the
+  time". `unplaceable_on_my_roster` names roster rows the lineup cannot place
+  rather than letting them fall into the bench — a row with no position matches
+  no slot, so a bench taken as the complement of the starters swallows it, and
+  it may be the only kicker on the roster with a broken board row.
+- `mine` is still passed to `drop_candidate` whole, bench included, and there is
+  now a comment saying why: `roles.start_probabilities` reads it for "the
+  players I already hold at his position who project for more points than he
+  does", and a `mine` trimmed to the bench would price a deep bench player as
+  though the starters ahead of him were absent — the same defect from the other
+  end.
+- The pool's positions now come from `board._ESPN_POSITION_NAMES` instead of a
+  second, int-keyed copy of it. The copy was a maintenance fork rather than a
+  wrong answer — `.map` resolves `3.0` against key `3` — but the fix carries a
+  hazard the copy did not, and it is the interesting half: the column's dtype is
+  decided by the payload, int64 when every row has `defaultPositionId` and
+  float64 when one row does not, and `str(3.0)` is `"3.0"`, which matches
+  nothing, silently, as a blank position column rather than a raise. With every
+  id present `str(v)` works, so the naive version ships green and fails on the
+  first pull missing a field. `to_numeric` then `int()` holds it, and the test's
+  control is a row with no position id.
 
 **The recommendation says which way its own numbers point**
 - Incident (#39): at pick 132 `who_should_i_pick` reported
