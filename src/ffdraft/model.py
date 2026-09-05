@@ -687,13 +687,6 @@ def score_special_teams(special: pd.DataFrame, board: pd.DataFrame,
 DISCOUNT_CEILING = 2.0
 
 
-# A multiplier above this would flip the sign of a negative pick_value rather
-# than push it further down. Nothing in `recommend` comes close -- role caps at
-# ROLE_CEILING 1.3, need at 1.18 -- but the reflection below is only monotone
-# while it holds.
-DISCOUNT_CEILING = 2.0
-
-
 def _discount(values: pd.Series, mult: pd.Series) -> np.ndarray:
     """Apply a pick_value multiplier so that below 1 always means further down
     the list, and above 1 always means further up.
