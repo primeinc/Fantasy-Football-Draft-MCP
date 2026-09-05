@@ -430,3 +430,54 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
             },
         })
     return claims
+
+
+def waiver_report(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataFrame,
+                  league, rules: LeagueRules, mine: pd.DataFrame | None = None,
+                  bench: pd.DataFrame | None = None, limit: int = 8) -> dict:
+    """The claim list with the census that makes an empty one readable.
+
+    An empty `claims` has two completely different causes and they were the same
+    value: a quiet week where nobody's role moved and nobody's starter is out,
+    and a free-agent pull that returned nothing usable. Those are the two most
+    different answers this tool has.
+
+    It matters here rather than in general because the pool's shape is
+    `UNVERIFIED_SHAPE` — the capture this was built against was taken mid-draft
+    and reported every player as a free agent, so a malformed pull is a live
+    possibility rather than a hypothetical, and a quiet week is exactly when it
+    would be silent. Found by marge, who tested it rather than asserting it:
+    twelve quiet free agents and a broken pull both returned `[]`.
+
+    The census also keeps the filter's own work visible. With players who have no
+    reason excluded from the list, "412 considered, 2 claimed" is the only place
+    left that shows the filter ran at all.
+
+    This is the entry point the tool calls, so the census cannot be forgotten by
+    the caller that matters.
+    """
+    claims = rank_claims(pool, changes, contingency, league, rules, mine, bench, limit)
+    empty_pool = pool is None or pool.empty or "name" not in pool.columns
+    considered = 0 if empty_pool else len(pool)
+    names: set[str] = set() if empty_pool else set(pool["name"].astype(str))
+    with_usage, moved, out_now = 0, 0, 0
+    if changes is not None and not changes.empty and "name" in changes.columns:
+        seen = changes[changes["name"].astype(str).isin(names)]
+        with_usage = len(seen)
+        moved = int((seen["role_change"] > 0).sum())
+    if contingency is not None and not contingency.empty and "name" in contingency.columns:
+        live = contingency[contingency["name"].astype(str).isin(names)]
+        out_now = int(live["starter_is_out"].fillna(False).sum())
+    return {
+        "census": {
+            "considered": considered,
+            "with_weekly_usage": with_usage,
+            "role_moved": moved,
+            "starter_out": out_now,
+            "claimed": len(claims),
+            # Named rather than inferred from a zero: the caller should never
+            # have to tell a quiet week from a broken pull by reading counts.
+            "status": "ok" if considered else "no free agents in the pool",
+        },
+        "claims": claims,
+    }

@@ -364,6 +364,42 @@ class TestRankedClaims:
         # The quiet twelve have neither a moved role nor a live starter.
         assert not any(n.startswith("Quiet") for n in names)
 
+    def report(self, pool, out_now=("Starter Back",)):
+        rules = waivers.league_rules_from_settings({})
+        return waivers.waiver_report(
+            pool, changes().reset_index(),
+            waivers.contingent_value(self.board(), set(out_now)),
+            league(), rules, mine=None, bench=self.bench())
+
+    def test_a_quiet_week_and_a_broken_pull_are_told_apart(self):
+        # Both return no claims, and they are the two most different answers the
+        # tool has: nothing worth claiming, versus the free-agent pull returned
+        # nothing usable. The pool's shape is unverified, so a malformed pull is
+        # a live possibility and a quiet week is when it would be silent.
+        quiet = pd.DataFrame([{"name": f"Quiet {i:02d}", "position": "WR",
+                               "percent_owned": 1.0, "percent_change": 0.0}
+                              for i in range(12)])
+        quiet_week = self.report(quiet, out_now=())
+        broken = self.report(pd.DataFrame())
+        assert quiet_week["claims"] == [] and broken["claims"] == []
+        assert quiet_week["census"]["considered"] == 12
+        assert quiet_week["census"]["status"] == "ok"
+        assert broken["census"]["considered"] == 0
+        assert broken["census"]["status"] == "no free agents in the pool"
+
+    def test_the_census_shows_the_filter_did_work(self):
+        # With no-reason players excluded from the list, this is the only place
+        # left that shows how many were looked at.
+        out = self.report(self.pool())
+        assert out["census"]["considered"] == 3
+        assert out["census"]["role_moved"] == 1
+        assert out["census"]["starter_out"] == 1
+        assert out["census"]["claimed"] == 2
+
+    def test_a_pool_with_no_name_column_is_a_broken_pull_not_a_quiet_week(self):
+        out = self.report(pd.DataFrame({"espn_id": [1, 2]}))
+        assert out["census"]["status"] == "no free agents in the pool"
+
     def test_an_empty_pool_makes_no_claims(self):
         rules = waivers.league_rules_from_settings({})
         assert waivers.rank_claims(pd.DataFrame(), changes().reset_index(),
