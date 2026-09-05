@@ -15,7 +15,13 @@ import numpy as np
 import pandas as pd
 
 from . import features, sources
-from .config import CURRENT_SEASON, FANTASY_POSITIONS, LeagueSettings, ModelWeights
+from .config import (
+    CURRENT_SEASON,
+    FANTASY_POSITIONS,
+    SPECIAL_POSITIONS,
+    LeagueSettings,
+    ModelWeights,
+)
 
 
 def _norm_cdf(x: float) -> float:
@@ -538,6 +544,13 @@ ROLE_DISAGREEMENT = 0.70
 ROLE_FLOOR = 0.20
 ROLE_GROWTH = 1.30
 ROLE_CEILING = 1.30
+# ESPN draft rank past which the list has stopped expressing an opinion. ESPN
+# ranks far more players than any room drafts (2394 on the live 2026 list, for a
+# 12-team 16-round draft that takes 192), so a rank this deep carries no
+# information beyond "not a fantasy asset". 400 is comfortably past the last
+# pick and comfortably inside the gap the live board shows: of the 169 rows ESPN
+# declines to project, the best-ranked sits at 456 and all but two are past 1300.
+ROLE_UNKNOWN_RANK = 400.0
 
 
 def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
@@ -545,19 +558,71 @@ def role_multiplier(tbl: pd.DataFrame) -> pd.Series:
     in the ratio: 1 inside [ROLE_DISAGREEMENT, ROLE_GROWTH]; below it
     ratio / ROLE_DISAGREEMENT (so 1 at the edge, ROLE_FLOOR at worst); above
     it ratio / ROLE_GROWTH capped at ROLE_CEILING. No step at either edge: a
-    ratio of 0.699 and 0.701 land within a hair of each other. Players ESPN
-    does not project keep 1."""
+    ratio of 0.699 and 0.701 land within a hair of each other.
+
+    A player ESPN neither projects *nor* ranks inside ROLE_UNKNOWN_RANK is
+    role-unknown rather than neutral, and takes ROLE_FLOOR. ESPN publishes a
+    season projection for everyone it treats as rosterable, so no projection
+    plus no meaningful rank is the list saying the player has no 2026 role at
+    all -- while the model, reading five years of box scores, still has him at
+    whatever his last real season was. That is how a receiver ESPN has at rank
+    1401 with no projection reached the top five of a live recommendation. The
+    factor is not a new number: it is what the continuous scale above already
+    gives a player ESPN projects at zero, since a ratio of 0 clips to
+    ROLE_FLOOR.
+
+    A row ESPN declines to project but still ranks inside ROLE_UNKNOWN_RANK
+    keeps 1: the list does rate him, it just has no projection row for him."""
     ones = pd.Series(1.0, index=tbl.index)
     if "espn_proj" not in tbl.columns or "proj_points" not in tbl.columns:
         return ones
     espn = pd.to_numeric(tbl["espn_proj"], errors="coerce")
     ours = pd.to_numeric(tbl["proj_points"], errors="coerce")
+    rank = (pd.to_numeric(tbl["espn_rank"], errors="coerce") if "espn_rank" in tbl.columns
+            else pd.Series(np.nan, index=tbl.index))
     ratio = espn / ours
     known = espn.notna() & ours.notna() & (ours > 0)
+    unknown = espn.isna() & (rank.isna() | (rank > ROLE_UNKNOWN_RANK))
     low = known & (ratio < ROLE_DISAGREEMENT)
     high = known & (ratio > ROLE_GROWTH)
     out = ones.where(~low, (ratio / ROLE_DISAGREEMENT).clip(lower=ROLE_FLOOR, upper=1.0))
-    return out.where(~high, (ratio / ROLE_GROWTH).clip(lower=1.0, upper=ROLE_CEILING))
+    out = out.where(~high, (ratio / ROLE_GROWTH).clip(lower=1.0, upper=ROLE_CEILING))
+    return out.where(~unknown, ROLE_FLOOR)
+
+
+def score_special_teams(special: pd.DataFrame, board: pd.DataFrame,
+                        league: LeagueSettings, weights: ModelWeights) -> pd.DataFrame:
+    """Put ESPN's K and D/ST projections on the board's own draft_score scale.
+
+    Everything else on the board scores (1 - cw) * VOR + cw * consistency_pts,
+    where consistency is centred across the board and so contributes nothing at
+    the mean. This codebase has no week-to-week history for a kicker or a
+    defense, so they are given exactly the board's mean consistency: no
+    reliability claim in either direction, and a draft_score of (1 - cw) * VOR,
+    which is what any average-consistency player on the board already gets.
+    Inventing a consistency for them would be the only made-up number here.
+
+    Replacement level is `league.replacement_ranks()`'s K/DST entry -- the last
+    one a team would start -- so a defense's value over replacement is measured
+    the same way a running back's is, and the two are comparable by
+    construction rather than by assertion.
+    """
+    out = special.copy()
+    if out.empty:
+        return out
+    repl = league.replacement_ranks()
+    baselines = {}
+    for pos, chunk in out.groupby("position"):
+        ranked = chunk.sort_values("proj_points", ascending=False)
+        n = min(int(repl.get(str(pos), len(ranked))), len(ranked))
+        baselines[str(pos)] = float(ranked["proj_points"].iloc[n - 1]) if n else 0.0
+    out["replacement_points"] = out["position"].map(baselines)
+    out["vor"] = out["proj_points"] - out["replacement_points"]
+    mean_consistency = (float(board["consistency"].mean())
+                        if "consistency" in board.columns and len(board) else 0.5)
+    out["consistency"] = mean_consistency
+    out["draft_score"] = (1 - weights.consistency_weight) * out["vor"]
+    return out
 
 
 def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
@@ -611,12 +676,31 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
 
     # A small share of raw value is retained so a truly generational player still
     # rises even when his position is deep behind him.
+    #
+    # Not for kickers and defenses. That share is an escape hatch for scarcity,
+    # and neither position is ever scarce: ESPN lists 32 of each for a league
+    # that needs one apiece, so the supply cannot run out before the draft does
+    # and there is no such thing as missing out on the position. Keeping the raw
+    # term for them prices a top defense as if passing on it cost you the slot,
+    # which put one second on the board in round 8 of a 14-round draft. Priced on
+    # marginal value alone -- how much better than waiting -- a defense stays an
+    # option from the middle rounds and wins the last pick, which is where the
+    # league actually forces the slot.
+    raw_share = np.where(avail["position"].isin(SPECIAL_POSITIONS), 0.0, 0.20)
     avail["pick_value"] = (
-        0.80 * avail["marginal_value"] + 0.20 * avail["draft_score"]
+        (1 - raw_share) * avail["marginal_value"] + raw_share * avail["draft_score"]
     ) * avail["need_mult"]
 
     avail["role_mult"] = role_multiplier(avail)
-    avail["pick_value"] = avail["pick_value"] * avail["role_mult"]
+    # Applied so that below 1 always means "further down the list". pick_value
+    # goes negative deep in the board -- a candidate worth less than what waiting
+    # is expected to return -- and multiplying a negative number by 0.2 moves it
+    # *toward* zero, which would promote exactly the players the discount exists
+    # to bury. Dividing is the same penalty with the sign the other way round,
+    # and it keeps a multiplier above 1 a promotion in both halves.
+    pv = avail["pick_value"].to_numpy(dtype=float)
+    rm = avail["role_mult"].to_numpy(dtype=float)
+    avail["pick_value"] = np.where(pv >= 0, pv * rm, pv / rm)
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -713,6 +797,18 @@ def _positional_need(league: LeagueSettings, roster: dict[str, int]) -> dict[str
                                        and flex_filled >= flex_slots else 0)
             need[pos] = max(0.03, decay.get(pos, 0.5) ** max(1, depth))
 
+    # Kickers and defenses have exactly one starting slot each and no bench value
+    # at all: a second one never plays, and the position's whole supply survives
+    # to the end of the draft, which the marginal-value term already prices.
+    # They are given their own need so that filling the slot registers, without
+    # appearing in the need of any other position -- FANTASY_POSITIONS above is
+    # untouched, so nothing about QB/RB/WR/TE need changes.
+    for pos in SPECIAL_POSITIONS:
+        required = league.starters.get(pos, 0)
+        if not required:
+            continue
+        need[pos] = 1.18 if roster.get(pos, 0) < required else 0.02
+
     # Don't let a lone QB/TE slot pull you into reaching in the early rounds, where
     # the elite RB and WR you'd be passing on are the scarcer resource. This is a
     # 1-QB argument only — in superflex, quarterbacks genuinely are the scarce
@@ -732,7 +828,10 @@ def explain(row: pd.Series) -> str:
         bits.append(f"{row['position']}{int(row['pos_rank'])} by projection "
                     f"({row['proj_points']:.0f} pts, {row['adj_ppg']:.1f}/gm)")
     c = row.get("consistency")
-    if c is not None and np.isfinite(c):
+    # A kicker or a defense carries the board's mean consistency, which is a
+    # deliberate absence of a claim (score_special_teams), not a measurement.
+    # Printing it would read as one.
+    if c is not None and np.isfinite(c) and row.get("position") not in SPECIAL_POSITIONS:
         sr = row.get("startable_rate")
         bits.append(f"consistency {c:.2f}" + (f", startable in {sr:.0%} of weeks" if np.isfinite(sr or np.nan) else ""))
     for label, key in [
@@ -748,16 +847,24 @@ def explain(row: pd.Series) -> str:
     if ir is not None and np.isfinite(ir):
         bits.append(f"injury risk {ir:.0%} (~{row.get('exp_games', 17):.0f} games)")
     ep = row.get("espn_proj")
+    rm = row.get("role_mult")
     if ep is not None and pd.notna(ep):
-        rm = row.get("role_mult")
         tag = ""
         if rm is not None and pd.notna(rm) and rm < 1:
             tag = f" ({ep / row['proj_points']:.0%} of model: role shrank, value scaled)"
         elif rm is not None and pd.notna(rm) and rm > 1:
             tag = f" ({ep / row['proj_points']:.0%} of model: role grew, value scaled)"
         bits.append(f"ESPN projects {ep:.0f}{tag}")
+    elif rm is not None and pd.notna(rm) and rm < 1:
+        er = row.get("espn_rank")
+        where = ("does not rank him" if er is None or pd.isna(er)
+                 else f"ranks him {int(er)}")
+        bits.append(f"ESPN does not project him and {where}: role unknown, "
+                    f"value scaled to {rm:.0%}")
     inj = row.get("espn_injury")
-    if inj and inj != "ACTIVE":
+    # NaN is truthy, and ESPN files no injury status at all for a team defense,
+    # so an unguarded check printed "ESPN status nan" on every D/ST.
+    if inj is not None and pd.notna(inj) and inj != "ACTIVE":
         bits.append(f"ESPN status {inj}")
     p = row.get("p_available_next")
     if p is not None and np.isfinite(p):

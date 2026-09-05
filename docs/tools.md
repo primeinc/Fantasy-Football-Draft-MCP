@@ -77,7 +77,17 @@ projects under 70% of the model's number the player's role has changed (a
 backup now, a new team, an injury the model cannot see) and `pick_value` is
 scaled by the ratio (`model.role_multiplier`, floor 0.2); above 130% the role
 has grown (a rookie or new starter the box scores lag) and it is scaled by
-1.3; `why` says which. Both scalings are continuous in the ratio. `room_drift`
+1.3; `why` says which. Both scalings are continuous in the ratio.
+
+A player ESPN neither projects **nor** ranks inside `model.ROLE_UNKNOWN_RANK`
+(400) is role-unknown, not neutral, and takes the same 0.2 floor: ESPN
+projects everyone it treats as rosterable, so no projection and no meaningful
+rank is the list saying the player has no role this season, while the model
+still reads five years of box scores for him. `why` says "role unknown, value
+scaled to 20%" and names the rank. A row ESPN declines to project but still
+ranks inside 400 keeps 1. The multiplier divides rather than multiplies where
+`pick_value` is already negative, so a discount always moves a candidate down.
+`room_drift`
 is the median number of picks before ADP this room has been taking players
 (`replay.room_drift`), room-wide and per position once a position has 8
 picks; survival odds are computed against ADP minus the per-position `shift`.
@@ -85,6 +95,28 @@ The replay's calibration is the evidence: Brier 0.140 unshifted, 0.128 with
 the per-position shift, base rate 0.250, on 1060 forecasts at 122 picks.
 `draft_audit` warns on every recommended player in that state and on players
 ESPN does not project at all.
+
+**Kickers and defenses** are on the board. nflverse box scores carry no kicking
+and no team-defense production, so K and D/ST used to be off the board
+entirely and the recommender had nothing to say in the two rounds where the
+league forces you to fill both slots. They now come from ESPN's own player list
+(`board.espn_special_teams`): its full-season projection under this league's
+scoring is their `proj_points` — for a defense that is the yards-allowed and
+points-allowed bands `league_rules` reads out of `pointsOverrides` — and
+`model.score_special_teams` gives them a replacement level (the last one a team
+would start, `replacement_ranks()["K"]` / `["DST"]`), a VOR and a `draft_score`
+on the board's own scale. They carry the board's mean consistency, which is a
+deliberate absence of a claim rather than a measurement, so `why` does not
+report one for them.
+
+They are priced on marginal value alone — the 20% share of raw `draft_score`
+every other candidate keeps is a scarcity escape hatch, and neither position is
+ever scarce (ESPN lists 32 of each for a league that needs one apiece). They
+get their own positional need, so filling the slot registers without changing
+the need of any other position. Defenses are named the way a drafted one is
+recorded ("Denver Broncos D/ST", not ESPN's "Broncos D/ST"), so a drafted
+defense stops showing as available and `draft_audit` no longer counts it as a
+pick the board cannot resolve.
 
 ### `best_available`
 Next best on the board. `sort_by`: `draft_score` (balanced), `vor`, `consistency`,
@@ -188,10 +220,14 @@ no drafted player is in the top recommendations. `sync_draft` reports the same
 `audit` block, and the watch pushes an `audit_failed` event after any snapshot
 that breaks one. Picks not on the board (kickers, defenses) are a warning, not a
 failure. `market_join` lists the board rows the market join could not price
-(strongest projection first, with the synthetic ADP standing in) and the rows
-it priced through an alias. The join is the exact name key first, then the
-alias index (`names.PlayerIndex`) for alias and last-name-plus-initial hits at
-the same position; fuzzy and ambiguous hits are never joined.
+(strongest projection first, with the synthetic ADP standing in), the rows it
+priced through an alias, and the rows it priced on the name alone (`key_only`)
+because the market lists that player at another position. The join is the name
+key *and* position first — two real players share a full name often enough that
+a key-only join hands the second one the first one's price — then the name
+alone when the market holds exactly one player under it, then the alias index
+(`names.PlayerIndex`) for alias and last-name-plus-initial hits at the same
+position; fuzzy and ambiguous hits are never joined.
 
 ### Bye weeks
 `who_should_i_pick`, the watch's pushed recommendation, and `best_available` carry

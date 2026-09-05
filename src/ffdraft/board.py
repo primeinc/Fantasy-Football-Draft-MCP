@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 
 from . import names, sources
-from .config import CURRENT_SEASON, STATE_DIR, LeagueSettings
+from .config import CURRENT_SEASON, SPECIAL_POSITIONS, STATE_DIR, LeagueSettings
 
 # Name handling lives in names.py so every join in the codebase resolves identically.
 norm_name = names.normalize
@@ -110,13 +110,15 @@ def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
         if adp is None or not p.get("fullName"):
             continue
         rows.append({"name": p["fullName"], "adp": float(adp), "espn_id": str(p.get("id")),
+                     "pro_team_id": p.get("proTeamId"),
                      "position": _ESPN_POSITION_NAMES.get(str(p.get("defaultPositionId"))),
                      "espn_rank": ((p.get("draftRanksByRankType") or {}).get("PPR") or {}).get("rank"),
                      "percent_owned": (p.get("ownership") or {}).get("percentOwned"),
                      "espn_proj": espn_season_projection(p, season),
                      "espn_injury": p.get("injuryStatus")})
-    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "position", "espn_rank",
-                                      "percent_owned", "espn_proj", "espn_injury"])
+    out = pd.DataFrame(rows, columns=["name", "adp", "espn_id", "pro_team_id", "position",
+                                      "espn_rank", "percent_owned", "espn_proj",
+                                      "espn_injury"])
     out["_key"] = out["name"].map(norm_name)
     out["source"] = "espn_adp"
     return out.dropna(subset=["adp"]).drop_duplicates("_key").reset_index(drop=True)
@@ -140,7 +142,8 @@ def espn_adp_configured() -> bool:
 def strip_adp(board: pd.DataFrame) -> pd.DataFrame:
     """The board without its market columns, ready for attach_adp again."""
     return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format",
-                                           "adp_match", "espn_proj", "espn_injury", "espn_rank")
+                                           "adp_match", "market_join_version",
+                                           "espn_proj", "espn_injury", "espn_rank")
                                if c in board.columns])
 
 
@@ -317,7 +320,7 @@ def audit_state(board: pd.DataFrame, state: DraftState,
         if leaked:
             failures.append(f"drafted players in recommendations: {leaked}")
         if "espn_proj" in recommendations.columns:
-            from .model import ROLE_DISAGREEMENT
+            from .model import ROLE_DISAGREEMENT, ROLE_FLOOR, ROLE_UNKNOWN_RANK
 
             r = recommendations
             ratio = pd.to_numeric(r["espn_proj"], errors="coerce") / r["proj_points"]
@@ -328,7 +331,20 @@ def audit_state(board: pd.DataFrame, state: DraftState,
                                             zip(low["name"], low["espn_proj"], low["proj_points"])))
             unknown = r[pd.to_numeric(r["espn_proj"], errors="coerce").isna()]
             if not unknown.empty:
-                warnings.append(f"no ESPN projection for: {unknown['name'].tolist()}")
+                rank = (pd.to_numeric(unknown["espn_rank"], errors="coerce")
+                        if "espn_rank" in unknown.columns
+                        else pd.Series(np.nan, index=unknown.index))
+                deep = rank.isna() | (rank > ROLE_UNKNOWN_RANK)
+                if deep.any():
+                    warnings.append(
+                        f"no ESPN projection and no ESPN rank inside {ROLE_UNKNOWN_RANK:.0f} "
+                        f"(role unknown, pick_value scaled to {ROLE_FLOOR:.0%}): "
+                        + ", ".join(unknown.loc[deep, "name"].tolist()))
+                if (~deep).any():
+                    warnings.append(
+                        "no ESPN projection, but ESPN still ranks them inside "
+                        f"{ROLE_UNKNOWN_RANK:.0f} (left unscaled): "
+                        + ", ".join(unknown.loc[~deep, "name"].tolist()))
 
     return {"ok": not failures, "failures": failures, "warnings": warnings,
             "picks": len(picks), "mine": len(mine), "unresolved": len(unresolved)}
@@ -346,6 +362,20 @@ def rekey(board: pd.DataFrame) -> pd.DataFrame:
 
 # PlayerIndex match types the market join accepts beyond the exact key.
 ALIAS_JOINS = ("alias", "lastname_initial")
+# How the first pass priced a row. "exact" is the strongest join the market frame
+# supports: key and position together when it carries positions, the key alone
+# when it does not (a pasted CSV). "key_only" means the frame did carry positions
+# and this row was still priced on the name alone, because the market held exactly
+# one player under it -- worth reporting, since the two sides disagree on what he
+# plays.
+EXACT_JOIN = "exact"
+KEY_ONLY_JOIN = "key_only"
+# Bumped whenever attach_adp changes what a board row joins to. A cached board
+# stamped with an older version is repriced on load (server._build_board), for
+# the same reason names.KEY_VERSION exists: the projections in the parquet are
+# still good, but the market columns beside them were derived by rules that no
+# longer hold, and nothing else in the cache gate would notice.
+MARKET_JOIN_VERSION = 4
 
 
 def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
@@ -363,12 +393,64 @@ def market_join_report(board: pd.DataFrame, limit: int = 10) -> dict:
                 for _, r in un.head(limit).iterrows()]
     for u in unjoined:
         u.pop("adp", None)
-    alias = []
+    alias, key_only = [], []
+    alias_total = key_only_total = 0
     if "adp_match" in board.columns:
+        # Both lists are capped like `unjoined`: a market frame that labels
+        # positions differently across the board would otherwise print
+        # hundreds of rows into an audit meant to be read.
         al = board[board["adp_match"].isin(ALIAS_JOINS)]
+        alias_total = int(len(al))
         alias = [{"name": r["name"], "position": r["position"], "how": r["adp_match"],
-                  "adp": round(float(r["adp"]), 1)} for _, r in al.iterrows()]
-    return {"unjoined": unjoined, "unjoined_total": int(len(un)), "alias_joined": alias}
+                  "adp": round(float(r["adp"]), 1)} for _, r in al.head(limit).iterrows()]
+        ko = board[board["adp_match"] == KEY_ONLY_JOIN]
+        key_only_total = int(len(ko))
+        key_only = [{"name": r["name"], "position": r["position"],
+                     "adp": round(float(r["adp"]), 1)} for _, r in ko.head(limit).iterrows()]
+    return {"unjoined": unjoined, "unjoined_total": int(len(un)),
+            "alias_joined": alias, "alias_joined_total": alias_total,
+            "key_only": key_only, "key_only_total": key_only_total}
+
+
+def _exact_market_join(b: pd.DataFrame, src: pd.DataFrame, extra: list[str]) -> pd.DataFrame:
+    """Price board rows whose normalised name is in the market frame, position first.
+
+    Two real players can share a full name at different positions -- the ESPN
+    list carries Josh Allen the quarterback and Josh Allen the linebacker under
+    one key -- so joining on the name alone hands whichever row happens to sort
+    first to both board rows, and the second player is priced as the first.
+    `PlayerIndex` already disambiguates on position for free-text lookups; this
+    is the same rule for the bulk join.
+
+    The name alone is still enough when the market holds exactly one player
+    under it: then the only thing that can differ is the position *label*
+    (fullback-ish tweeners the board calls TE and ESPN calls RB), and no other
+    player can be picked by mistake. Those rows are recorded as `key_only` so
+    the market-join report can show what was priced across a disagreement. A
+    market frame with no position column at all -- a pasted CSV -- has nothing
+    to be aware of and joins on the key as before.
+    """
+    cols = ["adp", *extra]
+    if "position" in src.columns and "position" in b.columns:
+        by_pos = src.drop_duplicates(["_key", "position"])
+        same_pos = by_pos[by_pos["position"].notna()]
+        b = b.merge(same_pos[["_key", "position", *cols]], on=["_key", "position"], how="left")
+        b["adp_match"] = np.where(b["adp"].notna(), EXACT_JOIN, "none")
+        per_key = by_pos.groupby("_key").size()
+        lone = by_pos[by_pos["_key"].isin(per_key.index[per_key == 1])].set_index("_key")
+        missing = b["adp"].isna()
+        if missing.any() and not lone.empty:
+            for c in cols:
+                # Whole-column assignment, not .loc on the missing rows: the
+                # merge leaves an all-NaN float column behind when nothing
+                # joined, and writing strings (espn_injury) into it in place is
+                # an incompatible-dtype set.
+                b[c] = b[c].where(~missing, b["_key"].map(lone[c]))
+            b["adp_match"] = np.where(missing & b["adp"].notna(), KEY_ONLY_JOIN, b["adp_match"])
+        return b
+    b = b.merge(src.drop_duplicates("_key")[["_key", *cols]], on="_key", how="left")
+    b["adp_match"] = np.where(b["adp"].notna(), EXACT_JOIN, "none")
+    return b
 
 
 def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
@@ -378,14 +460,17 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     if adp is not None and not adp.empty:
         extra = [c for c in ("espn_proj", "espn_injury", "espn_rank") if c in adp.columns]
         b = b.drop(columns=[c for c in extra if c in b.columns])
-        src = adp.drop_duplicates("_key")
-        b = b.merge(src[["_key", "adp", *extra]], on="_key", how="left")
-        b["adp_match"] = np.where(b["adp"].notna(), "exact", "none")
+        src = adp.drop_duplicates(["_key", "position"]) if "position" in adp.columns \
+            else adp.drop_duplicates("_key")
+        b = _exact_market_join(b, src, extra)
         # Second pass through the alias index for what the exact key missed:
         # "Josh Palmer" on the board, "Joshua Palmer" at ESPN. Only alias and
         # last-name-plus-initial hits at the same position are taken; fuzzy and
         # ambiguous hits would join the wrong player silently.
         missing = b.index[b["adp"].isna()]
+        hit_at: list[int] = []
+        hit_rows: list[pd.Series] = []
+        hit_how: list[str] = []
         if len(missing) and "position" in src.columns:
             idx = names.PlayerIndex(src)
             for i in missing:
@@ -396,10 +481,20 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
                     continue
                 if str(row.get("position")) != str(b.at[i, "position"]):
                     continue
-                b.at[i, "adp"] = row["adp"]
-                for c in extra:
-                    b.at[i, c] = row[c]
-                b.at[i, "adp_match"] = "alias" if how == "exact" else how
+                hit_at.append(int(i))
+                hit_rows.append(row)
+                hit_how.append("alias" if how == "exact" else how)
+        if hit_at:
+            # Whole-column assignment, for the same reason _exact_market_join
+            # uses it: an exact pass that matched nothing at all leaves
+            # espn_injury as an all-NaN float column, and writing strings into
+            # it one cell at a time is an incompatible-dtype set.
+            found = b.index.isin(hit_at)
+            for c in ("adp", *extra):
+                vals = pd.Series([r[c] for r in hit_rows], index=hit_at)
+                b[c] = b[c].where(~found, vals.reindex(b.index))
+            b["adp_match"] = b["adp_match"].where(
+                ~found, pd.Series(hit_how, index=hit_at).reindex(b.index))
         label = "espn" if "source" in adp.columns and (adp["source"] == "espn_adp").any() \
             else "consensus"
         b["adp_source"] = np.where(b["adp"].notna(), label, "modelled")
@@ -407,6 +502,7 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
         b["adp"] = np.nan
         b["adp_source"] = "modelled"
         b["adp_match"] = "none"
+    b["market_join_version"] = MARKET_JOIN_VERSION
 
     if "last_season" in b.columns:
         freshest = b["last_season"].max()
@@ -874,6 +970,86 @@ _ESPN_SLOT_NAMES = {"0": "QB", "2": "RB", "4": "WR", "6": "TE", "16": "DST", "17
                     "20": "BENCH", "21": "IR", "23": "FLEX", "7": "OP", "3": "RB/WR",
                     "5": "WR/TE"}
 _ESPN_POSITION_NAMES = {"1": "QB", "2": "RB", "3": "WR", "4": "TE", "5": "K", "16": "DST"}
+
+# ESPN's proTeamId -> the abbreviation the board and the nfldata schedule use,
+# so a kicker or a defense gets the same team (and therefore the same bye week)
+# as every other row. Los Angeles Rams are "LA" upstream, not "LAR".
+_ESPN_TEAM_ABBR = {
+    1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE", 6: "DAL", 7: "DEN", 8: "DET",
+    9: "GB", 10: "TEN", 11: "IND", 12: "KC", 13: "LV", 14: "LA", 15: "MIA", 16: "MIN",
+    17: "NE", 18: "NO", 19: "NYG", 20: "NYJ", 21: "PHI", 22: "ARI", 23: "PIT",
+    24: "LAC", 25: "SF", 26: "SEA", 27: "TB", 28: "WAS", 29: "CAR", 30: "JAX",
+    33: "BAL", 34: "HOU",
+}
+
+
+def espn_special_teams(adp: pd.DataFrame | None) -> pd.DataFrame:
+    """Kicker and team-defense rows for the board, from the ESPN player list.
+
+    The board is built from nflverse box scores, which carry no kicking and no
+    team-defense production, so K and D/ST never reached it: the recommender
+    saw them as off_board and had nothing to say in the two rounds where the
+    league forces you to fill both slots. ESPN publishes a full-season
+    projection for both under this league's own scoring -- for a defense that
+    means the yards-allowed and points-allowed bands `league_rules` reads out
+    of `pointsOverrides` -- so that projection is what the board uses.
+
+    Only rows ESPN actually projects above zero are kept. A kicker projected at
+    exactly 0 (ten of the 55 on the live list) is ESPN saying he has no job, not
+    a player worth a pick.
+
+    Defenses are named the way `_espn_player_name` records a drafted one --
+    "Denver Broncos D/ST", where ESPN's own list says "Broncos D/ST" -- or the
+    draft state and the board would key the same defense differently and a
+    drafted defense would keep showing up as available.
+    """
+    cols = ["name", "position", "team", "adp", "espn_id", "espn_rank", "espn_proj",
+            "espn_injury", "proj_points", "adj_ppg", "pos_rank", "adp_source",
+            "adp_match", "_key"]
+    if adp is None or adp.empty or "position" not in adp.columns:
+        return pd.DataFrame(columns=cols)
+    src = adp[adp["position"].isin(SPECIAL_POSITIONS)].copy()
+    if src.empty or "espn_proj" not in src.columns:
+        return pd.DataFrame(columns=cols)
+    src["espn_proj"] = pd.to_numeric(src["espn_proj"], errors="coerce")
+    src = src[src["espn_proj"] > 0]
+    if src.empty:
+        return pd.DataFrame(columns=cols)
+    team_id = pd.to_numeric(src.get("pro_team_id"), errors="coerce")
+    out = pd.DataFrame({
+        "name": np.where(src["position"] == "DST",
+                         team_id.map(_ESPN_PRO_TEAMS).fillna("") + " D/ST",
+                         src["name"]),
+        "position": src["position"].to_numpy(),
+        "team": team_id.map(_ESPN_TEAM_ABBR).to_numpy(),
+        "adp": pd.to_numeric(src["adp"], errors="coerce").to_numpy(),
+        "espn_id": src["espn_id"].to_numpy() if "espn_id" in src.columns else None,
+        "espn_rank": (pd.to_numeric(src["espn_rank"], errors="coerce").to_numpy()
+                      if "espn_rank" in src.columns else np.nan),
+        "espn_proj": src["espn_proj"].to_numpy(),
+        "espn_injury": (src["espn_injury"].to_numpy()
+                        if "espn_injury" in src.columns else None),
+    })
+    # A defense with no proTeamId cannot be named or given a bye week.
+    out = out[out["name"].str.strip() != "D/ST"].reset_index(drop=True)
+    # ESPN's projection is the projection. adj_ppg is it spread over a full
+    # season, which is what `explain` prints; there is no games-played model
+    # for a defense.
+    out["proj_points"] = out["espn_proj"]
+    out["adj_ppg"] = out["espn_proj"] / 17.0
+    out["pos_rank"] = out.groupby("position")["proj_points"].rank(ascending=False,
+                                                                 method="min")
+    out["adp_source"] = "espn"
+    out["adp_match"] = EXACT_JOIN
+    # Facts, and they keep the board's boolean columns boolean: a team defense
+    # is not a rookie and is not a player who has fallen off a depth chart.
+    # Left as NaN they widen `is_rookie` and `off_roster` to object, and pandas
+    # refuses to mask with an object column holding None, so `b[b["is_rookie"]]`
+    # raises on the whole board.
+    out["is_rookie"] = False
+    out["off_roster"] = False
+    out["_key"] = out["name"].map(norm_name)
+    return out.drop_duplicates("_key").reset_index(drop=True)
 
 
 def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
