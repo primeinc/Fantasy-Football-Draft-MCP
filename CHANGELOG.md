@@ -81,6 +81,40 @@ All notable changes to this project. Format follows
   `role_mult` and `p_available_next`; overall adds log loss and survival
   calibration by round and by position.
 
+**As-of market snapshots**
+- The replay's oldest stated limit was that projections and ADP are today's, not
+  as of the pick. ESPN keeps no history — no surface answers "what was his ADP
+  at pick 87" (`docs/data-sources.md`, "Draft history: what ESPN keeps") — so the
+  watch, the only process present while the draft runs, now records it.
+  `watch.write_snapshot` files the market for the players still available after
+  INIT and after every SELECTED to
+  `~/.ffdraft/state/snapshots_<league>/<pick>.parquet`, keyed by the pick then on
+  the clock. Columns: `_key`, `player_id`, `adp`, `espn_rank`, `espn_proj`.
+- Bounded at `watch.SNAPSHOT_ROWS` (300) rows per file, cheapest ADP first: a
+  full 16-team 14-round draft is 224 files and single-digit megabytes. A failed
+  write is logged and dropped, never raised — the socket loop must not lose a
+  pick to a snapshot, and a test asserts the pick is still announced when the
+  board cannot be written.
+- `replay_draft(as_of=True, snapshots=...)` and `draft_replay(league_id=...,
+  as_of=true)` price each pick from its snapshot instead of today's board.
+  Coverage is reported, never assumed: the `as_of` block gives picks covered
+  (none exist before the watch first connected), the first and last covered
+  pick, the mean share of each pool the snapshot reached, and how often the
+  player actually taken was inside it. Uncovered rows keep today's numbers.
+- Documented in `docs/data-sources.md` ("As-of market snapshots") with the
+  column table and the bounds. Tested against `tests/fixtures/espn_draft_init.b64`
+  and a fake notify; no test opens the draft socket.
+- `just asof [league_id]` prints the coverage and the as-of replay against
+  today's. On the live record it reports 0 of 122 picks covered and says so
+  outright — the recorded draft predates this code, so there is nothing to read
+  and the two runs are identical, which is the right behaviour for an as-of
+  option with no snapshots. Positive control at real scale, against a
+  throwaway league id with ADP shifted +10 for picks 60 onward: coverage 63 of
+  122 (0.516, first 60, last 122), mean pool share 0.553 (300 rows of a ~540-row
+  pool), the player taken inside the snapshot 57 times, exactly 57 picks' `reach`
+  moved and every one by +10 (pick 61: 27.6 -> 37.6), pick 30 unchanged, survival
+  Brier 0.128 -> 0.143. 63 files, 870 KB, so a full 224-pick draft is about 3 MB.
+
 **Counterfactual replay**
 - `draft_counterfactual` (`replay.counterfactual_draft`, `just counterfactual
   [slot] [policy] [seed]`): the replay walk with the model intervening. At each

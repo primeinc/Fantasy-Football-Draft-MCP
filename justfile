@@ -158,6 +158,49 @@ replay $picks='0':
               f"role {r['role_mult']!s:>4} model {r['model_pick']!s:<22} regret {r['pick_regret']!s:>6} "
               f"z {r['market_z']!s:>5}")
 
+# Replay the recorded draft priced from the market snapshots the watch wrote at
+# each pick, against the same replay priced from today's board. Prints the
+# coverage first: with no snapshots the two runs are identical and it says so.
+# $league_id defaults to ESPN_LEAGUE_ID from .mcp.json.
+[script]
+asof $league_id='':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import replay, server, watch
+
+    league_id = os.environ["league_id"] or os.environ.get("ESPN_LEAGUE_ID", "")
+    if not league_id:
+        sys.exit("no league id: pass one or set ESPN_LEAGUE_ID in .mcp.json")
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    root = watch.snapshot_dir(league_id)
+    shift = replay.room_drift(b, st)["shift"]
+    aged = replay.replay_draft(b, st, league, adp_shift=shift, as_of=True, snapshots=root)
+    c = aged["as_of"]
+    print(f"snapshots {c['snapshots']}")
+    print(f"  picks {c['picks']}  with a snapshot {c['picks_with_snapshot']} ({c['coverage']})  "
+          f"first {c['first_pick_with_snapshot']}  last {c['last_pick_with_snapshot']}")
+    print(f"  mean share of the pool each snapshot reached: {c['mean_pool_share']}  "
+          f"the player actually taken was in it {c['actual_pick_covered']} times")
+    if c["picks_without_snapshot"]:
+        print(f"  no snapshot (first 20): {c['picks_without_snapshot']}")
+    if not c["picks_with_snapshot"]:
+        print("  nothing was recorded during this draft: the numbers below are today's board, "
+              "identical to `just replay`. Run the watch through a draft to fill them.")
+    today = replay.replay_draft(b, st, league, adp_shift=shift)
+    for label, out in (("as of the pick", aged), ("today's board", today)):
+        o = out["overall"]
+        print(f"== {label}: brier {o['survival_brier']}  log loss {o['survival_log_loss']}  "
+              f"model match {o['model_match_rate']}  top3 {o['top3_rate']}  "
+              f"median rank {o['median_rank']}")
+        p = out["predictors"]["predictors"]
+        print("   " + "  ".join(f"{n} {s['log_loss']}" for n, s in p.items()))
+
 # Score choice.py's per-team predictor against the plain blend on the recorded
 # draft. One walk-forward pass scores both on the same picks in the same order,
 # so the log losses are directly comparable. $l2 overrides choice.TEAM_L2 to see

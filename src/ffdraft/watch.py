@@ -3,6 +3,12 @@
 Claude Code delivers `notifications/claude/channel` events into the session as
 `<channel>` messages (docs/data-sources.md, "ESPN live draft socket"). The loop
 here owns the socket; `server.watch_draft` supplies the notify callable.
+
+The watch is also the only process that sees the market as it stood during the
+draft. ESPN's ADP, PPR rank and projection all move afterwards, so a replay run
+days later prices every pick with numbers nobody had at the time. On the INIT
+snapshot and on every SELECTED it writes a small parquet of the market for the
+players still available, and `replay.replay_draft(as_of=True)` reads them back.
 """
 from __future__ import annotations
 
@@ -11,15 +17,79 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from urllib.parse import unquote_plus
 
+import pandas as pd
 from websockets.asyncio.client import connect
 
 from . import board as bd
 from . import espn_live, model
-from .config import LeagueSettings
+from .config import STATE_DIR, LeagueSettings
 
 log = logging.getLogger(__name__)
+
+# Rows per snapshot: the players still on the board, cheapest ADP first. Deep
+# enough to cover anything the room will take in the next few rounds without
+# writing the whole board once per pick -- at 300 rows a full draft's snapshots
+# are a couple of megabytes.
+SNAPSHOT_ROWS = 300
+# What is worth keeping: the three market numbers that move, plus the key the
+# board joins on. ESPN's own player id is not a board column (`board.espn_maps`
+# resolves that separately) and a replay does not need it to price a pick.
+SNAPSHOT_MARKET = ("adp", "espn_rank", "espn_proj")
+
+
+def snapshot_dir(league_id: str) -> Path:
+    """Where one league's as-of snapshots live: one parquet per pick number."""
+    return STATE_DIR / f"snapshots_{league_id}"
+
+
+def snapshot_path(league_id: str, pick: int) -> Path:
+    return snapshot_dir(league_id) / f"{pick}.parquet"
+
+
+def write_snapshot(board_df: pd.DataFrame | None, taken: set[str], league_id: str,
+                   pick: int, rows: int | None = None) -> Path | None:
+    """The market as the board holds it now, for the players still available,
+    filed under the pick that is on the clock.
+
+    Returns the path written, or None when there was nothing to write. Never
+    raises: this runs inside the socket loop, and losing a snapshot must not
+    cost the pick that arrived with it."""
+    if board_df is None or board_df.empty or "_key" not in board_df.columns:
+        return None
+    try:
+        avail = board_df[~board_df["_key"].isin(taken)]
+        cols = ["_key", *[c for c in SNAPSHOT_MARKET if c in avail.columns]]
+        if "player_id" in avail.columns:
+            cols.insert(1, "player_id")
+        if "adp" in avail.columns:
+            avail = avail.sort_values("adp", na_position="last")
+        # Read here, not bound as a default, so the bound stays adjustable.
+        out = avail[cols].head(SNAPSHOT_ROWS if rows is None else rows).reset_index(drop=True)
+        path = snapshot_path(league_id, pick)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        out.to_parquet(path, index=False)
+        return path
+    except Exception:
+        log.exception("could not write the as-of snapshot for pick %s", pick)
+        return None
+
+
+def read_snapshot(league_id_or_dir: str | Path, pick: int) -> pd.DataFrame | None:
+    """One pick's snapshot, or None when it was never written. Takes a league id
+    or the directory itself, so a replay can be pointed at a copied set."""
+    root = (Path(league_id_or_dir) if isinstance(league_id_or_dir, Path)
+            else snapshot_dir(str(league_id_or_dir)))
+    path = root / f"{pick}.parquet"
+    if not path.is_file():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        log.exception("could not read the as-of snapshot at %s", path)
+        return None
 
 Notify = Callable[[str, dict[str, str]], Awaitable[None]]
 
@@ -71,6 +141,8 @@ class DraftWatch:
         # the only timestamped pick record ESPN lets anyone keep.
         self.lines: list[tuple[int, str]] = []
         self.init_b64: str | None = None
+        # Pick numbers whose as-of market snapshot this watch has written.
+        self.snapshots: list[int] = []
         # Set once the INIT snapshot has been applied; callers wait on this.
         self.ready = asyncio.Event()
         # `LEFT <team> <swid> 2` for our own team precedes a duplicate-connection close.
@@ -174,6 +246,7 @@ class DraftWatch:
                                   position=bd._espn_player_position(p["player_id"], self.pos_map))
             self.picks_seen = len(picks)
             self.ready.set()
+            self._snapshot()
             s = self.state.summary()
             await self.notify(
                 f"draft room joined: {s['picks_made']} picks made, pick {s['on_the_clock']} "
@@ -194,6 +267,7 @@ class DraftWatch:
             self.state.record(name, overall, self.slot_of.get(team_id),
                               position=bd._espn_player_position(pid, self.pos_map))
             self.picks_seen += 1
+            self._snapshot()
             if team_id == self.team_id and self.own_pick and not self.own_pick.done():
                 self.own_pick.set_result({"overall": overall, "player_id": pid, "name": name})
             await self._announce_pick(overall, team_id, name)
@@ -226,6 +300,16 @@ class DraftWatch:
                 self.own_pick.set_exception(RuntimeError(line))
                 return
             raise RuntimeError(line)
+
+    def _snapshot(self) -> None:
+        """File the market for the pick now on the clock. Called after INIT and
+        after every SELECTED, so `<pick>.parquet` is the board as it stood when
+        that pick was made -- not after it. Picks before the watch connected have
+        no snapshot, which is what `replay(as_of=True)` reports as coverage."""
+        path = write_snapshot(self.board, self.state.taken_keys(), self.league_id,
+                              self.state.on_the_clock)
+        if path is not None:
+            self.snapshots.append(self.state.on_the_clock)
 
     # -- queries
 

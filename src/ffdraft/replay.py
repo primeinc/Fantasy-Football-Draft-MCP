@@ -18,6 +18,8 @@ and players the board cannot model are `off_board` and score nothing.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -29,6 +31,10 @@ from .names import normalize as norm_name
 CALIBRATION_BINS = ((0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01))
 # Picks at a position before its own median reach is used instead of the room's.
 DRIFT_MIN_PICKS = 8
+# The market columns an as-of replay takes from the snapshot instead of the
+# board. Everything else -- projections, roles, consistency -- is the model's
+# own and was never a moving ESPN number.
+AS_OF_COLUMNS = ("adp", "espn_rank", "espn_proj")
 
 
 def room_drift(board: pd.DataFrame, state: DraftState, last: int = 0) -> dict:
@@ -63,20 +69,72 @@ def room_drift(board: pd.DataFrame, state: DraftState, last: int = 0) -> dict:
             "n": len(reaches), "by_position": by_position, "shift": shift}
 
 
+def _as_of_coverage(rows: list[dict], snapshots: str | Path | None) -> dict:
+    """What an as-of replay actually managed to price from snapshots. Reported
+    because the honest answer is usually "some of it": the watch only snapshots
+    from the moment it connects, and each snapshot holds the top
+    `watch.SNAPSHOT_ROWS` available players, not the whole board."""
+    with_snap = [r for r in rows if r["snapshot"]]
+    scored = [r for r in rows if r["snapshot"] and r["pool_rows"]]
+    return {
+        "snapshots": str(snapshots),
+        "picks": len(rows),
+        "picks_with_snapshot": len(with_snap),
+        "coverage": round(len(with_snap) / len(rows), 3) if rows else None,
+        "first_pick_with_snapshot": (min(r["pick"] for r in with_snap) if with_snap else None),
+        "last_pick_with_snapshot": (max(r["pick"] for r in with_snap) if with_snap else None),
+        # How much of the pool each snapshot reached, and how often the player
+        # actually taken was in it -- the pick whose price the replay is scoring.
+        "mean_pool_share": (round(float(np.mean([r["rows_from_snapshot"] / r["pool_rows"]
+                                                 for r in scored])), 3) if scored else None),
+        "actual_pick_covered": sum(1 for r in with_snap if r["actual_covered"]),
+        "picks_without_snapshot": [r["pick"] for r in rows if not r["snapshot"]][:20],
+    }
+
+
+def _apply_snapshot(pool: pd.DataFrame, snap: pd.DataFrame) -> tuple[pd.DataFrame, set[str]]:
+    """Overwrite the pool's market columns with the values a snapshot recorded,
+    for the rows it covers. Rows the snapshot does not carry keep today's
+    numbers; the returned set is the keys that were covered, which is what makes
+    an as-of replay's coverage reportable rather than assumed."""
+    out = pool.copy()
+    snap = snap.drop_duplicates("_key")
+    idx = snap.set_index("_key")
+    covered = set(idx.index) & set(out["_key"])
+    for col in AS_OF_COLUMNS:
+        if col in idx.columns and col in out.columns:
+            mapped = out["_key"].map(idx[col])
+            out[col] = out[col].where(mapped.isna(), mapped)
+    return out, covered
+
+
 def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
                  candidates: int = 10, adp_shift: float | dict[str, float] = 0.0,
-                 walk_forward: bool = True, team_effects: bool | None = None) -> dict:
+                 walk_forward: bool = True, team_effects: bool | None = None,
+                 as_of: bool = False, snapshots: str | Path | None = None) -> dict:
     """Score every recorded pick against the model and return per-pick rows,
     per-team totals, and the survival model's calibration. `adp_shift` is
     passed to recommend() so the calibration can be read with and without the
     room's drift applied. With `walk_forward` the choice predictors are scored
     prequentially as well and a forecast for the pick on the clock is returned.
     `team_effects` adds `choice`'s per-team predictor to that score sheet,
-    defaulting to `choice.TEAM_EFFECTS` (off)."""
+    defaulting to `choice.TEAM_EFFECTS` (off).
+
+    With `as_of` each pick is priced from the market snapshot the watch wrote
+    when that pick was on the clock (`watch.write_snapshot`) instead of today's
+    ADP, ESPN rank and ESPN projection. `snapshots` is the league id or the
+    directory holding them. Coverage is reported, never assumed: a pick with no
+    snapshot, and a player the snapshot did not reach, keep today's numbers and
+    are counted as uncovered in the `as_of` block."""
     b = board.copy()
     if "_key" not in b.columns:
         b["_key"] = b["name"].map(norm_name)
     b = b.set_index("_key", drop=False)
+    as_of_from: str | Path | None = None
+    if as_of:
+        if snapshots is None:
+            raise ValueError("as_of needs `snapshots`: the league id or the snapshot directory")
+        as_of_from = snapshots
     picks = sorted(state.picks, key=lambda p: p["overall"])
     taken_at: dict[str, int] = {norm_name(p["name"]): p["overall"] for p in picks}
     rosters: dict[int, dict[str, int]] = {}
@@ -94,10 +152,21 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
                                adp_shift=adp_shift)
         return recs, next_pick
 
+    as_of_rows: list[dict] = []
     for p in picks:
         overall, slot = p["overall"], p["slot"]
         key = norm_name(p["name"])
         pool = b[~b["_key"].isin(taken)]
+        if as_of_from is not None:
+            from .watch import read_snapshot
+
+            snap = read_snapshot(as_of_from, overall)
+            covered: set[str] = set()
+            if snap is not None:
+                pool, covered = _apply_snapshot(pool, snap)
+            as_of_rows.append({"pick": overall, "snapshot": snap is not None,
+                               "pool_rows": len(pool), "rows_from_snapshot": len(covered),
+                               "actual_covered": key in covered})
         recs, next_pick = recommend_for(slot, overall, pool)
         if wf is not None and len(recs):
             wf.observe(recs, key if key in recs.index else None, recent_positions, overall, slot)
@@ -166,6 +235,8 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         # The dict rows, not the frame: a frame turns None into NaN.
         "picks": rows,
     }
+    if as_of:
+        out["as_of"] = _as_of_coverage(as_of_rows, snapshots)
     if wf is not None:
         out["predictors"] = wf.summary()
         out["predictor_rows"] = wf.rows

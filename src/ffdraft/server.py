@@ -1471,7 +1471,7 @@ async def draft_room(league_id: str, chat_limit: int = 10) -> str:
 
 
 @mcp.tool()
-def draft_replay(league_id: str = "", picks: int = 0) -> str:
+def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> str:
     """Replay every recorded pick through the model for the team that made it:
     the model's choice at that moment, the model's rank of the real pick,
     projected points left on the table, and the reach against ADP. Totals per
@@ -1479,14 +1479,27 @@ def draft_replay(league_id: str = "", picks: int = 0) -> str:
     player lasted to that team's next pick, with Brier score against the base
     rate). `picks` limits the per-pick rows returned (0 = all). Projections
     and ADP are today's; kickers, defenses and unmodelled players are
-    `off_board`."""
-    from . import replay
+    `off_board`.
+
+    With `as_of` each pick is priced from the market snapshot the watch wrote
+    when that pick was on the clock — ESPN's ADP, PPR rank and projection as
+    they stood then, not as they stand now — for the league whose `league_id`
+    you pass. Snapshots only exist from the moment a watch first connected and
+    reach the top few hundred available players, so the answer carries an
+    `as_of` block saying how many picks were covered and how much of each pool;
+    anything uncovered keeps today's numbers."""
+    from . import replay, watch
 
     state = _state()
     b = _build_board()
     league = _settings()[0]
     drift = replay.room_drift(b, state)["shift"]
-    out = replay.replay_draft(b, state, league, adp_shift=drift)
+    snapshots = watch.snapshot_dir(league_id) if league_id else None
+    if as_of and snapshots is None:
+        return json.dumps({"error": "as_of needs league_id: snapshots are filed per league "
+                                    "under ~/.ffdraft/state/snapshots_<league>/"})
+    out = replay.replay_draft(b, state, league, adp_shift=drift,
+                              as_of=as_of, snapshots=snapshots)
     out["calibration_without_shift"] = replay.replay_draft(b, state, league)["overall"]
     entry = _WATCHES.get(league_id) if league_id else None
     if entry is not None:

@@ -153,6 +153,79 @@ def test_adp_shift_lowers_survival_odds():
     assert p8["TE One"] < p0["TE One"] and p8["QB One"] < p0["QB One"]
 
 
+class TestAsOfReplay:
+    """The snapshots the watch files, read back by a replay. Written here, not
+    by a watch: opening the draft socket is not something a test may do."""
+
+    def _league(self) -> LeagueSettings:
+        return LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
+                              starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                        "K": 0, "DST": 0})
+
+    def _state(self, tmp_path, monkeypatch) -> board.DraftState:
+        monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+        st = board.DraftState(self._league())
+        st.record("WR Two", 1, 1)
+        st.record("RB One", 2, 2)
+        st.record("RB Two", 3, 2)
+        return st
+
+    def _write(self, league_id: str, pick: int, keys: list[str], adp: list[float]) -> None:
+        from ffdraft import watch
+
+        watch.write_snapshot(
+            pd.DataFrame({"_key": keys, "adp": adp, "name": keys, "espn_rank": [1] * len(keys)}),
+            set(), league_id, pick)
+
+    def test_as_of_prices_a_pick_from_its_snapshot_and_reports_coverage(
+            self, tmp_path, monkeypatch):
+        from ffdraft import watch
+
+        monkeypatch.setattr(watch, "STATE_DIR", tmp_path)
+        st = self._state(tmp_path, monkeypatch)
+        root = watch.snapshot_dir("snaps")
+        # Only pick 1 was snapshotted, and in it WR Two went at ADP 1 rather
+        # than today's 6, so the reach the replay scores changes.
+        self._write("snaps", 1, ["wr two", "rb one"], [1.0, 3.0])
+
+        plain = replay.replay_draft(_board(), st, self._league())
+        aged = replay.replay_draft(_board(), st, self._league(), as_of=True, snapshots=root)
+        assert {r["pick"]: r["reach"] for r in plain["picks"]}[1] == 5.0
+        assert {r["pick"]: r["reach"] for r in aged["picks"]}[1] == 0.0
+
+        cover = aged["as_of"]
+        assert cover["picks"] == 3 and cover["picks_with_snapshot"] == 1
+        assert cover["coverage"] == round(1 / 3, 3)
+        assert cover["first_pick_with_snapshot"] == cover["last_pick_with_snapshot"] == 1
+        assert cover["actual_pick_covered"] == 1
+        assert cover["picks_without_snapshot"] == [2, 3]
+        # Two of the six board rows were in the snapshot.
+        assert cover["mean_pool_share"] == round(2 / 6, 3)
+        # The picks with no snapshot are priced with today's numbers, unchanged.
+        assert ({r["pick"]: r["reach"] for r in aged["picks"]}[2]
+                == {r["pick"]: r["reach"] for r in plain["picks"]}[2])
+
+    def test_a_player_the_snapshot_never_reached_keeps_todays_numbers(
+            self, tmp_path, monkeypatch):
+        from ffdraft import watch
+
+        monkeypatch.setattr(watch, "STATE_DIR", tmp_path)
+        st = self._state(tmp_path, monkeypatch)
+        root = watch.snapshot_dir("snaps")
+        # A snapshot that reached only RB One: WR Two is uncovered, so pick 1 is
+        # scored against today's ADP for him and the coverage says so.
+        self._write("snaps", 1, ["rb one"], [30.0])
+        aged = replay.replay_draft(_board(), st, self._league(), as_of=True, snapshots=root)
+        assert {r["pick"]: r["reach"] for r in aged["picks"]}[1] == 5.0
+        cover = aged["as_of"]
+        assert cover["picks_with_snapshot"] == 1 and cover["actual_pick_covered"] == 0
+
+    def test_as_of_without_a_snapshot_location_is_refused(self, tmp_path, monkeypatch):
+        st = self._state(tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="as_of needs"):
+            replay.replay_draft(_board(), st, self._league(), as_of=True)
+
+
 def _counterfactual_league() -> LeagueSettings:
     return LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
                           starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
