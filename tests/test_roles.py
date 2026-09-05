@@ -38,6 +38,18 @@ class TestStartProbability:
     def test_a_position_with_no_slots_never_starts_anyone(self):
         assert roles.start_probability([], slots=0) == 0.0
 
+    def test_the_floor_applies_to_the_series_not_the_raw_probability(self):
+        # start_probability answers the modelled question exactly, including 0.
+        assert roles.start_probability([(17.0, None), (17.0, None)], slots=2) == 0.0
+        # start_probabilities is what reaches a pick_value, and it never claims
+        # a certainty the model cannot have: a slot also opens through a trade,
+        # a cut or a benching, none of which are modelled.
+        avail = board([{"name": "RB4", "position": "RB", "proj_points": 50.0}])
+        mine = board([{"name": "a", "position": "RB", "proj_points": 300.0},
+                      {"name": "b", "position": "RB", "proj_points": 250.0}])
+        assert roles.start_probabilities(avail, league(), mine).iloc[0] == \
+            roles.START_PROB_FLOOR
+
     def test_a_third_rb_starts_only_when_one_of_the_two_ahead_is_out(self):
         # Both ahead available every week: the RB3 never starts.
         assert roles.start_probability([(17.0, None), (17.0, None)], slots=2) == 0.0
@@ -88,8 +100,10 @@ class TestBenchValue:
                       {"name": "RB2", "position": "RB", "proj_points": 250.0,
                        "exp_games": 17.0}])
         out = roles.bench_values(avail, league(), mine)
-        assert out["p_start"].iloc[0] == 0.0
-        assert out["bench_value"].iloc[0] == 0.0
+        # Two full-time starters ahead of him at a two-slot position, so the
+        # modelled paths give him nothing and he is left at the floor.
+        assert out["p_start"].iloc[0] == roles.START_PROB_FLOOR
+        assert out["bench_value"].iloc[0] == pytest.approx(150.0 * roles.START_PROB_FLOOR)
 
     def test_an_empty_roster_leaves_a_candidate_at_his_full_value(self):
         avail = board([{"name": "RB1", "position": "RB", "proj_points": 150.0}])
@@ -193,6 +207,57 @@ class TestTheModelHook:
         worse = model._discount(pd.Series([-4.0]), pd.Series([0.25]))
         better = model._discount(pd.Series([-4.0]), pd.Series([0.75]))
         assert worse[0] < better[0] < 0
+
+    def test_the_start_probability_term_is_additive_in_draft_score(self):
+        # (m - 1) * draft_score * need is exactly the difference between
+        # recommend's pick_value and the same arithmetic on m * draft_score, so
+        # the points-side scaling is available without a multiplier on a value
+        # whose zero is not "worthless".
+        avail = board([{"name": "RB3", "position": "RB", "proj_points": 150.0,
+                        "draft_score": 40.0, "need_mult": 0.5}])
+        mine = board([{"name": "a", "position": "RB", "proj_points": 300.0},
+                      {"name": "b", "position": "RB", "proj_points": 250.0}])
+        adj = roles.start_prob_adjustment(avail, league(), mine, start_prob_weight=1.0)
+        assert adj.iloc[0] == pytest.approx((roles.START_PROB_FLOOR - 1) * 40.0 * 0.5)
+        # At weight 0 it is zero to the bit.
+        assert roles.start_prob_adjustment(avail, league(), mine,
+                                           start_prob_weight=0.0).iloc[0] == 0.0
+
+    def test_a_player_below_replacement_is_not_lifted_by_playing_less(self):
+        # draft_score is value over replacement, not points, so m * draft_score
+        # is only the right statement while it is positive. Unclipped, players
+        # below replacement rose toward zero and a receiver whose own value had
+        # not changed fell from rank 1 to rank 13.
+        avail = board([{"name": "bad", "position": "RB", "proj_points": 20.0,
+                        "draft_score": -30.0, "need_mult": 1.0}])
+        mine = board([{"name": "a", "position": "RB", "proj_points": 300.0},
+                      {"name": "b", "position": "RB", "proj_points": 250.0}])
+        assert roles.start_prob_adjustment(avail, league(), mine,
+                                           start_prob_weight=1.0).iloc[0] == 0.0
+
+    def test_a_candidate_who_can_hardly_start_falls_below_the_negative_field(self):
+        # The trap: pick_value's zero means "as good as waiting", and almost the
+        # whole board sits below it, so a multiplier that scales a positive
+        # pick_value toward zero leaves it above everything negative. Measured on
+        # the live board at pick 125 with two ironman backs held: Woody Marks
+        # went from rank 3 of 575 to rank 204.
+        rows = [{"name": "bench RB", "position": "RB", "proj_points": 150.0,
+                 "draft_score": 60.0, "adp": 130.0}]
+        rows += [{"name": f"filler{i}", "position": "WR", "proj_points": 40.0,
+                  "draft_score": -20.0 - i, "adp": 140.0 + i} for i in range(8)]
+        avail = board(rows)
+        mine = board([{"name": "a", "position": "RB", "proj_points": 400.0,
+                       "exp_games": 17.0},
+                      {"name": "b", "position": "RB", "proj_points": 380.0,
+                       "exp_games": 17.0}])
+        before = model.recommend(avail, league(), current_pick=125, next_pick=132,
+                                 roster={"RB": 2}, mine=mine, top_n=len(avail))
+        after = model.recommend(avail, league(), current_pick=125, next_pick=132,
+                                roster={"RB": 2}, mine=mine, top_n=len(avail),
+                                role_weights={"start_prob": 1.0})
+        assert (before["pick_value"] < 0).sum() >= len(avail) - 2
+        assert before["name"].iloc[0] == "bench RB"
+        assert after["name"].iloc[-1] == "bench RB"
 
     def test_the_start_probability_weight_only_scales_down(self):
         mine = board([{"name": "held1", "position": "RB", "proj_points": 400.0},

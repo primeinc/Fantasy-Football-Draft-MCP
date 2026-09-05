@@ -800,13 +800,23 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     if role_weights:
         from . import roles
 
+        # Both roles terms are additive in pick_value's own units, so neither
+        # goes through _discount. The start-probability term is the algebraic
+        # equivalent of scaling a candidate's draft_score before the fallback
+        # subtraction; a multiplier on pick_value cannot express it, because
+        # scaling a positive value toward zero promotes it past the negative
+        # 98% of the board. See roles.start_prob_adjustment.
         avail["roles_mult"] = roles.pick_value_multiplier(
             avail, league, mine,
             start_prob_weight=float(role_weights.get("start_prob", 0.0)))
-        avail["roles_bonus"] = roles.pick_value_bonus(
-            avail, league, mine, handcuff_weight=float(role_weights.get("handcuff", 0.0)))
-        avail["pick_value"] = (_discount(avail["pick_value"], avail["roles_mult"])
-                               + avail["roles_bonus"])
+        avail["roles_bonus"] = (
+            roles.start_prob_adjustment(
+                avail, league, mine,
+                start_prob_weight=float(role_weights.get("start_prob", 0.0)))
+            + roles.pick_value_bonus(
+                avail, league, mine,
+                handcuff_weight=float(role_weights.get("handcuff", 0.0))))
+        avail["pick_value"] = avail["pick_value"] + avail["roles_bonus"]
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0

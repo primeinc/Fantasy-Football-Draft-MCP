@@ -61,12 +61,29 @@ the recommendation is bit-identical to one computed without them.
 FLEX slot. An RB3 does not compete with a WR3 for a starting job; he starts only
 in the weeks when fewer than two of the running backs ahead of him on *your*
 roster are available, which the model knows from their expected games and their
-byes. At weight 1 a candidate's `pick_value` is scaled by that probability; at 0
-nothing changes. It is whether the lineup has room for him, not whether he
-plays: his own bye and injury risk are already in `proj_points`. With a FLEX
-slot the probability is a lower bound, since a player can also start through the
-flex, which it does not count. `who_should_i_pick` reports it as
-`starts_in_a_given_week` with `bench_value` beside it whatever the weight is.
+byes. It is whether the lineup has room for him, not whether he plays: his own
+bye and injury risk are already in `proj_points`. With a FLEX slot the
+probability is a lower bound, since a player can also start through the flex,
+which it does not count. `START_PROB_FLOOR` keeps it off exactly zero — a slot
+also opens through a trade, a cut or a benching, none of which are modelled, and
+the docstring already calls the result a floor rather than an estimate.
+`who_should_i_pick` reports it as `starts_in_a_given_week` with `bench_value`
+beside it whatever the weight is.
+
+The term is **added, not multiplied**, and that is not a detail. `pick_value`'s
+zero means "exactly as good as waiting", not "worthless", and 96% of available
+rows at a live mid-draft pick sit below it — so scaling a positive `pick_value`
+toward zero lands it *above* the entire negative field. Measured at pick 125
+holding two backs who never miss a game: a bench RB the term says can hardly ever
+start ranked **3rd of 575** under a multiplier. What is actually true is that a
+player in the lineup a fraction `m` of the time is worth `m` of his projection,
+and `draft_score` is built from that projection, so the honest operation is to
+scale `draft_score` *before* the fallback subtraction. The difference that makes
+to `pick_value` is exactly `(m - 1) * draft_score * need_mult`, so it is applied
+as an addition with no restructuring: same player, **rank 204**, while a receiver
+the term does not touch stays at rank 1 with an unchanged `pick_value`. Only
+value above replacement is scaled — `draft_score` is value over replacement, not
+points, so a player already below it is not made better by playing less.
 
 `handcuff` prices contingent upside. The direct backup at an NFL team and
 position — depth rank 2 by the model's own projection — inherits the games the
@@ -89,7 +106,9 @@ Left in, it made holding the starter *lower* his handcuff's value than not
 holding him, the exact reverse of the intent.
 
 Every multiplier in `recommend` goes through `model._discount`, so below 1
-always means further down the list in both halves of the board.
+always means further down the list in both halves of the board. Neither roles
+term is one: both are additive in `pick_value`'s own units, for the reason
+above.
 
 `just roles [what] [seasons] [trials] [seed]` is the evidence. `what`: `shares`
 prints opportunity-share coverage on the live board and checks `pick_value` does

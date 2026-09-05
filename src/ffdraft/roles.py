@@ -52,6 +52,15 @@ from .config import CURRENT_SEASON, FANTASY_POSITIONS, LeagueSettings
 
 # Fantasy regular season: the weeks a lineup is actually set for.
 FANTASY_WEEKS = 14
+# Smallest start probability the model will claim. `start_probability` counts
+# only the two paths it can see -- a man ahead injured, or on his bye -- and its
+# own docstring calls the result a floor rather than an estimate. A lineup slot
+# also opens through a trade, a cut, a benching or a mid-season role loss, none
+# of which are modelled, so exactly 0 asserts a certainty this cannot have.
+# Policy, not fitted.
+#
+# This is NOT a fix for the ordering problem below. It is a fix for the claim.
+START_PROB_FLOOR = 0.05
 # `model.project` maps injury risk to expected games out of a 17-game season;
 # the same mapping is the per-week availability here, so the two cannot drift.
 SEASON_GAMES = 17
@@ -207,7 +216,9 @@ def start_probabilities(avail: pd.DataFrame, league: LeagueSettings,
         points = float(row.get("proj_points") or 0.0)
         ahead = [(games, bye) for pts, games, bye in held.get(pos, []) if pts > points]
         out.at[idx] = start_probability(ahead, _slots_for(league, pos))
-    return out
+    # Never exactly 0: the two paths this models are not the only ways a lineup
+    # slot opens, and the docstring above already calls the result a floor.
+    return out.clip(lower=START_PROB_FLOOR)
 
 
 def bench_values(avail: pd.DataFrame, league: LeagueSettings,
@@ -307,10 +318,9 @@ def pick_value_multiplier(avail: pd.DataFrame, league: LeagueSettings,
                           start_prob_weight: float = START_PROB_WEIGHT) -> pd.Series:
     """What `model.recommend` scales a pick_value by: the start-probability term.
 
-    Multiplying is right here — a bench player is worth the fraction of weeks he
-    is in the lineup — and at weight 0 this is all ones, so the recommendation is
-    bit-identical to one made without this module. At weight 1 a candidate's
-    value is scaled by his full start probability.
+    Reported, and used to derive the additive term in `pick_value_bonus`, but
+    never applied to `pick_value` by multiplication — see that function for why.
+    At weight 0 it is all ones.
     """
     ones = pd.Series(1.0, index=avail.index)
     if avail.empty or not start_prob_weight:
@@ -319,10 +329,62 @@ def pick_value_multiplier(avail: pd.DataFrame, league: LeagueSettings,
     return ones * (1 - start_prob_weight + start_prob_weight * p_start)
 
 
+def start_prob_adjustment(avail: pd.DataFrame, league: LeagueSettings,
+                          mine: pd.DataFrame | None = None,
+                          start_prob_weight: float = START_PROB_WEIGHT) -> pd.Series:
+    """What the start-probability term adds to a pick_value. Never a multiplier.
+
+    Scaling `pick_value` itself does not work, and no choice of factor fixes it.
+    `pick_value` is not a ratio scale — its zero means "exactly as good as
+    waiting", not "worthless" — and 566 of 577 available rows at a live
+    mid-draft pick sit below that zero. Multiplying a positive `pick_value`
+    toward zero therefore lands it *above* the entire negative field: a
+    candidate this term says can hardly ever start came out around rank 12 of
+    577. Dividing never touched that half either, which is why the trap survived
+    three successive fixes to the sign rule on the negative half. Found by marge.
+
+    So the term is applied where it is actually true. A player who is in the
+    lineup a fraction `m` of the time is worth `m` of his own projection, and
+    `draft_score` is built from that projection, so the honest statement is
+    "scale his draft_score by m", *before* the fallback subtraction rather than
+    after it. Writing out what `recommend` computes:
+
+        pick_value      = (0.80 * (ds - fallback) + 0.20 * ds) * need
+        pick_value(m*ds) = (0.80 * (m*ds - fallback) + 0.20 * m*ds) * need
+
+    and the difference between them is exactly `(m - 1) * ds * need`. So the
+    points-side scaling is available as an addition, with no restructuring of
+    `recommend` and no multiplier anywhere. At m = 1 it is 0 to the bit.
+
+    This also gives exclusion for free and without a sentinel: a candidate who
+    can never start loses his whole `draft_score`, which for a good player is a
+    large negative number, so he drops below the field instead of landing on
+    zero at rank 12. `START_PROB_FLOOR` is then a statement about what the model
+    can claim, not a workaround for arithmetic.
+
+    Only value *above* replacement is scaled. `draft_score` is value over
+    replacement, not points, so `m * draft_score` is the right statement only
+    while it is positive: a player already below replacement is not made better
+    by playing less, and scaling his negative score toward zero would lift him.
+    Left unclipped it did exactly that, and a receiver whose own value had not
+    changed at all fell from rank 1 to rank 13 because players below replacement
+    rose past him. Below replacement the term is silent — his value already says
+    he is not a starter.
+    """
+    zero = pd.Series(0.0, index=avail.index)
+    if avail.empty or not start_prob_weight:
+        return zero
+    mult = pick_value_multiplier(avail, league, mine, start_prob_weight)
+    ds = pd.to_numeric(avail.get("draft_score"), errors="coerce").fillna(0.0).clip(lower=0.0)
+    need = pd.to_numeric(avail.get("need_mult"), errors="coerce").fillna(1.0) \
+        if "need_mult" in avail.columns else pd.Series(1.0, index=avail.index)
+    return (mult - 1.0) * ds * need
+
+
 def pick_value_bonus(avail: pd.DataFrame, league: LeagueSettings,
                      mine: pd.DataFrame | None = None,
                      handcuff_weight: float = HANDCUFF_WEIGHT) -> pd.Series:
-    """What `model.recommend` adds to a pick_value: the contingent-upside term.
+    """What the contingent-upside term adds to a pick_value.
 
     Added, not multiplied. A handcuff's contingent points are points, in the same
     units as the projection `draft_score` is built from; scaling by them instead
