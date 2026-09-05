@@ -50,8 +50,17 @@ All notable changes to this project. Format follows
   `my_roster`'s count, so `need_mult` sees the position as filled while
   `roles.bench_values`, which reads the priced rows, sees the slot as open. On
   the live record that is RB — three counted, two priced, because MarShawn Lloyd
-  has no board row — which is half of why an RB headlined a pick the model also
-  said he was likely to survive.
+  has no board row.
+- It is **not** why an RB headlined, and the first draft of this entry said it
+  was. Two measurements retire that, both prompted by marge on #40. First,
+  `who_should_i_pick` passes no `role_weights`, so `starts_in_a_given_week` is
+  reported and never priced — it is not in the ranking, and no value of it can
+  drive a headline. Second, the one path by which the count does reach the
+  ranking runs the other way: `need_mult` for RB is **0.518** on the counted
+  roster against **0.720** on the priced one, so counting the unpriced back
+  *suppresses* RB. Woody Marks headlined despite the split, not because of it.
+  What the split affects is what the user is told about bench value; the
+  headline is `pick_value`, which this change labels rather than reranks.
 - Tested at both levels: `urgency_note` and `headline` directly, and through
   `who_should_i_pick` itself, since the invariant is about what the tool emits.
 
