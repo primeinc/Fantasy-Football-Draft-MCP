@@ -301,6 +301,28 @@ All notable changes to this project. Format follows
   every caller on the board, not just for kickers.
 - `MARKET_JOIN_VERSION` 4: a cached board built before this has no K or D/ST
   rows (or has them without the boolean flags) and reprices on load.
+- The cost, measured and recorded rather than left for someone to find. Putting
+  64 rarely-drafted players into the pool makes the walk-forward choice model
+  worse: `just replay`'s blend log loss goes 3.103 -> 3.183 and its forecast for
+  pick 123 goes from WR 72% / RB 22% to WR 52% / DST 17% / K 14%, in a room that
+  had taken one defense and one kicker in 122 picks.
+  The cause is not the pick_value ordering, and it is worth being exact because
+  the obvious explanation is wrong. `espn_list` (3.315 -> 3.358) and `adp`
+  (3.359 -> 3.484) degrade too, and neither reads `pick_value` at all — `adp`
+  degrades most of the three. Forcing an open K/DST slot to a neutral need of
+  1.00 instead of the usual 1.18 open-slot premium recovers 0.008 of the 0.080.
+  Two mechanisms are left. A conditional logit over the available pool must
+  spread mass across 64 more candidates, and K/DST carry real ADPs and ESPN
+  ranks that place them mid-pack rather than last. And `picks_scored` goes
+  117 -> 119: Brandon Aubrey and the Denver Broncos D/ST are picks the board
+  previously could not model and the replay silently skipped. If the other 117
+  were unchanged those two alone would carry a mean log loss of 4.88 against a
+  base of 3.103, which is the whole difference. Some of the apparent regression
+  is the replay no longer ducking the two hardest picks in the record.
+  Left alone deliberately. Excluding K/DST from the choice model's pool would
+  restore the old numbers by restoring the old blind spot, and a neutral K/DST
+  need is a second position-specific constant that buys 0.008 — inside the noise
+  of a single draft, by the standard applied to the survival tail above.
 
 **ESPN projections as a role check**
 - `load_espn_adp` also carries `espn_proj` (ESPN's season projection under the
