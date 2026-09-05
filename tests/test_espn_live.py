@@ -313,3 +313,64 @@ class TestFrameSplitting:
 
     def test_accepts_binary_frames(self):
         assert espn_live._lines(b"CLOCK 3\n") == ["CLOCK 3"]
+
+
+class TestPickEvent:
+    def test_only_selected_and_undone_touch_the_pick_list(self):
+        for line in ["CLOCK 30", "PONG 1", "JOINED 3 {A}", "LEFT 3 {A} 1",
+                     "SELECTING 7", "DRAFT_LIST 1 2 3", "CHAT 3 {A} 1 hi", "INIT abc"]:
+            assert espn_live.pick_event(line) is None, line
+
+    def test_selected_carries_the_team_player_and_lineup_slot(self):
+        # SELECTED <teamId> <playerId> <lineupSlotId> <ownerSwid>, off the wire.
+        assert espn_live.pick_event(
+            "SELECTED 15 3929645 6 {185BDDE2-2340-457E-88F8-D130768ECF53}") == {
+            "event": "selected", "team_id": 15, "player_id": 3929645, "slot_id": 6}
+
+    def test_a_team_defence_keeps_its_negative_player_id(self):
+        event = espn_live.pick_event("SELECTED 8 -16034 7 {D}")
+        assert event is not None and event["player_id"] == -16034
+
+    def test_undone_names_the_last_pick_that_survives(self):
+        assert espn_live.pick_event("UNDONE 129") == {"event": "undone", "keep": 129}
+
+    def test_a_pick_event_nobody_can_parse_is_reported_not_dropped(self):
+        # None would make it indistinguishable from a CLOCK tick, and the count
+        # of applied events would silently stop matching the log.
+        assert espn_live.pick_event("SELECTED 3") == {"event": "unparsed", "line": "SELECTED 3"}
+        for line in ["SELECTED x 1 2", "UNDONE later"]:
+            event = espn_live.pick_event(line)
+            assert event is not None and event["event"] == "unparsed", line
+
+
+class TestReplayPicks:
+    def test_no_lines_is_the_snapshot_itself(self, init):
+        replayed = espn_live.replay_picks(init, [])
+        assert [{k: v for k, v in p.items() if k != "source"} for p in replayed] \
+            == picks_from_init(init)
+        assert {p["source"] for p in replayed} == {"init"}
+
+    def test_each_selected_lands_on_the_next_overall(self, init):
+        made = len(picks_from_init(init))
+        replayed = espn_live.replay_picks(init, ["CLOCK 30", "SELECTED 10 -16001 16",
+                                                 "PONG 1", "SELECTED 3 4362628 4"])
+        assert [p["overall"] for p in replayed[made:]] == [made + 1, made + 2]
+        assert replayed[made] == {"overall": made + 1, "team_id": 10, "player_id": -16001,
+                                  "slot_id": 16, "keeper": False, "source": "selected"}
+
+    def test_undone_rolls_back_and_the_replacement_reuses_the_number(self, init):
+        made = len(picks_from_init(init))
+        replayed = espn_live.replay_picks(init, ["SELECTED 10 -16001 16", f"UNDONE {made}",
+                                                 "SELECTED 3 4362628 4"])
+        assert len(replayed) == made + 1
+        assert replayed[-1]["overall"] == made + 1 and replayed[-1]["player_id"] == 4362628
+
+    def test_undone_below_the_join_snapshot_cuts_into_it(self, init):
+        # ESPN can roll back past where the watch joined; the snapshot is not a floor.
+        assert len(espn_live.replay_picks(init, ["UNDONE 5"])) == 5
+
+    def test_an_unparsable_event_is_skipped_without_shifting_the_rest(self, init):
+        made = len(picks_from_init(init))
+        replayed = espn_live.replay_picks(init, ["SELECTED nobody 1 2", "SELECTED 3 4362628 4"])
+        assert len(replayed) == made + 1
+        assert replayed[-1]["overall"] == made + 1

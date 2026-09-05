@@ -528,11 +528,32 @@ member's name and SWID). `read_api/<view>.json` is one file per read-API view
 (`espn_dump.READ_VIEWS`, plus `kona_player_info` with the full player pool and
 `leagueHistory`), saved as received; a non-200 view is still written and listed
 under `errors` in `manifest.json`. `live/` holds the draft room's `INIT`
-payload raw (`init.b64`) and decoded (`init.json`), the picks with draft slots
-(`picks.json`), and `lines.jsonl`: every socket line with a receive timestamp
-in ms. From a running watch that is every line since it joined, the only
-timestamped record of picks that exists; `just dump` opens the room once
-instead and captures the join burst only, bumping a browser room or watch.
+payload raw (`init.b64`) and decoded (`init.json`), the picks it carried with
+their draft slots (`picks.json`), and `lines.jsonl`: every socket line with a
+receive timestamp in ms. From a running watch that is every line since it
+joined, the only timestamped record of picks that exists; `just dump` opens the
+room once instead and captures the join burst only, bumping a browser room or
+watch.
+
+`INIT` is initial state: the socket sends it on join and never resends it, so
+those three files describe the draft at the moment the watch joined, however
+long ago that was. `live/state.json` is the draft **now** -- the snapshot
+replayed through the `SELECTED` and `UNDONE` lines since (`espn_live.replay_picks`,
+the arithmetic the watch runs on live state). Each row carries `source`: `init`
+or `selected`. Every `live` entry in the manifest states the pick count it is
+as-of, so the join number and the current number are never read as the same
+figure; `state.json` also reports `events_applied` and `events_unparsed`.
+
+`live/reconcile.json` compares the current state against `read_api/mDraftDetail.json`
+and its `status` is one of:
+
+| status | meaning |
+| --- | --- |
+| `clean` | every pick agrees on player and team |
+| `mismatch` | listed under `missing_from_read_api`, `missing_from_live`, `disagreements`; also raised in `errors` |
+| `blind` | the read API returned every slot at `playerId` -1, which is what it does until the draft completes. Normal mid-draft, not a disagreement |
+| `unreadable` | `mDraftDetail.json` is missing, unparseable, or has no `draftDetail` |
+| `no live state` | no watch and no `team_id`, so there was nothing to reconcile |
 
 ### `record_pick` / `undo_pick` / `reset_draft` / `draft_status`
 Manual board management. `record_pick` accepts shorthand.

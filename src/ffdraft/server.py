@@ -1990,11 +1990,14 @@ async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_S
     """Write everything ESPN reports about this league's draft under
     `<out_dir>/espn_dump_<league>_<season>_<stamp>/`: every read-API view as
     its own JSON file, the player pool with ownership and ADP, league history,
-    and the draft room's INIT snapshot raw and decoded with the picks, plus a
-    timestamped log of every socket line the running watch has received. Uses
-    the watch's socket when one is running; otherwise opens the room once,
-    which bumps any other connection for your team. Returns the manifest with
-    the absolute path."""
+    and the draft room's INIT snapshot raw and decoded, plus a timestamped log
+    of every socket line the running watch has received. `live/state.json` is
+    the draft as it stands now; `live/init.json` and `live/picks.json` are the
+    join snapshot, which the socket never resends. The manifest carries each
+    file's as-of pick count and whether the state reconciles with the read
+    API's `mDraftDetail`. Uses the watch's socket when one is running;
+    otherwise opens the room once, which bumps any other connection for your
+    team. Returns the manifest with the absolute path."""
     import asyncio
     import os
 

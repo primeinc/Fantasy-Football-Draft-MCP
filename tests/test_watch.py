@@ -433,3 +433,28 @@ class TestAsOfSnapshots:
         assert watch.resolve_snapshots(d) == d
         assert watch.resolve_snapshots(str(d)) == d
         assert watch.resolve_snapshots("1734659820") == watch.snapshot_dir("1734659820")
+
+
+def test_the_offline_replay_agrees_with_the_live_watch(tmp_path, monkeypatch):
+    """`espn_live.replay_picks` is the dump's copy of the arithmetic this watch
+    runs on live state. Nothing makes them share code, so they are driven side
+    by side here: if one starts numbering picks differently, this fails rather
+    than the dump quietly disagreeing with the room it describes."""
+    from ffdraft import espn_live
+
+    payload = FIXTURE.read_text().strip()
+    events = ["CLOCK 30", "SELECTED 10 -16001 16", "SELECTED 3 4362628 4",
+              "SELECTING 7", "SELECTED 7 3000001 2", "UNDONE 116",
+              "SELECTED 3 4429795 2"]
+    w, _events = _watch(tmp_path, monkeypatch)
+    asyncio.run(w.handle_line("INIT " + payload))
+    for line in events:
+        asyncio.run(w.handle_line(line))
+
+    init = espn_live.decode_init(payload)
+    slot_of = espn_live.slot_by_team(init)
+    replayed = espn_live.replay_picks(init, events)
+
+    assert [(p["overall"], p["slot"]) for p in w.state.picks] \
+        == [(p["overall"], slot_of.get(p["team_id"])) for p in replayed]
+    assert w.state.on_the_clock == len(replayed) + 1

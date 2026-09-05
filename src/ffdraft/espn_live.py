@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
@@ -595,6 +595,70 @@ def picks_from_init(init: DraftInit) -> list[dict]:
         )
     made.sort(key=lambda row: row["overall"])
     return made
+
+
+def _signed(field: str) -> int | None:
+    """The field as an int, or None when it is not one. ESPN encodes a team
+    defense as a negative player id, so a leading minus is data, not a reject."""
+    return int(field) if field.lstrip("-").isdigit() else None
+
+
+def pick_event(line: str) -> dict | None:
+    """What one wire line does to the pick list, or None if it does nothing.
+
+    Only `SELECTED <teamId> <playerId> <lineupSlotId> <ownerSwid>` and
+    `UNDONE <keepThrough>` change which picks exist; CLOCK, PONG, JOINED, LEFT,
+    CHAT, SELECTING, DRAFT_LIST and the rest leave it alone and return None.
+
+    A SELECTED or UNDONE whose fields are not numeric comes back as
+    `{"event": "unparsed"}` rather than None. It announced a pick change nobody
+    can apply, which a caller has to be able to count; dropping it silently is
+    how a log ends up disagreeing with the state built from it.
+    """
+    fields = line.split(" ")
+    kind = fields[0]
+    if kind not in ("SELECTED", "UNDONE"):
+        return None
+    if kind == "SELECTED" and len(fields) >= 3:
+        team_id, player_id = _signed(fields[1]), _signed(fields[2])
+        if team_id is not None and player_id is not None:
+            return {"event": "selected", "team_id": team_id, "player_id": player_id,
+                    "slot_id": _signed(fields[3]) if len(fields) > 3 else None}
+    if kind == "UNDONE" and len(fields) >= 2:
+        keep = _signed(fields[1])
+        if keep is not None:
+            return {"event": "undone", "keep": keep}
+    return {"event": "unparsed", "line": line}
+
+
+def replay_picks(init: DraftInit, lines: Iterable[str]) -> list[dict]:
+    """The picks as they stand after `lines`, starting from the INIT snapshot.
+
+    INIT is initial state by the protocol's own semantics: it is sent once on
+    join and never resent, so every pick made afterwards exists only as a
+    SELECTED line. Reading the snapshot alone reports the draft as it was at
+    join, however long ago that was.
+
+    The arithmetic is the running watch's. A SELECTED lands at `len(picks) + 1`,
+    which is `DraftState.on_the_clock`, and UNDONE drops every pick above the
+    number it names, so a re-picked slot refills at the same number.
+    `test_watch.py` holds the two side by side against the same lines.
+
+    Each row is a `picks_from_init` row plus `source`: "init" for a pick the
+    snapshot already held, "selected" for one replayed from an event.
+    """
+    picks = [{**pick, "source": "init"} for pick in picks_from_init(init)]
+    for line in lines:
+        event = pick_event(line)
+        if event is None or event["event"] == "unparsed":
+            continue
+        if event["event"] == "selected":
+            picks.append({"overall": len(picks) + 1, "team_id": event["team_id"],
+                          "player_id": event["player_id"], "slot_id": event["slot_id"],
+                          "keeper": False, "source": "selected"})
+        else:
+            picks = [pick for pick in picks if pick["overall"] <= event["keep"]]
+    return picks
 
 
 def slot_by_team(init: DraftInit) -> dict[int, int]:

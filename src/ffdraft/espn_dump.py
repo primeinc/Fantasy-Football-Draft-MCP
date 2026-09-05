@@ -4,6 +4,14 @@ Two surfaces. The read API (`lm-api-reads`) answers one JSON document per
 `view`; each is saved untouched under `read_api/`. The draft-room socket's INIT
 snapshot is saved raw (base64) and decoded under `live/`, with every line the
 watch has seen since it joined, timestamped, so pick timing exists somewhere.
+
+`live/` holds two pick lists on purpose. INIT is initial state: it is sent once
+on join and never resent, so `init.json` and `picks.json` describe the draft as
+it stood at join and stay that way, as evidence. `state.json` is the draft now,
+INIT replayed through the SELECTED and UNDONE lines since. Every `live` entry in
+the manifest carries the pick count it is as-of, so the two are never read as
+the same number. `reconcile.json` compares the current state against the read
+API's own `mDraftDetail`.
 """
 from __future__ import annotations
 
@@ -114,26 +122,109 @@ def dump_draft(league_id: str, out_dir: str | os.PathLike, season: int = CURRENT
     else:
         manifest["live_source"] = "none: no watch and no team_id"
     if init_b64 is not None:
-        _write_live(live_dir, manifest, init_b64, lines or [])
+        current = _write_live(live_dir, manifest, init_b64, lines or [])
+        report = _reconcile(read_dir, current)
+        (live_dir / "reconcile.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
+        manifest["live"].append({"file": "reconcile.json", "as_of": "now",
+                                 "status": report["status"]})
+        manifest["reconcile"] = {k: report[k] for k in
+                                 ("status", "live_picks", "read_api_picks", "detail")
+                                 if k in report}
+        if report["status"] == "mismatch":
+            manifest["reconcile"]["differences"] = (len(report["missing_from_read_api"])
+                                                    + len(report["missing_from_live"])
+                                                    + len(report["disagreements"]))
+        if report["status"] in ("mismatch", "unreadable"):
+            manifest["errors"].append(f"reconcile against mDraftDetail: {report['status']}")
+    else:
+        manifest["reconcile"] = {"status": "no live state"}
 
     (root / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     return manifest
 
 
 def _write_live(live_dir: Path, manifest: dict, init_b64: str,
-                lines: list[tuple[int, str]]) -> None:
+                lines: list[tuple[int, str]]) -> list[dict]:
+    """Write the live section and return the current pick list.
+
+    `init.json` and `picks.json` are the join snapshot and never move; the draft
+    as it stands now is `state.json`. At the pick that named this defect the two
+    differed by eight picks, and nothing in the dump said which number was which.
+    """
     init = espn_live.decode_init(init_b64)
+    slot = espn_live.slot_by_team(init)
     (live_dir / "init.b64").write_text(init_b64, encoding="utf-8")
-    manifest["live"].append({"file": "init.b64", "bytes": len(init_b64)})
+    manifest["live"].append({"file": "init.b64", "as_of": "join", "bytes": len(init_b64)})
     decoded = dataclasses.asdict(init)
     (live_dir / "init.json").write_text(json.dumps(decoded, indent=1, default=str),
                                         encoding="utf-8")
-    manifest["live"].append({"file": "init.json", "picks_made": len(espn_live.picks_from_init(init))})
-    slot = espn_live.slot_by_team(init)
-    picks = [{**p, "draft_slot": slot.get(p["team_id"])} for p in espn_live.picks_from_init(init)]
-    (live_dir / "picks.json").write_text(json.dumps(picks, indent=1), encoding="utf-8")
-    manifest["live"].append({"file": "picks.json", "rows": len(picks)})
+    joined = [{**p, "draft_slot": slot.get(p["team_id"])} for p in espn_live.picks_from_init(init)]
+    manifest["live"].append({"file": "init.json", "as_of": "join", "picks": len(joined)})
+    (live_dir / "picks.json").write_text(json.dumps(joined, indent=1), encoding="utf-8")
+    manifest["live"].append({"file": "picks.json", "as_of": "join", "picks": len(joined)})
+
+    wire = [line for _ts, line in lines]
+    current = [{**p, "draft_slot": slot.get(p["team_id"])}
+               for p in espn_live.replay_picks(init, wire)]
+    (live_dir / "state.json").write_text(json.dumps(current, indent=1), encoding="utf-8")
+    events = [e for e in (espn_live.pick_event(line) for line in wire) if e is not None]
+    unparsed = [e for e in events if e["event"] == "unparsed"]
+    manifest["live"].append({"file": "state.json", "as_of": "now", "picks": len(current),
+                             "picks_at_join": len(joined),
+                             "events_applied": len(events) - len(unparsed),
+                             "events_unparsed": len(unparsed)})
+    if unparsed:
+        manifest["errors"].append(
+            f"state.json: {len(unparsed)} pick events in lines.jsonl could not be parsed")
+
     with (live_dir / "lines.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
         for ts, line in lines:
             fh.write(json.dumps({"ms": ts, "line": line}) + "\n")
-    manifest["live"].append({"file": "lines.jsonl", "rows": len(lines)})
+    manifest["live"].append({"file": "lines.jsonl", "as_of": "now", "rows": len(lines)})
+    return current
+
+
+def _reconcile(read_dir: Path, current: list[dict]) -> dict:
+    """Check the replayed live state against the read API's own pick list.
+
+    The read API is blind while a draft runs: `mDraftDetail` returns every slot
+    in the draft order with `playerId` -1 and fills them in only once `drafted`
+    turns true. Measured on a real mid-draft dump: 224 rows, 0 filled, against
+    130 live picks. That is `status: blind`, not a disagreement -- calling it one
+    would report every live pick as missing for the whole draft, which is the
+    same as reporting nothing.
+    """
+    out: dict = {"file": "mDraftDetail.json", "live_picks": len(current)}
+    try:
+        data = json.loads((read_dir / "mDraftDetail.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {**out, "status": "unreadable", "detail": f"{type(exc).__name__}: {exc}"}
+    detail = data.get("draftDetail") if isinstance(data, dict) else None
+    if not isinstance(detail, dict):
+        return {**out, "status": "unreadable", "detail": "no draftDetail object in the response"}
+    rows = detail.get("picks") or []
+    read_api = {p["overallPickNumber"]: p for p in rows
+                if isinstance(p, dict) and p.get("overallPickNumber") is not None
+                and p.get("playerId") not in (None, -1)}
+    out |= {"read_api_rows": len(rows), "read_api_picks": len(read_api),
+            "drafted": detail.get("drafted"), "in_progress": detail.get("inProgress")}
+    if not read_api:
+        return {**out, "status": "blind",
+                "detail": "every slot came back with playerId -1; the read API fills "
+                          "picks in only once the draft completes"}
+    live = {p["overall"]: p for p in current}
+    disagree = [{"overall": n,
+                 "live": {"player_id": live[n]["player_id"], "team_id": live[n]["team_id"]},
+                 "read_api": {"player_id": read_api[n].get("playerId"),
+                              "team_id": read_api[n].get("teamId")}}
+                for n in sorted(set(live) & set(read_api))
+                if (live[n]["player_id"], live[n]["team_id"])
+                != (read_api[n].get("playerId"), read_api[n].get("teamId"))]
+    missing_from_read_api = sorted(set(live) - set(read_api))
+    missing_from_live = sorted(set(read_api) - set(live))
+    return {**out,
+            "status": "clean" if not (disagree or missing_from_read_api or missing_from_live)
+                      else "mismatch",
+            "missing_from_read_api": missing_from_read_api,
+            "missing_from_live": missing_from_live,
+            "disagreements": disagree}

@@ -1188,6 +1188,17 @@ All notable changes to this project. Format follows
   timestamped log of every socket line the watch received. `DraftWatch`
   now keeps `init_b64` and `lines` for it; `espn_live.fetch_init_b64` returns
   the payload undecoded. Output is gitignored (`espn_dump_*/`).
+- `live/state.json`: the draft as it stands, not as it stood at the join. INIT
+  is sent once and never resent, so the dump's live section was frozen at the
+  snapshot -- at pick 130 it reported 122 picks and left the eight `SELECTED`
+  lines since sitting unparsed in `lines.jsonl`. `espn_live.replay_picks`
+  replays them (and `UNDONE`) with the arithmetic the watch runs on live state;
+  `init.json` and `picks.json` stay the join snapshot, and every `live` entry in
+  the manifest states the pick count it is as-of.
+- `live/reconcile.json`: the live state checked against `mDraftDetail`, naming
+  any pick in one and not the other. `status: blind` covers the read API's
+  mid-draft behaviour (every slot at `playerId` -1 until the draft completes),
+  so a running draft does not report every pick as missing.
 
 **League rules**
 - `league_rules`: the league's settings as ESPN states them (`mSettings`):
