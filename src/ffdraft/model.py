@@ -534,6 +534,9 @@ def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
 # cannot see); above ROLE_GROWTH it has grown (a rookie or a new starter the
 # box scores have not caught up with). Replaying the live draft showed both:
 # Tyrone Tracy at 41 vs 185, KC Concepcion at 156 vs 102.
+# Smallest `roles.pick_value_multiplier` value applied to a negative pick_value.
+# A start probability of 0 is a real answer, and it is applied by division.
+ROLES_MULT_FLOOR = 0.05
 ROLE_DISAGREEMENT = 0.70
 ROLE_FLOOR = 0.20
 ROLE_GROWTH = 1.30
@@ -564,7 +567,8 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
               next_pick: int | None, roster: dict[str, int] | None = None,
               top_n: int = 8, mine: pd.DataFrame | None = None,
               bye_weight: float = 0.0,
-              adp_shift: float | Mapping[str, float] = 0.0) -> pd.DataFrame:
+              adp_shift: float | Mapping[str, float] = 0.0,
+              role_weights: Mapping[str, float] | None = None) -> pd.DataFrame:
     """Rank available players for the pick that's on the clock.
 
     Two ideas drive the ordering beyond raw value:
@@ -580,6 +584,12 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     `adp_shift` is how many picks earlier than ADP this room has been taking
     players (replay.room_drift), one number or one per position; survival odds
     are computed against ADP minus it.
+
+    `role_weights` opens the two `roles.py` terms — `start_prob` (what a bench
+    player is worth once you price the weeks he actually starts) and `handcuff`
+    (what a backup is worth conditional on the man ahead of him). Both default
+    to 0, and at 0 the result is bit-identical to one computed without them; see
+    CHANGELOG.md for the evidence behind any non-zero value.
     """
     avail = board[~board["drafted"]].copy() if "drafted" in board.columns else board.copy()
     if avail.empty:
@@ -617,6 +627,25 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
 
     avail["role_mult"] = role_multiplier(avail)
     avail["pick_value"] = avail["pick_value"] * avail["role_mult"]
+
+    if role_weights:
+        from . import roles
+
+        avail["roles_mult"] = roles.pick_value_multiplier(
+            avail, league, mine,
+            start_prob_weight=float(role_weights.get("start_prob", 0.0)))
+        avail["roles_bonus"] = roles.pick_value_bonus(
+            avail, league, mine, handcuff_weight=float(role_weights.get("handcuff", 0.0)))
+        # Below 1 has to mean "further down the list" in both halves. pick_value
+        # goes negative deep in the board — a candidate worth less than what
+        # waiting is expected to return — and multiplying a negative by 0.3
+        # moves it *toward* zero, promoting exactly the bench players the
+        # start-probability discount exists to bury. Dividing is the same
+        # penalty with the sign the other way round; the floor is there because
+        # a start probability of 0 is a real value.
+        pv = avail["pick_value"].to_numpy(dtype=float)
+        rm = np.clip(avail["roles_mult"].to_numpy(dtype=float), ROLES_MULT_FLOOR, None)
+        avail["pick_value"] = np.where(pv >= 0, pv * rm, pv / rm) + avail["roles_bonus"]
 
     avail["bye_conflicts"] = ""
     avail["bye_mult"] = 1.0
@@ -766,4 +795,28 @@ def explain(row: pd.Series) -> str:
     if bye is not None and pd.notna(bye):
         conflicts = row.get("bye_conflicts") or ""
         bits.append(f"bye week {int(bye)}" + (f" stacks with {conflicts}" if conflicts else ""))
+    ent = row.get("role_entropy")
+    if ent is not None and pd.notna(ent):
+        # Uncertainty is not automatically bad: late in a draft an unresolved
+        # ceiling is often underpriced. What it must not do is read the same as
+        # a player who barely has a job, so the direction is named.
+        from . import roles
+
+        # NaN is truthy, so a missing label would print as "nan" — the same trap
+        # that had `explain` announcing "ESPN status nan" on every defense.
+        kind = row.get("entropy_kind")
+        churn = row.get("role_churn")
+        why = []
+        if kind is not None and pd.notna(kind) and str(kind):
+            why.append(str(kind))
+        if churn is not None and pd.notna(churn) and churn > roles.ENTROPY_CHURN_SCALE / 2:
+            why.append("snap share moved week to week")
+        bits.append(f"role uncertainty {float(ent):.2f}"
+                    + (f" ({'; '.join(why)})" if why else ""))
+    shares = [(label, row.get(key)) for label, key in
+              (("targets", "target_share"), ("carries", "carry_share"),
+               ("red zone", "redzone_share"), ("snaps", "snap_share"))]
+    named = [f"{label} {float(v):.0%}" for label, v in shares if v is not None and pd.notna(v)]
+    if named:
+        bits.append("share of team: " + ", ".join(named))
     return "; ".join(bits)

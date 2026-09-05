@@ -131,6 +131,9 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         if "bye_week" not in b.columns:
             b = _attach_byes(b)
             changed = True
+        if not {"carry_share", "role_entropy", "contingent_points"} <= set(b.columns):
+            b = _attach_roles(b, league)
+            changed = True
         # A board priced off consensus before ESPN ADP was configured, or keyed
         # by an older normaliser, is repriced in place: projections stay, the
         # market columns are joined again.
@@ -150,6 +153,7 @@ def _build_board(force: bool = False) -> pd.DataFrame:
     tbl = model.build_player_table(league, weights)
     proj = model.project(tbl, league, weights)
     proj = _price_board(_attach_byes(proj), league)
+    proj = _attach_roles(proj, league)
     proj.to_parquet(path, index=False)
     _BOARDS[key] = proj
     return proj
@@ -173,6 +177,28 @@ def _attach_byes(b: pd.DataFrame) -> pd.DataFrame:
     b = b.copy()
     b["bye_week"] = b["team"].map(features.team_bye_weeks(CURRENT_SEASON))
     return b
+
+
+def _attach_roles(b: pd.DataFrame, league: LeagueSettings) -> pd.DataFrame:
+    """The named opportunity shares and the role-entropy score.
+
+    Both are read-only columns: nothing in `pick_value` depends on them unless
+    `model_settings` opens a `roles.py` weight. Entropy needs `espn_proj`, so
+    this runs after the board is priced.
+    """
+    from . import roles
+
+    try:
+        b = roles.attach_opportunity(b, league.scoring, te_bonus=league.te_premium_bonus)
+    except Exception as exc:
+        print(f"opportunity shares unavailable ({type(exc).__name__}: {exc})")
+    try:
+        b = roles.attach_role_entropy(b)
+    except Exception as exc:
+        print(f"role entropy unavailable ({type(exc).__name__}: {exc})")
+    # Depth charts have to be read off the whole board: an available pool would
+    # promote a backup to starter the moment the starter is drafted.
+    return roles.attach_handcuffs(b)
 
 
 def _state() -> bd.DraftState:
@@ -373,8 +399,14 @@ def who_should_i_pick(limit: int = 6) -> str:
                            roster=roster, top_n=limit, mine=state.my_rows(b),
                            bye_weight=weights.bye, adp_shift=drift["shift"])
 
+    # Roster-dependent, so `player_report` cannot show them: what each candidate
+    # is worth to *this* roster rather than to an average one. Reported, not
+    # priced — the weights behind them are 0 (see `roles.py` and CHANGELOG.md).
+    from . import roles
+
+    bench = roles.bench_values(recs, league, state.my_rows(b))
     picks = []
-    for _, r in recs.iterrows():
+    for idx, r in recs.iterrows():
         bye = r.get("bye_week")
         picks.append({
             "player": r["name"], "position": r["position"], "team": r.get("team"),
@@ -385,6 +417,17 @@ def who_should_i_pick(limit: int = 6) -> str:
             "espn_injury": r.get("espn_injury"),
             "consistency": round(float(r["consistency"]), 3),
             "survives_to_next_pick": round(float(r["p_available_next"]), 2),
+            "starts_in_a_given_week": round(float(bench.at[idx, "p_start"]), 2),
+            "bench_value": round(float(bench.at[idx, "bench_value"]), 1),
+            "handcuff_for": r.get("starter") if pd.notna(r.get("starter")) else None,
+            "contingent_points": (round(float(r["contingent_points"]), 1)
+                                  if pd.notna(r.get("contingent_points")) else None),
+            "role_entropy": (round(float(r["role_entropy"]), 2)
+                             if pd.notna(r.get("role_entropy")) else None),
+            # NaN is truthy and json.dumps writes it as bare NaN, which is not
+            # JSON, so this guard is notna rather than a falsiness check.
+            "entropy_kind": (str(r["entropy_kind"]) or None
+                             if pd.notna(r.get("entropy_kind")) else None),
             "bye_week": int(bye) if bye is not None and pd.notna(bye) else None,
             "bye_conflicts": r.get("bye_conflicts") or "",
             "why": model.explain(r),
@@ -1078,7 +1121,10 @@ def player_report(player_name: str) -> str:
     fields = ["name", "position", "team", "age", "overall_rank", "pos_rank", "adp", "adp_delta",
               "proj_points", "adj_ppg", "baseline_ppg", "exp_games",
               "consistency", "startable_rate", "spike_rate", "floor", "ceiling", "fp_cv",
-              "snap_share", "target_share", "touches",
+              "target_share", "carry_share", "redzone_share", "snap_share", "touches",
+              "role_entropy", "proj_disagreement", "role_churn", "entropy_kind",
+              "starter", "depth_rank", "starter_injury_risk", "starter_games_missed",
+              "standalone_points", "contingent_points", "ev_handcuff",
               "injury_risk", "games_missed_rate", "report_rate", "heavy_seasons", "recent_burden",
               "run_block_rank", "pass_block_rank", "plays_per_game", "neutral_pass_rate",
               "rush_rate", "divisional_games",

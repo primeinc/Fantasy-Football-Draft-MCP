@@ -278,6 +278,83 @@ roomstats $dump_dir='.':
     out.write_text(json.dumps(stats, indent=1), encoding="utf-8")
     print(f"\njson -> {out}")
 
+# Evidence for the roles.py features: opportunity-share coverage on the live
+# board, whether role entropy marks the projections that miss, and paired mock
+# drafts with and without each pick_value weight. Numbers go in CHANGELOG.md.
+[script]
+roles $what='all' $seasons='2024,2025' $trials='8' $seed='0':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    import numpy as np
+
+    from ffdraft import board as bd
+    from ffdraft import model, roles, server
+
+    what = os.environ["what"]
+    seasons = [int(s) for s in os.environ["seasons"].split(",") if s.strip()]
+    trials = int(os.environ["trials"])
+    league, weights = server._settings()
+    print(f"league: {league.teams} teams, starters {league.starters}, "
+          f"slots counted for start probability {roles.position_slots(league)}")
+
+    if what in ("all", "shares"):
+        b = server._build_board()
+        print(f"\n== opportunity shares on the live board ({len(b)} rows)")
+        for col in roles.OPPORTUNITY_COLUMNS:
+            s = b[col]
+            print(f"  {col:<15} non-null {int(s.notna().sum()):>4}  median {s.median():.3f}  "
+                  f"p90 {s.quantile(0.9):.3f}  max {s.max():.3f}")
+        # The shares are read-only: prove pick_value does not move.
+        b2 = b.copy()
+        b2["drafted"] = False
+        a = model.recommend(b2, league, current_pick=1, next_pick=32, top_n=200)
+        c = model.recommend(b2.drop(columns=list(roles.OPPORTUNITY_COLUMNS)), league,
+                            current_pick=1, next_pick=32, top_n=200)
+        same = bool((a["name"].tolist() == c["name"].tolist())
+                    and np.allclose(a["pick_value"], c["pick_value"]))
+        print(f"  pick_value identical with and without the share columns: {same}")
+
+    if what in ("all", "entropy"):
+        print("\n== role entropy vs projection error, leak-free board per season")
+        print("   (past seasons have no ESPN projection, so this scores the churn half)")
+        for season in seasons:
+            tbl = model.build_player_table(league, weights, season=season)
+            proj = model.project(tbl, league, weights)
+            proj = roles.attach_role_entropy(
+                proj, roles.snap_share_churn(list(range(season - 5, season))))
+            out = roles.entropy_error_backtest(proj, season, league)
+            print(f"  {season}: n {out['n']}, spread {out['spread']}")
+            for row in out["bins"]:
+                print(f"    bin {row['bin']} n {row['n']:>3} entropy {row['entropy_mean']:.3f} "
+                      f"abs pct error {row['abs_pct_error']:.3f}")
+
+    if what in ("all", "weights", "start_prob", "handcuff"):
+        configs = (("start_prob", {"start_prob": 1.0}),
+                   ("handcuff", {"handcuff": 1.0}),
+                   ("both", {"start_prob": 1.0, "handcuff": 1.0}))
+        if what in ("start_prob", "handcuff"):
+            configs = tuple(c for c in configs if c[0] in (what, "both"))
+        for label, rw in configs:
+            print(f"\n== paired mock drafts, {label} on vs off ({trials} trials/season)")
+            out = roles.weight_backtest(league, weights, seasons, rw, n_trials=trials,
+                                        seed=int(os.environ["seed"]),
+                                        progress=lambda m: print("   " + m, flush=True))
+            for s in out["seasons"]:
+                if "error" in s:
+                    print(f"  {s['season']}: {s['error']}")
+                    continue
+                print(f"  {s['season']}: off {s['weekly_points_off']} on {s['weekly_points_on']} "
+                      f"improvement {s['improvement']:+} ({s['trials_improved']}/{s['n_trials']} "
+                      f"trials, {s['players_swapped']} players swapped, empty slots "
+                      f"{s['empty_slots_off']} -> {s['empty_slots_on']})")
+            print(f"  overall improvement {out['overall_improvement']}, "
+                  f"{out['players_swapped']} players swapped")
+
 # Probe every external data surface; see docs/data-sources.md
 [script]
 surfaces:

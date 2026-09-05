@@ -790,9 +790,14 @@ def _sim_rounds(league) -> int:
 
 
 def _draft_trial(board: pd.DataFrame, league, rng, top_n: int = 5,
-                 bye_weight: float = 0.0) -> list[tuple[int, str]]:
+                 bye_weight: float = 0.0,
+                 role_weights: dict[str, float] | None = None) -> list[tuple[int, str]]:
     """One simulated draft: recommend() at the user's slot, ADP bots with
-    reach/fall noise everywhere else. Returns the user's picks as (round, name)."""
+    reach/fall noise everywhere else. Returns the user's picks as (round, name).
+
+    `role_weights` is passed straight through to `model.recommend`, so a paired
+    run with and without a `roles.py` weight differs in exactly that one thing.
+    """
     from . import board as bd
     from . import model
 
@@ -826,7 +831,7 @@ def _draft_trial(board: pd.DataFrame, league, rng, top_n: int = 5,
             after = state.pick_after_next() if nxt == current else nxt
             recs = model.recommend(pool, league, current_pick=current, next_pick=after,
                                    roster=roster, top_n=top_n, mine=state.my_rows(b),
-                                   bye_weight=bye_weight)
+                                   bye_weight=bye_weight, role_weights=role_weights)
             if recs.empty:
                 break
             chosen = recs.iloc[0]["name"]
