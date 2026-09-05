@@ -1,6 +1,7 @@
 """Draft board state and live sync with drafting platforms."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -120,10 +121,15 @@ def load_adp(fmt: str = "half_ppr", csv_path: str | None = None,
         "Accept": "text/html,application/xhtml+xml",
     })
     resp.raise_for_status()
-    tables = pd.read_html(resp.text)
+    tables = pd.read_html(io.StringIO(resp.text))
     df = max(tables, key=len)
     cols = {str(c).lower(): c for c in df.columns}
-    name_c = next((cols[c] for c in cols if "player" in c), df.columns[1])
+    if not any("player" in c for c in cols):
+        # As of 2026-09 the ADP table is rendered client-side; the only static
+        # table is the sources legend. Fail loudly so the caller's fallback to
+        # model rank is visible in the log instead of a silent empty frame.
+        raise RuntimeError("FantasyPros ADP page has no server-rendered player table")
+    name_c = next(cols[c] for c in cols if "player" in c)
     adp_c = next((cols[c] for c in cols if c in ("avg", "avg.", "adp")), df.columns[-1])
     out = df[[name_c, adp_c]].copy()
     out.columns = ["name", "adp"]
@@ -367,6 +373,20 @@ def _id_crosswalk() -> pd.DataFrame:
     x = r[keep].dropna(subset=["gsis_id"])
     x = x.groupby("gsis_id", as_index=False).agg(
         lambda s: next((v for v in s if pd.notna(v)), np.nan))
+    # Weekly rosters only cover the lookback seasons, so the current rookie class
+    # has no row yet and its draft picks came back as ESPN#<id>. The players
+    # master table carries espn_id for them; add whoever the rosters lack.
+    p = sources.players()
+    if "gsis_id" in p.columns and "espn_id" in p.columns:
+        name_col = next((c for c in ("display_name", "full_name") if c in p.columns), None)
+        extra = p.dropna(subset=["gsis_id", "espn_id"])
+        extra = extra[~extra["gsis_id"].isin(x["gsis_id"])]
+        cols = {"gsis_id": extra["gsis_id"], "espn_id": extra["espn_id"]}
+        if name_col:
+            cols["full_name"] = extra[name_col]
+        if "position" in extra.columns:
+            cols["position"] = extra["position"]
+        x = pd.concat([x, pd.DataFrame(cols)], ignore_index=True)
     for c in ("espn_id", "sleeper_id"):
         if c in x.columns:
             x[c] = x[c].astype("string").str.replace(r"\.0$", "", regex=True)
@@ -415,10 +435,19 @@ def sync_espn(league_id: str, season: int = CURRENT_SEASON,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
     resp.raise_for_status()
     data = resp.json()
-    picks = (data.get("draftDetail") or {}).get("picks") or []
+    detail = data.get("draftDetail") or {}
+    picks = detail.get("picks") or []
 
     xwalk = _id_crosswalk()
     espn_map = xwalk.dropna(subset=["espn_id"]).set_index("espn_id")["full_name"].to_dict()
+
+    # The read API is blind while a draft is running: inProgress is true, every pick
+    # carries playerId -1 and every roster is empty until the draft completes. The
+    # picks live only in the draft room's socket snapshot, which needs the cookies.
+    filled = [p for p in picks if p.get("playerId") not in (None, -1)]
+    if detail.get("inProgress") and not filled and swid and espn_s2:
+        return _sync_espn_live(league_id, season, data, swid, espn_s2, espn_map)
+
     out = []
     for p in picks:
         # ESPN returns every slot in the draft order, filled or not -- a slot
@@ -428,19 +457,55 @@ def sync_espn(league_id: str, season: int = CURRENT_SEASON,
         pid = p.get("playerId")
         if pid is None or pid == -1:
             continue
-        # Team defenses aren't players -- no gsis_id, so they're never in the
-        # crosswalk. ESPN encodes them as -(16000 + proTeamId) instead.
-        if pid < 0:
-            name = f"{_ESPN_PRO_TEAMS.get(-pid - 16000, f'ESPN#{pid}')} D/ST"
-        else:
-            name = espn_map.get(str(pid), f"ESPN#{pid}")
         out.append({
             "overall": p.get("overallPickNumber"),
             "slot": None,
-            "name": name,
+            "name": _espn_player_name(pid, espn_map),
             "player_id": None,
         })
     return sorted([o for o in out if o["overall"]], key=lambda o: o["overall"])
+
+
+def _espn_player_name(pid: int, espn_map: dict) -> str:
+    # Team defenses aren't players -- no gsis_id, so they're never in the
+    # crosswalk. ESPN encodes them as -(16000 + proTeamId) instead.
+    if pid < 0:
+        return f"{_ESPN_PRO_TEAMS.get(-pid - 16000, f'ESPN#{pid}')} D/ST"
+    return espn_map.get(str(pid), f"ESPN#{pid}")
+
+
+def _sync_espn_live(league_id: str, season: int, league_json: dict,
+                    swid: str, espn_s2: str, espn_map: dict) -> list[dict]:
+    """Picks from the live draft room socket (see docs/data-sources.md).
+
+    Joins as the team the SWID owns, reads the INIT snapshot plus any SELECTED
+    lines that arrive in the first second, and leaves. Each pick's slot is the
+    team's real draft position from the snapshot, not inferred from the overall
+    pick number.
+    """
+    from . import espn_live
+
+    target = swid.strip("{}")
+    my_team = next((t for t in league_json.get("teams") or []
+                    if target in [o.strip("{}") for o in t.get("owners", [])]), None)
+    if my_team is None:
+        raise RuntimeError("live draft sync needs a team owned by ESPN_SWID in this league")
+
+    init, extra = espn_live.fetch_init(league_id, season, int(my_team["id"]), swid, espn_s2)
+    slot_of = espn_live.slot_by_team(init)
+    out = []
+    for p in espn_live.picks_from_init(init):
+        out.append({"overall": p["overall"], "slot": slot_of.get(p["team_id"]),
+                    "name": _espn_player_name(p["player_id"], espn_map), "player_id": None})
+    nxt = (out[-1]["overall"] if out else 0) + 1
+    for line in extra:
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] == "SELECTED":
+            team_id, pid = int(fields[1]), int(fields[2])
+            out.append({"overall": nxt, "slot": slot_of.get(team_id),
+                        "name": _espn_player_name(pid, espn_map), "player_id": None})
+            nxt += 1
+    return out
 
 
 # ESPN's lineupSlotCounts slot ids that count as a flex, and which positions each

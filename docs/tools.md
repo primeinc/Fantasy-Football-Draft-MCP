@@ -79,9 +79,23 @@ Pull the live board.
 
 - `platform="sleeper"`, `draft_id` — automatic, public API, no credentials.
 - `platform="espn"`, `league_id` — public leagues work as-is; private need
-  `ESPN_SWID` and `ESPN_S2` environment variables.
+  `ESPN_SWID` and `ESPN_S2` environment variables. While the draft is in progress
+  the picks come from the draft room socket (cookies required, your team must be
+  in the league); the browser draft room shows a "Duplicate Connection" dialog for
+  a moment and reconnects. See [data sources](data-sources.md).
 - `platform="paste"`, `pasted_board` — any platform. Handles numbered lists,
   "Round 3, Pick 7 — Name", comma-separated runs, trailing team and position tags.
+
+### `watch_draft` / `stop_watch`
+ESPN only. `watch_draft(league_id)` holds the draft room socket open for the team
+`ESPN_SWID` owns and pushes every pick into the Claude Code session as a channel
+message the moment it happens, with a recommendation once you are within three
+picks of the clock. The board stays current for `who_should_i_pick` and
+`draft_status` either way. Events reach Claude only when the session was started
+with `claude --dangerously-load-development-channels server:fantasy-draft`
+(channels are a research preview). The browser draft room shows "Duplicate
+Connection" when the watch connects and reconnects on its own. One watch per
+league; `stop_watch(league_id)` ends it.
 
 ### `record_pick` / `undo_pick` / `reset_draft` / `draft_status`
 Manual board management. `record_pick` accepts shorthand.

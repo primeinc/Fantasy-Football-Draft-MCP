@@ -24,8 +24,9 @@ act as you across ESPN's fantasy products.
   helps if you use those filenames.
 - Never paste them into a chat window, an issue, or a bug report. They will persist in
   the history.
-- They're sent only to `lm-api-reads.fantasy.espn.com`, over HTTPS, on requests you
-  trigger. Read `board.py:sync_espn` to verify.
+- They're sent only to `lm-api-reads.fantasy.espn.com` and, during a live draft,
+  `fantasydraft.espn.com`, over HTTPS/WSS, on requests you trigger. Read
+  `board.py:sync_espn` and `espn_live.py` to verify.
 - Rotate them by logging out of ESPN, which invalidates the session.
 
 Sleeper needs no credentials at all — its draft API is public. Prefer it where you can.
@@ -39,7 +40,8 @@ The server makes outbound HTTPS requests to, and only to:
 | `github.com`, `objects.githubusercontent.com` | nflverse data releases |
 | `raw.githubusercontent.com` | FantasyPros consensus rank history |
 | `api.sleeper.app` | live draft picks (public, unauthenticated) |
-| `lm-api-reads.fantasy.espn.com` | ESPN league draft detail |
+| `lm-api-reads.fantasy.espn.com` | ESPN league draft detail, draft-room security token |
+| `fantasydraft.espn.com` | ESPN draft room socket, only while a draft is in progress |
 | `www.fantasypros.com` | fallback ADP page |
 
 It listens on nothing, opens no ports, and accepts no inbound connections. It talks to
