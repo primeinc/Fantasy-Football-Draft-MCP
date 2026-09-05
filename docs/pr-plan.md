@@ -113,6 +113,15 @@ Three checks on every merge. Each exists because skipping it shipped something.
   a test that could not fail at all.
 - **A pass in the main checkout after the merge, not only the author's.** Their
   run is evidence about their tree; this one is evidence about the branch.
+- **Run a new tool once against real data before calling it shipped.** Two tools
+  landed green on 660 tests and neither worked: one returned 63 KB and the client
+  refuses a response that size, the other refused outright because a roster
+  player who was not in the trade had no board row. Both took one call to find
+  and no test would have found either, because every fixture builds its own
+  roster and no fixture is large enough to be rejected. A suite answers "does
+  this behave as its author expected"; only a real call answers "does this work".
+  Where a tool needs credentials or a live league, that call belongs to whoever
+  merges, in the main checkout.
 
 A test count from a worktree only means what it says if that worktree imported
 its own code. The venv installs the package editable and the resulting path file
