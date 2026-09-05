@@ -376,9 +376,13 @@ fabricated bust sitting in the middle of the results.
 
 ## Rules for measuring things here
 
-Four rules, each of which exists because breaking it cost this project a wrong
+Five rules, each of which exists because breaking it cost this project a wrong
 number that survived review. They are about how a measurement is reported and
 checked, not about what to measure.
+
+The count was "four" until freddy pointed out there were five headings under it,
+which is the smallest possible instance of the first rule: a number written in
+one place about a thing maintained in another.
 
 ### One source per number
 
@@ -419,15 +423,47 @@ that happens to be complete and fails on the first real pull missing a field.
 The control that catches it is a row with **no** position id, which is not the
 row that motivated anything.
 
+A control must also be **able to produce the phenomenon it asserts about.**
+Before trusting a green test on a quantity, vary the input that quantity depends
+on and check the quantity moves. A fixture in which the measured thing is
+structurally constant is not a weak test, it is not a test.
+
+> freddy's trade fixture gave every player full expected games, so availability
+> never varied, `block_spread` came out 0.0 every time, and the whole seed-block
+> apparatus passed its tests without ever running. Restoring a defect would not
+> have caught it: a plant on the reducer changes pick counts and fails honestly
+> while the spread machinery stays untested. marge's `_priced` helper exists
+> against the same shape from the other side — the raw board answers 0.0 for a
+> replacement level, so a stand-in is indistinguishable from a player worth
+> nothing. And the waiver pool that contained Puka Nacua is the same family
+> again: the aggregate could not exhibit the rows that would have shown the
+> sampling frame was wrong.
+
 The same rule in its other clothes: **restore the defect and require the tests to
 fail.** A regression test that has never been run against the defect it names is
-a hypothesis. Three tests written for the waiver drop-candidate fix were
+a hypothesis.
+
+Restore **the whole change**, not a part of it. A partial revert that fails one
+test is a control built to agree with you.
+
+> marge's #55 has two halves and three tests, each guarded by exactly one half.
+> Her first revert touched one half, one test failed, and "confirmed failing on
+> revert" would have been a true sentence and a wrong conclusion. Only reverting
+> both halves fails all three. freddy had written three confirmed-by-plant claims
+> that day, checked every time that the plant applied, and not once checked that
+> it covered every half of what he had changed. Three tests written for the waiver drop-candidate fix were
 controlled that way and all three failed on the restored defect, one with the
 production traceback. Two tests written for a traded-player crash *passed* against
 it, because the fixture moved the player at the boundary between windows rather
 than inside one; the control run found that, not the tests.
 
 ### Blocks, and what agreement is worth
+
+*(Reviewed by freddy, who declared himself not independent on this rule: he
+extracted `block_agreement`, otto built the unit enforcement on it, and the trade
+harness is his. His read of this section is downstream of the work under review.
+It is unreviewed and labelled rather than carrying a signature that does not
+mean anything.)*
 
 Any effect measured by a sampling harness is reported as **disjoint blocks with
 every block's own number visible**, never as a pooled mean alone. Report
@@ -455,9 +491,18 @@ moves by one week has not been measured, whatever any single row of the sweep
 says.
 
 The role-change score was measured at eight `(recent, prior)` windows across four
-seasons — 64 blocks, every one negative, effects between -7.1 and -8.6. That is
-what licenses quoting a magnitude at all. Had two windows disagreed in sign, the
-honest report would have been the sweep and no number.
+seasons: 64 blocks, every one negative. That structure is what licenses quoting a
+magnitude at all. Had two windows disagreed in sign, the honest report would have
+been the sweep and no number.
+
+The magnitudes themselves are deliberately not repeated here. They live in
+`waivers.ROLE_CHANGE_EVIDENCE`, which ships in every claim row, and
+`just rolechange` recomputes them; a figure copied into a second place is a
+figure that will disagree with the first as soon as the harness is retuned.
+Structural claims — how many windows, how many blocks, that every one was
+negative — do not move when the scoring changes and belong in prose. Found by
+freddy, applying rule one to the document that states it, which is the second
+time that rule has caught something in a file of mine.
 
 ### And when the measurement goes against the feature
 
