@@ -149,7 +149,15 @@ comparison never has to be inferred from a rank: `value_now` (what taking him is
 worth over replacement), `expected_best_at_next_pick` (what his position is
 expected to still offer at your next turn), `marginal_now_vs_wait` (the
 difference — negative whenever waiting is worth more), and `survival` (the
-chance he is still there). `why_now` says all of it in words: *"55% likely still
+chance he is still there).
+
+All three are rounded to one decimal **independently**, so subtracting the two
+displayed components can disagree with the displayed difference by 0.1 on a row
+or two. `marginal_now_vs_wait` is the faithful one: it is the unrounded quantity
+the headline gate compares, rounded once for display. Deriving it from the
+rounded components instead would make the reader's subtraction work and let the
+printed number drift from the one that decided the headline, which is the
+disagreement this whole section exists to prevent. `why_now` says all of it in words: *"55% likely still
 there at 157; taking now is worth +3.9 over waiting"*, or *"only 22% likely
 still there at 157; waiting is worth 1.0 more than taking now"*.
 

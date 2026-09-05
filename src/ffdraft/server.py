@@ -526,8 +526,15 @@ def who_should_i_pick(limit: int = 6) -> str:
     # about the same roster: `need_mult` sees the counted total and treats the
     # position as filled, while `roles.bench_values` sees only the priced rows
     # and treats the slot as open. On the live record that is one RB -- three
-    # counted, two priced -- which is half of why an RB headlined a pick where
-    # the model also said he was likely to last.
+    # counted, two priced.
+    #
+    # It is not why an RB headlined, and an earlier version of this comment said
+    # it was. `who_should_i_pick` passes no `role_weights`, so the bench numbers
+    # are reported and never priced; and the one path by which the count does
+    # reach the ranking runs the other way -- `need_mult` for RB is 0.518 on the
+    # counted roster against 0.720 on the priced one, so counting the unpriced
+    # back suppresses the position. What this note affects is what the user is
+    # told about bench value, not what is recommended.
     priced = mine["position"].astype(str).value_counts().to_dict() if len(mine) else {}
     thin = {pos: (n, int(priced.get(pos, 0))) for pos, n in roster.items()
             if n > int(priced.get(pos, 0))}

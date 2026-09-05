@@ -84,6 +84,37 @@ class TestHeadlineUrgency:
         assert "likely still there at" in top["why_now"]
         assert not top["why_now"].startswith("only ")
 
+    def _boundary_position(self):
+        """Backs whose ADPs sit just past the next turn, so the best one's
+        survival lands between the gate's 0.5 and the comfortable 0.9+ of the
+        fixture above. marge mutated the gate from `> 0.5` to `> 0.9` and this
+        class did not notice, because its other fixture survives at ~1.0 either
+        way — the boundary was resting on the model-level tests alone.
+        """
+        return _board([
+            _row("Marginal Back", "RB", 100.0, 24.0),
+            _row("Close Behind", "RB", 99.0, 25.0),
+            _row("Also Close", "RB", 98.0, 26.0),
+            _row("A Receiver", "WR", 40.0, 300.0),
+            _row("Another Receiver", "WR", 39.0, 301.0),
+            _row("A Passer", "QB", 30.0, 302.0),
+            _row("An End", "TE", 20.0, 303.0),
+        ])
+
+    def test_the_gate_holds_at_the_boundary_not_just_far_above_it(
+            self, monkeypatch, tmp_path, league):
+        b = self._boundary_position()
+        _wire(monkeypatch, tmp_path, league, b)
+        out = json.loads(server.who_should_i_pick(limit=3))
+        top = out["recommendations"][0]
+
+        # The point of the fixture: strictly inside the band a 0.9 gate would
+        # exclude, so moving the threshold breaks this test.
+        assert 0.5 < top["survival"] < 0.9, top["survival"]
+        assert top["marginal_now_vs_wait"] < server.model.NO_URGENCY_MARGINAL
+        assert out["headline"].startswith("No urgency; best available is ")
+        assert "likely still there at" in top["why_now"]
+
     def test_a_candidate_who_will_not_last_is_still_a_take(
             self, monkeypatch, tmp_path, league):
         # Same board, except the best back goes at the very top of the draft, so
@@ -109,7 +140,12 @@ class TestHeadlineUrgency:
                         "marginal_now_vs_wait", "survival", "why_now"):
                 assert key in row, key
             # The decomposition has to add up: what taking now is worth, minus
-            # what the position still offers, is what taking now buys.
+            # what the position still offers, is what taking now buys. The
+            # tolerance is one rounding step and is deliberate -- all three are
+            # rounded independently, and `marginal_now_vs_wait` is kept faithful
+            # to the unrounded number the gate compares rather than derived from
+            # the two rounded components, so that the printed value can never
+            # drift from the one that decided the headline.
             assert row["marginal_now_vs_wait"] == pytest.approx(
                 row["value_now"] - row["expected_best_at_next_pick"], abs=0.11)
 
