@@ -155,6 +155,31 @@ root, so the silent configuration — both paths importable, the wrong one
 winning, everything green — fails loudly instead. Do not read "we have the
 revert check" as covering what that test exists for.
 
+### The review question no test can ask
+
+When a change reports on its own work, does the report claim more than the code
+does? Three instances in one day, in three modules, none caught by a test:
+
+    reload_code        reported a migration as success while the watch it
+                       migrated had no resume record, so a restart would have
+                       lost it
+    migrate_instance   docstring said the watch's "own methods become the new
+                       code"; `notify` and `refresh` are in `CONSTRUCTED_STATE`
+                       and stay bound to the old module — and both are code
+    a queue commit     its own message claimed every refusal is reported, while
+                       the code returned the reason to a caller that discarded it
+
+None was a lie anyone told: each was written while the intent was true, and the
+code caught up separately or nearly. That is what makes it dangerous — the report
+is the thing a reader checks, so the gap closes to the eye without closing in
+fact. A test cannot ask this, because a test asserts what the code does and never
+reads what the code says about itself. All three were found by a person: two by
+reviewers, one by a live run.
+
+Read the docstring, the commit message and the returned payload against the diff,
+and treat a claim of completeness — "every", "always", "survives", "reports" — as
+the sentence to check first.
+
 ### The one defect this codebase keeps making
 
 `NaN` is truthy, and pandas hands it back wherever a value is absent. Every
