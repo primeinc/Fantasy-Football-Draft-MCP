@@ -81,6 +81,13 @@ All notable changes to this project. Format follows
   `role_mult` and `p_available_next`; overall adds log loss and survival
   calibration by round and by position.
 
+**Predicting other teams**
+- `predict_pick` (`replay.predict_pick`, `replay.team_tendency`): the model's
+  choice for another team's roster, ESPN's list order, how many higher-ranked
+  ESPN players that team has passed on per pick, and a prediction that
+  follows whichever list the team follows. The board now carries ESPN's
+  `espn_rank`.
+
 **Room order and team strength**
 - `draft_room.upcoming`: the next five picks with team and owner names, room
   presence and whether the pick is yours (`DraftWatch.upcoming`).

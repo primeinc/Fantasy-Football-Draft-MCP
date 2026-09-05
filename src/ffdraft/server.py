@@ -134,7 +134,7 @@ def _build_board(force: bool = False) -> pd.DataFrame:
         # A board priced off consensus before ESPN ADP was configured is
         # repriced in place: projections stay, only the market columns change.
         if bd.espn_adp_configured() and "adp_source" in b.columns \
-                and not (b["adp_source"] == "espn").any():
+                and (not (b["adp_source"] == "espn").any() or "espn_rank" not in b.columns):
             b = _price_board(bd.strip_adp(b), league)
             changed = True
         if changed:
@@ -1486,6 +1486,31 @@ def draft_replay(league_id: str = "", picks: int = 0) -> str:
             t["team"] = labels.get(t["slot"], f"slot {t['slot']}")
     if picks:
         out["picks"] = out["picks"][-picks:]
+    return json.dumps(out, indent=2, default=str)
+
+
+@mcp.tool()
+def predict_pick(league_id: str = "", slot: int = 0) -> str:
+    """For the team on the clock (or `slot`): what the model would take for
+    their roster (`should`), the next names on ESPN's own list (`espn_list`),
+    how that team has been choosing (median number of better-ranked ESPN
+    players it passed on, positions taken), and a prediction that follows
+    whichever list the team follows. Names come from the running watch for
+    `league_id`. ESPN rank is today's."""
+    from . import replay
+
+    state = _state()
+    b = _build_board()
+    league = _settings()[0]
+    slot = slot or state.slot_for_pick(state.on_the_clock)
+    out = replay.predict_pick(b, state, league, slot,
+                              adp_shift=replay.room_drift(b, state)["shift"])
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None:
+        w, _task = entry
+        team_of_slot = {s: t for t, s in w.slot_of.items()}
+        if slot in team_of_slot:
+            out["team"] = w.team_label(team_of_slot[slot])
     return json.dumps(out, indent=2, default=str)
 
 

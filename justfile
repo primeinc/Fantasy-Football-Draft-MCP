@@ -147,6 +147,39 @@ replay $picks='0':
               f"role {r['role_mult']!s:>4} model {r['model_pick']!s:<22} regret {r['pick_regret']!s:>6} "
               f"z {r['market_z']!s:>5}")
 
+# What the team on the clock (or $slot) should take, what ESPN's list says, how
+# that team has been choosing, and the prediction. Same as the predict_pick tool.
+[script]
+predict $slot='0':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import replay, server
+
+    league, _ = server._settings()
+    b, st = server._build_board(), server._state()
+    slot = int(os.environ["slot"]) or st.slot_for_pick(st.on_the_clock)
+    out = replay.predict_pick(b, st, league, slot, adp_shift=replay.room_drift(b, st)["shift"])
+    print(f"slot {slot}: pick {out['on_the_clock']} on the clock, next {out['next_pick']}, roster {out['roster']}, "
+          f"open starters {out['open_starter_slots']}")
+    t = out["tendency"]
+    print(f"tendency: median ESPN passes {t['median_espn_passes']}, follows ESPN list {t['follows_espn_list']}, "
+          f"positions {t['positions']}")
+    for h in out["history"]:
+        print(f"  pick {h['pick']:>3} {h['player']:<26} {h['position']!s:<3} espn rank {h['espn_rank']!s:>4} passed {h['espn_passes']!s:>3}")
+    print("should (model):")
+    for s in out["should"]:
+        print(f"  {s['player']:<26} {s['position']:<3} proj {s['proj_points']:>6} value {s['pick_value']:>7}")
+    print("ESPN list next:")
+    for e in out["espn_list"]:
+        print(f"  {e['player']:<26} {e['position']:<3} rank {e['espn_rank']:>4} adp {e['adp']:>6}")
+    p = out["predicted"]
+    print(f"predicted: {p['player']} ({p['position']}) -- {p['basis']}")
+
 # Dump everything ESPN reports about a league's draft into $out_dir (default: cwd).
 # Cookies come from .mcp.json. Opens the draft room once for the snapshot, which
 # bumps a browser room or a running watch; use the dump_draft tool while watching.

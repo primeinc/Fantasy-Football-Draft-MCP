@@ -136,6 +136,15 @@ room's drift applied and, as `calibration_without_shift`, without it.
 Projections and ADP are today's, not as of the pick. `picks` caps the per-pick
 rows (0 = all). `just replay [picks]` prints the same without a server.
 
+### `predict_pick`
+For the team on the clock, or a given `slot`: `should` is the model's
+recommendation for that team's roster and next pick; `espn_list` is the next
+eight names in ESPN's own rank order; `tendency` is how the team has chosen so
+far (for each pick, how many higher-ranked ESPN players were still available;
+a median of 3 or fewer marks a team that drafts from ESPN's list) and its
+position counts; `predicted` follows ESPN's list at an open starting slot for
+such a team, else the model. ESPN rank is today's, not the pick's.
+
 ### `draft_strength`
 Every team's draft so far ranked by projected starter points: the best lineup
 its picks fill under the league's starting slots, bench projection, starting

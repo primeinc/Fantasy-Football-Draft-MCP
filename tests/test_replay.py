@@ -91,6 +91,34 @@ def test_room_drift_uses_a_positions_own_median_once_it_has_enough_picks(tmp_pat
     assert per_pos["QB One"] == plain["QB One"]
 
 
+def test_predict_pick_follows_the_list_a_team_follows(tmp_path, monkeypatch):
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1,
+                            starters={"QB": 1, "RB": 1, "WR": 1, "TE": 0, "FLEX": 0,
+                                      "K": 0, "DST": 0})
+    b = _board()
+    # ESPN's list disagrees with the model: it likes QB One first, TE One last.
+    b["espn_rank"] = [3, 4, 2, 5, 1, 6]
+    st = board.DraftState(league)
+    st.record("QB One", 1, 1)      # slot 1 took ESPN's #1: passed 0
+    st.record("RB One", 2, 2)      # slot 2 took ESPN's #3 with #2 available: passed 1
+    st.record("WR One", 3, 2)      # slot 2 again, on the clock now is pick 4 = slot 1
+
+    out = replay.predict_pick(b, st, league, slot=1)
+    assert out["on_the_clock"] == 4 and out["next_pick"] == 5
+    assert out["roster"] == {"QB": 1}
+    assert out["tendency"]["median_espn_passes"] == 0.0 and out["tendency"]["follows_espn_list"]
+    assert [e["player"] for e in out["espn_list"]][:2] == ["RB Two", "WR Two"]
+    assert out["predicted"] == {"player": "RB Two", "position": "RB",
+                                "basis": "ESPN list order at an open starting slot"}
+    assert out["should"][0]["player"] == "RB Two"
+    assert [h["espn_passes"] for h in out["history"]] == [0]
+
+    t = replay.team_tendency(b, st, 2)
+    assert [h["espn_passes"] for h in t["picks"]] == [1, 0]
+    assert t["positions"] == {"RB": 1, "WR": 1}
+
+
 def model_recs(b, league, shift):
     from ffdraft import model
 

@@ -139,7 +139,7 @@ def espn_adp_configured() -> bool:
 def strip_adp(board: pd.DataFrame) -> pd.DataFrame:
     """The board without its market columns, ready for attach_adp again."""
     return board.drop(columns=[c for c in ("adp", "adp_source", "adp_delta", "adp_format",
-                                           "espn_proj", "espn_injury")
+                                           "espn_proj", "espn_injury", "espn_rank")
                                if c in board.columns])
 
 
@@ -348,7 +348,7 @@ def attach_adp(board: pd.DataFrame, adp: pd.DataFrame | None) -> pd.DataFrame:
     b = board.copy()
     b["_key"] = b["name"].map(norm_name)
     if adp is not None and not adp.empty:
-        extra = [c for c in ("espn_proj", "espn_injury") if c in adp.columns]
+        extra = [c for c in ("espn_proj", "espn_injury", "espn_rank") if c in adp.columns]
         b = b.drop(columns=[c for c in extra if c in b.columns])
         b = b.merge(adp[["_key", "adp", *extra]].drop_duplicates("_key"), on="_key", how="left")
         label = "espn" if "source" in adp.columns and (adp["source"] == "espn_adp").any() \

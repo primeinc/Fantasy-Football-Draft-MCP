@@ -150,6 +150,104 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
     }
 
 
+# A team whose median pick passed at most this many better-ranked players on
+# ESPN's own list is drafting from that list.
+SHEET_FOLLOWER_PASSES = 3
+
+
+def team_tendency(board: pd.DataFrame, state: DraftState, slot: int) -> dict:
+    """How one team has been choosing: for each of its picks, how many players
+    ranked higher on ESPN's list were still available (`espn_passes`), and
+    which positions it has taken. ESPN rank is today's, not the pick's."""
+    b = board.copy()
+    if "_key" not in b.columns:
+        b["_key"] = b["name"].map(norm_name)
+    rank = dict(zip(b["_key"], pd.to_numeric(b.get("espn_rank"), errors="coerce"))) \
+        if "espn_rank" in b.columns else {}
+    pos_of = dict(zip(b["_key"], b["position"]))
+    taken: set[str] = set()
+    rows = []
+    for p in sorted(state.picks, key=lambda x: x["overall"]):
+        k = norm_name(p["name"])
+        if p["slot"] == slot:
+            r = rank.get(k)
+            passes = None
+            if r is not None and pd.notna(r):
+                passes = int(sum(1 for kk, rr in rank.items()
+                                 if kk not in taken and pd.notna(rr) and rr < r))
+            rows.append({"pick": p["overall"], "player": p["name"],
+                         "position": pos_of.get(k) or p.get("position"),
+                         "espn_rank": (int(r) if r is not None and pd.notna(r) else None),
+                         "espn_passes": passes})
+        taken.add(k)
+    passes = [r["espn_passes"] for r in rows if r["espn_passes"] is not None]
+    positions: dict[str, int] = {}
+    for r in rows:
+        if r["position"]:
+            pos = str(r["position"])
+            positions[pos] = positions.get(pos, 0) + 1
+    median = float(np.median(passes)) if passes else None
+    return {"slot": slot, "picks": rows, "positions": positions,
+            "median_espn_passes": median,
+            "follows_espn_list": (median is not None and median <= SHEET_FOLLOWER_PASSES)}
+
+
+def predict_pick(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
+                 slot: int, adp_shift: float | dict[str, float] = 0.0) -> dict:
+    """For the team drafting at `slot`: what the model would take for its roster
+    (`should`), what ESPN's list says next (`espn_list`), the team's tendency,
+    and a prediction that follows whichever list the team has been following."""
+    b = board.copy()
+    if "_key" not in b.columns:
+        b["_key"] = b["name"].map(norm_name)
+    taken = state.taken_keys()
+    pool = b[~b["_key"].isin(taken)].copy()
+    roster: dict[str, int] = {}
+    pos_of = dict(zip(b["_key"], b["position"]))
+    for p in state.picks:
+        if p["slot"] == slot:
+            pos = pos_of.get(norm_name(p["name"])) or p.get("position")
+            if pos:
+                roster[pos] = roster.get(pos, 0) + 1
+    overall = state.on_the_clock
+    later = [n for n in league.picks_for_slot(slot) if n > overall]
+    next_pick = later[0] if later else None
+    recs = model.recommend(pool, league, current_pick=overall, next_pick=next_pick,
+                           roster=roster, top_n=5, adp_shift=adp_shift)
+    should = [{"player": r["name"], "position": r["position"],
+               "proj_points": round(float(r["proj_points"]), 1),
+               "pick_value": round(float(r["pick_value"]), 2)} for _, r in recs.iterrows()]
+    espn_list: list[dict] = []
+    if "espn_rank" in pool.columns:
+        ranked = pool[pd.to_numeric(pool["espn_rank"], errors="coerce").notna()]
+        ranked = ranked.sort_values("espn_rank").head(8)
+        espn_list = [{"player": r["name"], "position": r["position"],
+                      "espn_rank": int(r["espn_rank"]),
+                      "adp": round(float(r["adp"]), 1)} for _, r in ranked.iterrows()]
+    tendency = team_tendency(b, state, slot)
+    caps = model.ROSTER_CAP
+    open_slots = {pos: n - roster.get(pos, 0) for pos, n in league.starters.items()
+                  if n and roster.get(pos, 0) < n and pos in ("QB", "RB", "WR", "TE")}
+    if tendency["follows_espn_list"] and espn_list:
+        # Best on ESPN's list at a position they can still use; an empty
+        # starting slot first.
+        usable = [e for e in espn_list if roster.get(e["position"], 0) < caps.get(e["position"], 6)]
+        needed = [e for e in usable if e["position"] in open_slots]
+        choice = (needed or usable or espn_list)[0]
+        basis = ("ESPN list order at an open starting slot" if needed
+                 else "ESPN list order at a position they can still roster")
+    elif should:
+        choice, basis = should[0], "model recommendation for their roster"
+    else:
+        choice, basis = {}, "no pool"
+    return {"slot": slot, "on_the_clock": overall, "next_pick": next_pick, "roster": roster,
+            "open_starter_slots": open_slots, "should": should, "espn_list": espn_list,
+            "tendency": {k: v for k, v in tendency.items() if k != "picks"},
+            "history": tendency["picks"],
+            "predicted": {"player": choice.get("player"), "position": choice.get("position"),
+                          "basis": basis}}
+
+
 def _team_totals(per_pick: pd.DataFrame, league: LeagueSettings, my_slot: int) -> pd.DataFrame:
     out = []
     for slot in range(1, league.teams + 1):
