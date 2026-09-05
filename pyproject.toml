@@ -15,7 +15,7 @@ classifiers = [
   "Topic :: Games/Entertainment",
 ]
 dependencies = [
-  "mcp>=1.2.0",
+  "mcp>=1.10",
   "pandas>=2.0",
   "numpy>=1.24",
   "pyarrow>=14.0",

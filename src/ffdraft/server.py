@@ -481,7 +481,7 @@ def _rows(df: pd.DataFrame, cols: list[str], n: int) -> list[dict]:
 
 # ---------------------------------------------------------------- tools
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def configure_league(name: str = "default", teams: int = 12, draft_slot: int = 6,
                      rounds: int = 16, scoring: str = "half_ppr", snake: bool = True,
                      qb: int = 1, rb: int = 2, wr: int = 2, te: int = 1, flex: int = 1,
@@ -529,7 +529,7 @@ def configure_league(name: str = "default", teams: int = 12, draft_slot: int = 6
     }, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_leagues() -> str:
     """Every league you've set up, and which one is active."""
     known, active = cfg_list_leagues()
@@ -547,7 +547,7 @@ def list_leagues() -> str:
     return _emit({"active": active, "leagues": out}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def switch_league(name: str) -> str:
     """Make a different league active. Its board and draft resume where you left them."""
     if not set_active(name):
@@ -565,7 +565,7 @@ def switch_league(name: str) -> str:
     }, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def remove_league(name: str) -> str:
     """Delete a league and its draft history. The board cache is left alone, since
     other leagues with the same format may share it."""
@@ -581,7 +581,7 @@ def remove_league(name: str) -> str:
     return _emit({"removed": name, "remaining": known, "active": active}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def refresh_data(force_download: bool = False) -> str:
     """Rebuild the player board from source data. Run once before draft day."""
     if force_download:
@@ -600,7 +600,7 @@ def refresh_data(force_download: bool = False) -> str:
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def best_available(position: str | None = None, limit: int = 15,
                    sort_by: str = "draft_score") -> str:
     """The next best players still on the board.
@@ -622,7 +622,7 @@ def best_available(position: str | None = None, limit: int = 15,
     return _emit({"sorted_by": key, "players": _rows(avail, cols, limit)}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def who_should_i_pick(limit: int = 6) -> str:
     """The live draft-analyst call: who to take right now, and why.
 
@@ -782,7 +782,7 @@ def who_should_i_pick(limit: int = 6) -> str:
     }), indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def record_pick(player_name: str, overall_pick: int | None = None,
                 team_slot: int | None = None) -> str:
     """Log a pick that just happened. Use after every pick if you aren't auto-syncing."""
@@ -808,7 +808,7 @@ def record_pick(player_name: str, overall_pick: int | None = None,
     }, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None = None,
                pasted_board: str | None = None, season: int = CURRENT_SEASON) -> str:
     """Pull the current draft board from your platform.
@@ -869,7 +869,7 @@ def sync_draft(platform: str, league_id: str | None = None, draft_id: str | None
     }, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def league_rules(league_id: str, season: int = CURRENT_SEASON) -> str:
     """The ESPN league's rules as ESPN states them: draft format, roster slots and
     position limits, every scoring value, regular season and playoff weeks and
@@ -879,7 +879,7 @@ def league_rules(league_id: str, season: int = CURRENT_SEASON) -> str:
     return _emit(bd.espn_league_rules(league_id, season), indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_audit(limit: int = 10) -> str:
     """Check the invariants a recommendation depends on: board keys match the
     normaliser, pick numbers are contiguous, no player recorded twice, your picks
@@ -904,7 +904,7 @@ def draft_audit(limit: int = 10) -> str:
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_status(ctx: Context = None) -> str:
     """Where the draft stands and what your roster looks like."""
     # Stays sync: `on_the_clock` calls this directly, and making it a coroutine
@@ -942,7 +942,7 @@ def draft_status(ctx: Context = None) -> str:
                        "roster_counts": state.my_roster(b)}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def undo_pick() -> str:
     """Remove the most recent pick — for when someone mis-enters the board."""
     state = _state()
@@ -950,7 +950,7 @@ def undo_pick() -> str:
     return _emit({"removed": removed, **state.summary()}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def reset_draft() -> str:
     """Clear all recorded picks and start fresh."""
     state = _state()
@@ -958,7 +958,7 @@ def reset_draft() -> str:
     return _emit({"reset": True, **state.summary()}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def separation_report(position: str = "WR", player_name: str | None = None,
                       limit: int = 20) -> str:
     """Separation and route efficiency, plus the season-long matchup each player draws.
@@ -1036,7 +1036,7 @@ def separation_report(position: str = "WR", player_name: str | None = None,
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def value_picks(limit: int = 20, direction: str = "undervalued") -> str:
     """Where the model disagrees with the draft market, on draftable players only.
 
@@ -1068,7 +1068,7 @@ def value_picks(limit: int = 20, direction: str = "undervalued") -> str:
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def on_the_clock(platform: str, league_id: str | None = None, draft_id: str | None = None,
                  pasted_board: str | None = None, season: int = CURRENT_SEASON,
                  limit: int = 6) -> str:
@@ -1129,7 +1129,7 @@ def on_the_clock(platform: str, league_id: str | None = None, draft_id: str | No
     return _emit(result, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_value_history(seasons: str = "2021,2022,2023,2024", group_by: str = "draft_round") -> str:
     """Backtest: how preseason consensus rank compared to where players actually finished.
 
@@ -1153,7 +1153,7 @@ def draft_value_history(seasons: str = "2021,2022,2023,2024", group_by: str = "d
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def matchup_backtest(seasons: str = "2021,2022,2023,2024", position: str = "WR",
                      top_n: int = 24) -> str:
     """Backtest: does talent + schedule difficulty predict finish better than talent alone?
@@ -1196,7 +1196,7 @@ def matchup_backtest(seasons: str = "2021,2022,2023,2024", position: str = "WR",
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def redzone_shift_backtest(seasons: str = "2022,2023,2024,2025", position: str = "WR",
                           top_n: int = 24) -> str:
     """Backtest: does a team's red zone play-calling identity improve on the
@@ -1246,7 +1246,7 @@ def redzone_shift_backtest(seasons: str = "2022,2023,2024,2025", position: str =
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_backtest(league_id: str, season: int, top_n: int = 3) -> str:
     """Replay a real past ESPN draft: the algorithm's pick, the true hindsight-best
     pick, and what you actually took, round by round.
@@ -1281,7 +1281,7 @@ def draft_backtest(league_id: str, season: int, top_n: int = 3) -> str:
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def mock_draft(season: int, n_trials: int = 30, top_n: int = 5) -> str:
     """Monte Carlo mock draft: the live algorithm against many simulated
     opponents, averaged, using your active league's settings.
@@ -1317,7 +1317,7 @@ def mock_draft(season: int, n_trials: int = 30, top_n: int = 5) -> str:
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def bye_backtest(seasons: str = "2022,2023,2024,2025", n_trials: int = 20,
                  bye_weight: float = 0.08, blocks: int = adp_mod.DEFAULT_BLOCKS) -> str:
     """Backtest: does the bye-week stacking penalty win more weekly lineup points?
@@ -1349,7 +1349,7 @@ def bye_backtest(seasons: str = "2022,2023,2024,2025", n_trials: int = 20,
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def champion_strategies(league_id: str, seasons: str = "2020,2021,2022,2023,2024,2025") -> str:
     """What actually won your ESPN league, season by season, and which specific
     pick made the difference.
@@ -1378,7 +1378,7 @@ def champion_strategies(league_id: str, seasons: str = "2020,2021,2022,2023,2024
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def persistent_value_players(seasons: str = "2021,2022,2023,2024",
                              min_seasons: int = 3, limit: int = 20) -> str:
     """Players who beat their draft cost repeatedly, not once.
@@ -1401,7 +1401,7 @@ def persistent_value_players(seasons: str = "2021,2022,2023,2024",
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def rookie_report(limit: int = 20, position: str | None = None) -> str:
     """Projected rookies for this season, from draft capital and landing spot.
 
@@ -1429,7 +1429,7 @@ def rookie_report(limit: int = 20, position: str | None = None) -> str:
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def resolve_names(names_csv: str) -> str:
     """Check how names resolve against the board — useful before trusting a paste sync.
 
@@ -1456,7 +1456,7 @@ def resolve_names(names_csv: str) -> str:
     }, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def prewarm(verbose: bool = True) -> str:
     """Build every cache before draft day so nothing computes while you're on the clock.
 
@@ -1500,7 +1500,7 @@ def prewarm(verbose: bool = True) -> str:
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def player_report(player_name: str) -> str:
     """Full breakdown of one player: production, role, environment, injury, consistency."""
     b = _build_board()
@@ -1528,7 +1528,7 @@ def player_report(player_name: str) -> str:
     return _emit(out, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def compare_players(names: str) -> str:
     """Compare 2-4 players head to head. Pass a comma-separated list."""
     b = _build_board()
@@ -1549,7 +1549,7 @@ def compare_players(names: str) -> str:
     }, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def team_context(team: str) -> str:
     """Offensive environment for an NFL team: O-line, pace, run/pass split, schedule,
     drive efficiency, and red zone play-calling identity.
@@ -1601,7 +1601,7 @@ def team_context(team: str) -> str:
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def defense_report(position: str = "RB", limit: int = 32) -> str:
     """Defensive rankings against a position — fantasy points allowed, 5-year view.
 
@@ -1778,7 +1778,7 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
 PLAN_SURVIVAL = 0.5
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def plan_my_draft(strategy: str = "balanced") -> str:
     """Simulate your whole draft from your slot and return the projected lineup.
 
@@ -1843,7 +1843,7 @@ def plan_my_draft(strategy: str = "balanced") -> str:
     }, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def model_settings(consistency_weight: float | None = None, injury_weight: float | None = None,
                    oline_weight: float | None = None, schedule_weight: float | None = None,
                    pace_weight: float | None = None, td_luck_weight: float | None = None,
@@ -1907,7 +1907,7 @@ def model_settings(consistency_weight: float | None = None, injury_weight: float
                   "board": "will rebuild on next query"}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context = None) -> str:
     """Hold the ESPN draft room open and push every pick into this session as it
     happens, with a recommendation once you are within three picks of the clock.
@@ -1972,7 +1972,7 @@ async def watch_draft(league_id: str, season: int = CURRENT_SEASON, ctx: Context
     }, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def make_pick(league_id: str, player_name: str) -> str:
     """Make your pick in the ESPN draft over the running watch's socket.
 
@@ -2193,7 +2193,7 @@ def _queue_rows(w, ids: list[int], drafted: dict[int, int] | None) -> list[dict]
             for i, pid in enumerate(ids)]
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def draft_queue(league_id: str) -> str:
     """Your ESPN pick queue (what autopick uses), as ESPN last echoed it over the
     watch's socket, and what is left of it.
@@ -2255,7 +2255,7 @@ async def draft_queue(league_id: str) -> str:
     return _emit(out, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def set_draft_queue(league_id: str, player_names: str, replace: bool = False) -> str:
     """Put these players at the front of your ESPN pick queue, keeping the rest.
 
@@ -2388,7 +2388,7 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
     }
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def draft_room(league_id: str, chat_limit: int = 10, ctx: Context = None) -> str:
     """Who is in the ESPN draft room right now and the latest room chat, from the
     running watch's socket. Names come from the league's member list."""
@@ -2466,7 +2466,7 @@ def _waiver_inputs(league_id: str, week: int, season: int):
             "unplaceable": [str(n) for n in stranded.get("name", [])]}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
                    limit: int = 8) -> str:
     """Who to claim off waivers this week, at what priority, dropping whom.
@@ -2541,7 +2541,7 @@ def _lineup_inputs(league_id: str, week: int, season: int):
     return league, lineup.week_value(mine, week, weekly), len(weekly), team_id
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     """The lineup that maximises expected points this week, and why each slot.
 
@@ -2653,7 +2653,7 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
     }), indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
                   dry_run: bool = True) -> str:
     """Set this week's ESPN lineup to the one `weekly_lineup` recommends.
@@ -2734,7 +2734,7 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
     return _emit(out, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
     """Who was in the ESPN draft room, for how long, and who talked. Per member,
     by team and owner name: minutes in the room, joins and leaves with each
@@ -2764,7 +2764,7 @@ def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
     return _emit(stats, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False,
                  detail: bool = False) -> str:
     """Replay every recorded pick through the model for the team that made it:
@@ -2808,7 +2808,7 @@ def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False,
                  indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
                 look_ahead: int = 2, top: int = 0, detail: bool = False) -> str:
     """Which kicker and defence to start or pick up **this week**, by that
@@ -2878,7 +2878,7 @@ def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
                                           detail=detail)), indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_retrospective(league_id: str = "", slot: int = 0, around: int = 2) -> str:
     """Your draft, pick by pick, against what the model would have taken.
 
@@ -2914,7 +2914,7 @@ def draft_retrospective(league_id: str = "", slot: int = 0, around: int = 2) -> 
     return _emit(_jsonable(out), indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_counterfactual(slot: int = 0, league_id: str = "", policy: str = "argmax",
                          seed: int = 0) -> str:
     """SIMULATION. Replay the draft with the model drafting for `slot` (yours by
@@ -2955,7 +2955,7 @@ def draft_counterfactual(slot: int = 0, league_id: str = "", policy: str = "argm
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def predict_pick(league_id: str = "", slot: int = 0) -> str:
     """For the team on the clock (or `slot`): what the model would take for
     their roster (`should`), the next names on ESPN's own list (`espn_list`),
@@ -2988,7 +2988,7 @@ def predict_pick(league_id: str = "", slot: int = 0) -> str:
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def draft_strength(league_id: str = "") -> str:
     """Every team's draft so far, ranked by projected starter points under the
     league's starting slots, with bench projection, open starter slots and pick
@@ -3006,7 +3006,7 @@ def draft_strength(league_id: str = "") -> str:
                        "teams": tbl.to_dict(orient="records")}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
                    league_id: str = "", n_trials: int = 0, blocks: int = 0,
                    seed: int = 0) -> str:
@@ -3050,7 +3050,7 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
     return _emit(out, indent=2, default=str)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_SEASON) -> str:
     """Write everything ESPN reports about this league's draft under
     `<out_dir>/espn_dump_<league>_<season>_<stamp>/`: every read-API view as
@@ -3083,7 +3083,7 @@ async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_S
     return _emit(manifest, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def stop_watch(league_id: str) -> str:
     """Stop the draft-room watch for a league."""
     # Cleared even when no watch is running here: the record may have been left
@@ -3282,7 +3282,7 @@ def reload_package() -> dict[str, Any]:
     return {"errors": errors, "tools": changes, "watches": watches}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def reload_code(ctx: Context = None) -> str:
     """Reload this server's code from disk without a reconnect: every ffdraft
     module is re-imported, the tool list is rebuilt from the new functions,
