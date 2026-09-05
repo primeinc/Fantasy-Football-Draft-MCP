@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 from ffdraft import adp as adp_mod
 from ffdraft import server
@@ -66,10 +67,36 @@ def test_on_the_clock_skips_sync_under_a_watch(monkeypatch):
 def test_on_the_clock_is_the_highest_overall_plus_one():
     from ffdraft import board, config
     state = board.DraftState(config.LeagueSettings(teams=16, draft_slot=4), "sweep-probe")
-    state.save = lambda: None
     state.record("Ja'Marr Chase")
     state.record("Nobody Realperson", overall=7)
     assert state.on_the_clock == 8
     assert state.summary()["my_next_pick"] == 29  # pick 4 has passed
     state.undo()
     assert state.on_the_clock == 2
+
+
+def test_mock_draft_scratch_state_is_removed_when_the_mock_raises(monkeypatch):
+    import numpy as np
+
+    from ffdraft import adp as adp_mod
+    from ffdraft import board as bd
+    from ffdraft import config, model
+
+    league = config.LeagueSettings(teams=2, draft_slot=1, rounds=3)
+    created: list = []
+    real = bd.DraftState
+
+    def spy(*a, **k):
+        st = real(*a, **k)
+        created.append(st.path)
+        return st
+    monkeypatch.setattr(bd, "DraftState", spy)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("mid-draft")
+    monkeypatch.setattr(model, "recommend", boom)
+    board = pd.DataFrame([{"name": "A", "_key": "a", "position": "RB", "adp": 1.0,
+                           "draft_score": 1.0, "drafted": False, "proj_points": 100.0}])
+    with pytest.raises(RuntimeError):
+        adp_mod._draft_trial(board, league, np.random.default_rng(0))
+    assert created and not created[0].exists()

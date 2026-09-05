@@ -814,45 +814,47 @@ def _draft_trial(board: pd.DataFrame, league, rng, top_n: int = 5,
 
     state = bd.DraftState(league, name=f"_mockdraft_scratch_{id(league)}_{id(rng)}")
     state.reset()
-    rosters: dict[int, dict[str, int]] = {s: {} for s in range(1, teams + 1)}
-    mine: list[tuple[int, str]] = []
+    try:
+        rosters: dict[int, dict[str, int]] = {s: {} for s in range(1, teams + 1)}
+        mine: list[tuple[int, str]] = []
 
-    for overall in range(1, total_picks + 1):
-        slot = slot_for_pick(overall)
-        b = board.copy()
-        b.loc[b["_key"].isin(state.taken_keys()), "drafted"] = True
-        pool = b[~b["drafted"]]
-        if pool.empty:
-            break
-
-        if slot == my_slot:
-            roster = state.my_roster(b)
-            nxt = state.next_pick_for_me()
-            on_clock = state.on_the_clock
-            current = nxt if (nxt is not None and nxt > on_clock) else on_clock
-            after = state.pick_after_next() if nxt == current else nxt
-            recs = model.recommend(pool, league, current_pick=current, next_pick=after,
-                                   roster=roster, top_n=top_n, mine=state.my_rows(b),
-                                   bye_weight=bye_weight, role_weights=role_weights)
-            if recs.empty:
+        for overall in range(1, total_picks + 1):
+            slot = slot_for_pick(overall)
+            b = board.copy()
+            b.loc[b["_key"].isin(state.taken_keys()), "drafted"] = True
+            pool = b[~b["drafted"]]
+            if pool.empty:
                 break
-            chosen = recs.iloc[0]["name"]
-            mine.append(((overall - 1) // teams + 1, chosen))
-        else:
-            r = rosters[slot]
-            avail = pool[pool["position"].map(
-                lambda p, r=r: r.get(p, 0) < _MOCK_BOT_CAPS.get(p, 99))]
-            if avail.empty:
-                avail = pool
-            sigma = np.maximum(3.0, 0.25 * avail["adp"].to_numpy())
-            noisy = avail["adp"].to_numpy() + rng.normal(0, sigma)
-            best = avail.iloc[int(np.argmin(noisy))]
-            chosen = best["name"]
-            rosters[slot][best["position"]] = rosters[slot].get(best["position"], 0) + 1
 
-        state.record(chosen, overall)
+            if slot == my_slot:
+                roster = state.my_roster(b)
+                nxt = state.next_pick_for_me()
+                on_clock = state.on_the_clock
+                current = nxt if (nxt is not None and nxt > on_clock) else on_clock
+                after = state.pick_after_next() if nxt == current else nxt
+                recs = model.recommend(pool, league, current_pick=current, next_pick=after,
+                                       roster=roster, top_n=top_n, mine=state.my_rows(b),
+                                       bye_weight=bye_weight, role_weights=role_weights)
+                if recs.empty:
+                    break
+                chosen = recs.iloc[0]["name"]
+                mine.append(((overall - 1) // teams + 1, chosen))
+            else:
+                r = rosters[slot]
+                avail = pool[pool["position"].map(
+                    lambda p, r=r: r.get(p, 0) < _MOCK_BOT_CAPS.get(p, 99))]
+                if avail.empty:
+                    avail = pool
+                sigma = np.maximum(3.0, 0.25 * avail["adp"].to_numpy())
+                noisy = avail["adp"].to_numpy() + rng.normal(0, sigma)
+                best = avail.iloc[int(np.argmin(noisy))]
+                chosen = best["name"]
+                rosters[slot][best["position"]] = rosters[slot].get(best["position"], 0) + 1
 
-    state.path.unlink(missing_ok=True)
+            state.record(chosen, overall)
+    finally:
+        # Every record() writes the file; an exception mid-draft left it behind.
+        state.path.unlink(missing_ok=True)
     return mine
 
 
