@@ -467,10 +467,21 @@ it, and inventing one would move the very spread the reader is meant to judge
 the estimate against. Kicker and defense slots are not scored, which is
 `best_weekly_lineup`'s existing behaviour.
 
-Rosters come from the draft record, so a player added after the draft is not on
-it yet. Naming a player on the wrong roster, or one with no board row, stops the
-evaluation and says which: a trade scored without one of its own pieces is a
-different trade.
+`priced_by` says how each side's rows were priced. A player the board models is
+priced from `adj_ppg`; one it does not, a kicker or a defense, has his per-game
+rate derived from `proj_points / exp_games`, and one with no projection at all is
+worth 0. Every row that is not straight off the board is **named**, not merely
+counted, because a delta built from derived rows deserves less weight than one
+built from modelled ones.
+
+`weeks` reports the window scored, `from` 1 `to` 14. Rosters come from the draft
+record, so this is a season-long answer; a trade weighed in week 9 is really
+asking about weeks 9 to 14, and the tool does not yet know the difference. That
+arrives with the in-season roster reader.
+
+A player added after the draft is not on the record yet. Naming a player on the
+wrong roster, or one with no board row, stops the evaluation and says which: a
+trade scored without one of its own pieces is a different trade.
 
 ### `league_rules`
 The ESPN league's rules as ESPN states them, from the `mSettings` view: draft

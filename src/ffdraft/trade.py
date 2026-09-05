@@ -43,6 +43,14 @@ DEFAULT_TRIALS = 200
 DEFAULT_BLOCKS = adp_mod.DEFAULT_BLOCKS
 
 
+# What priced a player's per-game rate. Not decoration: a roster can mix them,
+# and a reader comparing two rosters is entitled to know which rows were read off
+# the board and which were derived from a season total.
+BASIS_BOARD = "adj_ppg"
+BASIS_DERIVED = "proj_points / exp_games"
+BASIS_NONE = "none: no projection on the board"
+
+
 @dataclass(frozen=True)
 class Player:
     """One roster slot as the simulation needs it, resolved from the board once."""
@@ -53,6 +61,7 @@ class Player:
     adj_ppg: float
     exp_games: float
     bye_week: float | None
+    basis: str = BASIS_BOARD
 
     @property
     def weekly_availability(self) -> float:
@@ -93,19 +102,26 @@ def resolve(board: pd.DataFrame, names: list[str]) -> tuple[list[Player], list[s
             continue
         exp_games = _finite(row.get("exp_games"), roles.SEASON_GAMES)
         adj = row.get("adj_ppg")
+        basis = BASIS_BOARD
         if adj is None or not np.isfinite(_finite(adj, np.nan)):
             # No per-game rate: fall back to the season projection spread over the
             # games it was built from, which is the identity `proj_points =
             # adj_ppg * exp_games` read backwards. A kicker or a defense lands
             # here, and so does any row the projection could not model.
-            proj = _finite(row.get("proj_points"), 0.0)
-            adj = proj / exp_games if exp_games > 0 else 0.0
+            #
+            # The fallback is reported per player rather than applied quietly. A
+            # roster can mix bases, and which rows were derived is exactly what a
+            # reader needs to weigh a delta built from them.
+            proj = row.get("proj_points")
+            basis = BASIS_DERIVED if proj is not None and np.isfinite(
+                _finite(proj, np.nan)) else BASIS_NONE
+            adj = _finite(proj, 0.0) / exp_games if exp_games > 0 else 0.0
         bye = row.get("bye_week")
         bye = int(bye) if bye is not None and np.isfinite(_finite(bye, np.nan)) else None
         found.append(Player(
             name=str(row.get("name") or name), key=norm_name(name),
             position=str(row.get("position") or ""),
-            adj_ppg=_finite(adj, 0.0), exp_games=exp_games, bye_week=bye))
+            adj_ppg=_finite(adj, 0.0), exp_games=exp_games, bye_week=bye, basis=basis))
     return found, missing
 
 
@@ -202,6 +218,20 @@ def depth(roster: list[Player], league: LeagueSettings) -> dict:
     return out
 
 
+def priced_by(roster: list[Player]) -> dict:
+    """How many rows were read off the board, and which were not.
+
+    A roster can mix bases. Naming the exceptions rather than only counting them
+    is what lets a reader decide whether a delta rests on rows the projection
+    actually modelled.
+    """
+    counts = Counter(p.basis for p in roster)
+    return {"counts": dict(sorted(counts.items())),
+            "not_from_the_board": [{"name": p.name, "position": p.position,
+                                    "basis": p.basis, "per_game": round(p.adj_ppg, 2)}
+                                   for p in roster if p.basis != BASIS_BOARD]}
+
+
 def verdict(summary: dict, side: str) -> str:
     """What may be said about this side, given whether the blocks agree.
 
@@ -282,19 +312,24 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
                          n_trials, blocks, seed, weeks)
     return {
         "ok": True,
-        "weeks": weeks,
+        # Which weeks were scored, not just how many. Read from week 1, so this
+        # is a season-long answer; a trade being weighed in week 9 is asking
+        # about weeks 9 to 14 and this does not yet know the difference.
+        "weeks": {"from": 1, "to": weeks},
         "give": list(give),
         "get": list(get),
         "you": {
             "slot": my_slot, **yours,
             "depth_before": depth(resolved["mine_before"], league),
             "depth_after": depth(resolved["mine_after"], league),
+            "priced_by": priced_by(resolved["mine_after"]),
             "verdict": verdict(yours, "you"),
         },
         "counterparty": {
             "slot": counterparty_slot, **theirs_cmp,
             "depth_before": depth(resolved["theirs_before"], league),
             "depth_after": depth(resolved["theirs_after"], league),
+            "priced_by": priced_by(resolved["theirs_after"]),
             "verdict": verdict(theirs_cmp, f"slot {counterparty_slot}"),
             "tendencies": counterparty_tendencies(
                 picks_by_slot.get(counterparty_slot, []), board),

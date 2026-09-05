@@ -93,6 +93,29 @@ class TestAvailabilityIsNotChargedTwice:
                      "exp_games": 17.0, "bye_week": None, "proj_points": 170.0, "adp": 150.0}])
         player = trade.resolve(b, ["K Man"])[0][0]
         assert player.adj_ppg == pytest.approx(10.0)
+        assert player.basis == trade.BASIS_DERIVED
+
+    def test_the_fallback_is_named_per_player_not_applied_quietly(self):
+        """A roster can mix bases, and which rows were derived is what a reader
+        needs to weigh a delta built from them."""
+        b = _board([
+            {"name": "Real WR", "position": "WR", "adj_ppg": 12.0, "exp_games": 16.0,
+             "bye_week": 9, "proj_points": 192.0, "adp": 30.0},
+            {"name": "K Man", "position": "K", "adj_ppg": np.nan, "exp_games": 17.0,
+             "bye_week": None, "proj_points": 170.0, "adp": 150.0},
+            {"name": "Unknown", "position": "TE", "adj_ppg": np.nan, "exp_games": 17.0,
+             "bye_week": None, "proj_points": np.nan, "adp": 200.0},
+        ])
+        roster, _ = trade.resolve(b, ["Real WR", "K Man", "Unknown"])
+
+        out = trade.priced_by(roster)
+        assert out["counts"] == {trade.BASIS_BOARD: 1, trade.BASIS_DERIVED: 1,
+                                 trade.BASIS_NONE: 1}
+        named = {r["name"]: r["basis"] for r in out["not_from_the_board"]}
+        assert named == {"K Man": trade.BASIS_DERIVED, "Unknown": trade.BASIS_NONE}
+        # A player with no projection at all is worth 0, not NaN: one NaN would
+        # turn a whole roster's season into NaN.
+        assert roster[2].adj_ppg == 0.0
 
     def test_availability_comes_from_the_same_mapping_the_board_uses(self, fixture_board):
         hurt = _board([{"name": "Fragile", "position": "WR", "adj_ppg": 10.0,
