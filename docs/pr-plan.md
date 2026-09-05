@@ -99,6 +99,30 @@ Three checks on every merge. Each exists because skipping it shipped something.
   from the claim it is meant to check will pass on code that never had the
   property. This has caught something in three of the last four merges, including
   a test that could not fail at all.
+- **A pass in the main checkout after the merge, not only the author's.** Their
+  run is evidence about their tree; this one is evidence about the branch.
+
+A test count from a worktree only means what it says if that worktree imported
+its own code. The venv installs the package editable and the resulting path file
+names whichever checkout built the venv, so a worktree borrowing another's venv
+lints and type-checks its own files — ruff and ty are given paths — while pytest
+imports the other tree and runs the worktree's tests against it. Green for code
+it never loaded. Measured from a worktree with no venv of its own:
+
+    without PYTHONPATH   ffdraft resolves in the MAIN checkout
+    with it              ffdraft resolves in the worktree
+
+The justfile exports `PYTHONPATH` to the checkout's own `src` for this reason,
+so every recipe imports the tree it runs in. The 16 `[script]` recipes are not
+covered — a just setting is a const context and rejects the derived variable —
+and still need a local `.venv`, which matters most for the recipes that produce
+evidence, since those and `check` could otherwise read different trees.
+
+The revert check above already answers this without being asked. If breaking
+your own file does not break your tests, either the test is tautological or the
+suite is not loading your code, and both are worth knowing. Anyone who has run
+one has proved their import path; a green run that has never been perturbed has
+proved nothing about which tree it read.
 
 Keeping this document current is part of the merge, not a pass at the end. It
 went stale once by 46 commits, and the worst of it was a note telling the reader
