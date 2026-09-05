@@ -4,6 +4,7 @@ Run with:  python -m ffdraft.server
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -310,6 +311,87 @@ def _jsonable(value: Any) -> Any:
         return value
 
 
+# A tool result over the client's limit is not shown truncated -- it is not
+# shown at all, so an answer that overruns is unreadable rather than verbose.
+# `stream_kdst(week=1)` came back at 69,512 characters and the user could not
+# read the tool (#52). 20,000 sits under the limit with room for whatever the
+# client wraps around the payload, which we do not control and cannot measure
+# from here.
+PAYLOAD_LIMIT = 20_000
+
+
+def _longest_list(payload: Any) -> tuple[str, Any, Any, list] | None:
+    """The list whose serialised form is longest, with the container holding it.
+
+    Lists are what grow: every payload in this module that has ever been too
+    big was too big because a table had a row per player. Trimming the longest
+    one keeps the head of a ranking, which is the part an answer is about,
+    where dropping a whole key would keep the footnotes and lose the answer.
+    """
+    best: tuple[int, str, Any, Any, list] | None = None
+
+    def walk(node: Any, holder: Any, key: Any, path: str) -> None:
+        nonlocal best
+        if isinstance(node, list):
+            if len(node) > 1:
+                size = len(json.dumps(node, default=str))
+                if best is None or size > best[0]:
+                    best = (size, path, holder, key, node)
+            for i, item in enumerate(node):
+                walk(item, node, i, f"{path}[{i}]")
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, node, k, f"{path}.{k}" if path else str(k))
+
+    walk(payload, None, None, "")
+    return None if best is None else (best[1], best[2], best[3], best[4])
+
+
+def _under_the_cap(payload: Any, dumps_kwargs: dict) -> str:
+    """Trim the longest lists until the answer fits, and say what was trimmed.
+
+    The backstop, not the plan. Every tool here is expected to shape its own
+    answer to a size a person can read -- `stream_kdst` ranks a top few rather
+    than the field -- and this exists because no amount of shaping can promise a
+    bound when the data behind it can always grow. Enforced at the one exit so a
+    new handler inherits the guarantee instead of being trusted to remember it.
+
+    What comes back is still valid JSON and still the head of every table, with
+    `truncated` naming each path and how much of it survived. A payload that
+    cannot be made to fit even with every list at one row is reported as that
+    rather than as a mangled answer.
+    """
+    trimmed = copy.deepcopy(payload)
+    original: dict[str, int] = {}
+    kept: dict[str, int] = {}
+    # Bounded: each pass halves one list, so this terminates well inside the
+    # limit even for a payload that is nothing but deeply nested tables.
+    for _ in range(400):
+        text = json.dumps(trimmed, **dumps_kwargs)
+        if len(text) <= PAYLOAD_LIMIT:
+            if kept:
+                trimmed["truncated"] = {
+                    "note": f"cut to fit the client's {PAYLOAD_LIMIT:,}-character "
+                            f"limit, longest tables first; ask for fewer weeks or "
+                            f"positions to see a full one",
+                    "paths": {p: f"{kept[p]} of {original[p]}" for p in sorted(kept)},
+                }
+                text = json.dumps(trimmed, **dumps_kwargs)
+            return text
+        found = _longest_list(trimmed)
+        if found is None:
+            break
+        path, holder, key, rows = found
+        original.setdefault(path, len(rows))
+        keep = max(1, len(rows) // 2)
+        kept[path] = keep
+        holder[key] = rows[:keep]
+    return json.dumps({"error": f"this answer does not fit the client's "
+                                f"{PAYLOAD_LIMIT:,}-character limit even with every "
+                                f"table cut to one row",
+                       "limit": PAYLOAD_LIMIT}, **dumps_kwargs)
+
+
 def _emit(payload: Any, **dumps_kwargs: Any) -> str:
     """The single JSON exit for every tool in this module.
 
@@ -327,8 +409,17 @@ def _emit(payload: Any, **dumps_kwargs: Any) -> str:
     mean what they meant at each call site; the only change is that the payload
     is sanitised first. `TestEveryPayloadLeavesThroughEmit` is what keeps a new
     handler from going around it.
+
+    It is also where the size cap is enforced, for the same reason: a client
+    that refuses an oversized result shows the user nothing, so every tool needs
+    the bound and no tool should be trusted to remember it. `_under_the_cap`
+    says what it cut.
     """
-    return json.dumps(_jsonable(payload), **dumps_kwargs)
+    safe = _jsonable(payload)
+    text = json.dumps(safe, **dumps_kwargs)
+    if len(text) <= PAYLOAD_LIMIT:
+        return text
+    return _under_the_cap(safe, dumps_kwargs)
 
 
 def _rows(df: pd.DataFrame, cols: list[str], n: int) -> list[dict]:
@@ -2334,7 +2425,7 @@ def draft_replay(league_id: str = "", picks: int = 0, as_of: bool = False) -> st
 
 @mcp.tool()
 def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
-                look_ahead: int = 2) -> str:
+                look_ahead: int = 2, top: int = 0, detail: bool = False) -> str:
     """Which kicker and defence to start or pick up **this week**, by that
     week's matchup — not by season projection and not by the draft's supply
     model, neither of which answers "is this a good week for this player".
@@ -2356,7 +2447,13 @@ def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
     `look_ahead` weeks are returned beside this one, so a waiver claim can be
     judged against the bye it has to cover. Weather is not available: `temp` and
     `wind` are recorded after kickoff, so only the stadium roof is known in
-    advance."""
+    advance.
+
+    `top` is how many rows per position the asked week returns, 8 by default,
+    with `ranked_of` giving the full field. The look-ahead weeks carry only the
+    columns a bye question needs. `detail=true` restores the whole field, the
+    full look-ahead rows and the calibration evidence behind each verdict, and
+    is the reason the default is small rather than the whole of it."""
     from . import stream
 
     league, _ = _settings()
@@ -2392,7 +2489,8 @@ def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
     out = stream.stream_kdst(season, week, bands, items, available,
                              history_seasons=[season - 1], starters=starters,
                              team_of=team_of, look_ahead=max(1, look_ahead))
-    return _emit(_jsonable(out), indent=2)
+    return _emit(_jsonable(stream.compact(out, top=top or stream.TOP_N,
+                                          detail=detail)), indent=2)
 
 
 @mcp.tool()

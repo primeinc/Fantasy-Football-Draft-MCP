@@ -97,12 +97,24 @@ def test_every_payload_leaves_through_emit():
     original bug. Here there is nothing to remember: the only `json.dumps` in
     the module is the one inside `_emit`.
     """
+    # The exit itself, named one by one rather than by a prefix, so a new
+    # helper is not exempted by being called `_something`. `_under_the_cap` and
+    # `_longest_list` measure and trim an already-sanitised payload on its way
+    # out (#52); they are the exit, not handlers using it, and they cannot go
+    # through `_emit` without calling it from inside itself.
+    THE_EXIT = ("_emit", "_under_the_cap", "_longest_list")
     tree = ast.parse(SERVER_PY.read_text(encoding="utf-8"), filename=str(SERVER_PY))
     inside_emit: set[int] = set()
+    found: set[str] = set()
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_emit":
-            inside_emit = set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
-    assert inside_emit, "server._emit is gone; this test no longer checks anything"
+        if isinstance(node, ast.FunctionDef) and node.name in THE_EXIT:
+            found.add(node.name)
+            inside_emit |= set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    assert found == set(THE_EXIT), (
+        f"server's JSON exit has changed shape: expected {THE_EXIT}, found "
+        f"{sorted(found)}. Update this list deliberately -- it is what decides "
+        f"which `json.dumps` calls are the exit and which are unsanitised handlers"
+    )
 
     strays = [
         node.lineno
@@ -153,3 +165,68 @@ def test_the_round_trip_would_catch_a_regression(poisoned_board, monkeypatch):
         "round-trip test above cannot fail and is proving nothing; give the "
         "poisoned_board fixture a hole that reaches a payload"
     )
+
+
+class TestThePayloadCap:
+    """A result over the client's limit is not shown truncated, it is dropped.
+
+    `stream_kdst(week=1)` came back at 69,512 characters and the user could not
+    read the tool at all (#52). Each tool shapes its own answer to a size a
+    person can read; this is the backstop that makes the bound a guarantee
+    rather than a habit, enforced at the one exit every payload leaves through.
+    """
+
+    def test_every_tool_fits_the_cap_on_a_real_board(self, poisoned_board):
+        over = []
+        for name, kwargs in TOOLS:
+            size = len(getattr(server, name)(**kwargs))
+            if size > server.PAYLOAD_LIMIT:
+                over.append(f"{name}: {size:,}")
+        assert not over, "\n  ".join(["tools over the client's limit:"] + over)
+
+    def test_a_payload_over_the_cap_is_cut_down_and_says_so(self):
+        rows = [{"name": f"Player {i}", "note": "x" * 200} for i in range(400)]
+        text = server._emit({"season": 2026, "ranked": rows}, indent=2)
+        assert len(text) <= server.PAYLOAD_LIMIT
+        out = json.loads(text)
+        # The head of the table, not a slice from the middle or a dropped key.
+        assert out["ranked"][0]["name"] == "Player 0"
+        assert len(out["ranked"]) < 400
+        assert out["season"] == 2026
+        # And it states the cut rather than presenting a short table as a whole
+        # one, which is the difference between a trimmed answer and a wrong one.
+        assert out["truncated"]["paths"]["ranked"] == f"{len(out['ranked'])} of 400"
+
+    def test_the_longest_table_is_the_one_cut(self):
+        # Two tables, one much larger. The small one is an answer; the large one
+        # is what made the payload unreadable.
+        small = [{"name": f"Kicker {i}"} for i in range(5)]
+        large = [{"name": f"Defence {i}", "note": "y" * 200} for i in range(400)]
+        out = json.loads(server._emit({"kickers": small, "defences": large}, indent=2))
+        assert len(out["kickers"]) == 5
+        assert len(out["defences"]) < 400
+        assert "defences" in out["truncated"]["paths"]
+        assert "kickers" not in out["truncated"]["paths"]
+
+    def test_a_nested_table_is_reached_by_its_path(self):
+        payload = {"weeks": [{"week": 1,
+                              "ranked": [{"name": f"D {i}", "note": "z" * 200}
+                                         for i in range(400)]}]}
+        out = json.loads(server._emit(payload, indent=2))
+        assert len(out["weeks"][0]["ranked"]) < 400
+        assert any("ranked" in path for path in out["truncated"]["paths"])
+
+    def test_what_cannot_be_cut_is_reported_rather_than_mangled(self):
+        # One enormous string is not a table, so there is nothing to trim. The
+        # answer must be a refusal a client can parse, not a truncated document
+        # that is no longer JSON.
+        out = json.loads(server._emit({"note": "q" * (server.PAYLOAD_LIMIT + 500)}))
+        assert "does not fit" in out["error"]
+        assert out["limit"] == server.PAYLOAD_LIMIT
+
+    def test_a_payload_already_under_the_cap_is_untouched(self):
+        # The guarantee costs nothing on the answers that never needed it, and
+        # `truncated` must not appear on an answer that was not truncated.
+        payload = {"season": 2026, "ranked": [{"name": "A"}, {"name": "B"}]}
+        out = json.loads(server._emit(payload, indent=2))
+        assert out == payload

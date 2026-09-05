@@ -6,6 +6,51 @@ All notable changes to this project. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+**An answer nobody can read (#52)**
+- `stream_kdst(week=1)` returned **69,512 characters** on the live league and the
+  client showed the user nothing at all. A result over the limit is not truncated,
+  it is dropped, so the tool was not verbose — it was unavailable. Measured before
+  changing anything, and measured again after; `just payloads` is the instrument
+  and re-runs on demand.
+- The size was in the tables, not the prose: a row for every available defence and
+  kicker (about 266 bytes each) in every look-ahead week, each behind a full
+  calibration report. So the cap goes on `ranked`. The asked week returns the top
+  8 per position with `ranked_of` giving the field size; look-ahead rows carry only
+  `name`, `opponent`, `score`, `line_basis`, since covering a bye is the only
+  question they answer; calibration collapses to its verdict. `detail=true` restores
+  all of it.
+- **14,151 characters**, from 69,512, with the ranking, the units verdict and the
+  line coverage intact. Full table of live sizes for every answer-shaped tool in
+  [docs/tools.md](docs/tools.md).
+- `_emit` now caps every payload at `PAYLOAD_LIMIT` (20,000), trimming the longest
+  tables first and adding `truncated` with each path and how much survived. The
+  backstop, not the plan: shaping is per-tool, but no shaping can promise a bound
+  when the data behind it can grow, and enforcing it at the one exit means a new
+  handler inherits the guarantee rather than being trusted to remember it. It cuts
+  the head of the longest table rather than dropping a key, because dropping a key
+  keeps the footnotes and loses the answer.
+- The whole-league fixture is the point of the test rather than an incidental
+  detail. The existing fixture ranks two defences and was structurally incapable
+  of showing this — the same lesson as a board fixture carrying every optional
+  column. The new one has 32 defences, 32 kickers and three weeks, a plant asserts
+  the uncompacted payload really is over the cap, and the assertions are on emitted
+  characters rather than row counts.
+- `note` per position is now under 140 characters, with the full sentence in
+  `margin_units_reason` beside it. Two fields rather than one long one: the note
+  says what may be done with the number, the reason says why.
+- Sizes after: `draft_retrospective` 6,057 / 9,864 / 13,336 at `around` 0 / 2 / 4,
+  and `evaluate_trade` about 6,000 either way. Neither needed shaping; both are
+  now measured rather than assumed.
+- **Found by the same check, and not a size problem**: `evaluate_trade` cannot run
+  at all on the live league. A roster player the board cannot price stops the
+  evaluation whether or not he is in the trade, and MarShawn Lloyd has no board
+  row, so every call refuses. Refusing on an unpriceable *traded* piece is correct
+  and deliberate; a bystander is a different case, and `board.my_rows` already
+  stands such a player in at replacement level. Reported rather than changed, since
+  it is #47's semantics.
+
 ### Added
 
 **Weekly K and D/ST streaming**

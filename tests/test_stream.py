@@ -4,11 +4,13 @@ Everything here is synthetic: `sources.weekly_stats` and `sources.schedules` are
 replaced, so no test touches the network or the shared cache. The league's own
 bands are passed in, which is also how the real call works.
 """
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from ffdraft import adp, sources, stream
+from ffdraft import adp, server, sources, stream
 
 BANDS = {
     "points_allowed_0": 5.0, "points_allowed_1_6": 4.0, "points_allowed_7_13": 3.0,
@@ -220,8 +222,11 @@ class TestRankWeek:
         assert all(r["margin_over_your_starter"] is None for r in pos["ranked"])
         assert "ordinal only" in pos["note"]
         # And it says which clause failed, so "no evidence" is not reported as
-        # "evidence that disagreed".
-        assert "does not beat its own mean" in pos["note"]
+        # "evidence that disagreed". In its own field rather than appended to
+        # the note, which a client renders inline and which has to stay short
+        # enough to read (#52).
+        assert "does not beat its own mean" in pos["margin_units_reason"]
+        assert len(pos["note"]) <= 140
 
     def test_evidence_that_was_never_gathered_is_also_ordinal(self, monkeypatch):
         # The default direction of the rule. Sign agreement alone, with no
@@ -232,7 +237,7 @@ class TestRankWeek:
                                [2025], starters={"DST": "BOMB"})
         pos = out["positions"]["DST"]
         assert all(r["margin_over_your_starter"] is None for r in pos["ranked"])
-        assert "unproven rather than waived" in pos["note"]
+        assert "unproven rather than waived" in pos["margin_units_reason"]
 
     def test_a_points_verdict_is_what_lets_a_margin_be_printed(self, monkeypatch):
         # The other side of the same gate: the margin appears only when the rule
@@ -252,3 +257,109 @@ class TestRankWeek:
         assert out["this_week"]["week"] == 1
         assert [w["week"] for w in out["look_ahead"]] == [2]
         assert "counting model" in out["not_the_draft_model"]
+
+
+TEAMS = [f"T{i:02d}" for i in range(32)]
+KICKERS = [f"K{i:02d}" for i in range(32)]
+
+
+class TestTheAnswerFitsTheClient:
+    """A whole-league fixture, because the two-team one cannot show the fault.
+
+    `stream_kdst(week=1)` returned 69,512 characters on the live board and the
+    client showed the user nothing at all (#52). The fixtures above rank two
+    defences, so they were structurally incapable of catching it -- the same
+    lesson as a board fixture that carries every optional column. This one has
+    a row for all 32 defences and 32 kickers across three weeks, which is the
+    shape that broke.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _league(self, monkeypatch):
+        rng = np.random.default_rng(11)
+        weekly, sched = [], []
+        pairs = [(TEAMS[i], TEAMS[i + 1]) for i in range(0, len(TEAMS), 2)]
+        for week in range(1, 13):
+            for home, away in pairs:
+                for team in (home, away):
+                    yards = float(rng.integers(250, 420))
+                    weekly.append({
+                        "season": 2025, "week": week, "recent_team": team,
+                        "passing_yards": yards * 0.6, "rushing_yards": yards * 0.4,
+                        "def_sacks": float(rng.integers(0, 5)),
+                        "def_interceptions": float(rng.integers(0, 3))})
+                for i, team in enumerate((home, away)):
+                    weekly.append({
+                        "season": 2025, "week": week, "recent_team": team,
+                        "position": "K", "player_display_name": KICKERS[
+                            TEAMS.index(team)],
+                        "fg_made_30_39": float(rng.integers(0, 3)),
+                        "fg_made_40_49": float(rng.integers(0, 2)),
+                        "pat_made": float(rng.integers(1, 5)),
+                        "fg_missed": float(i)})
+                sched.append({"season": 2025, "week": week, "home_team": home,
+                              "away_team": away,
+                              "home_score": float(rng.integers(6, 35)),
+                              "away_score": float(rng.integers(6, 35)),
+                              "total_line": float(rng.integers(36, 56)),
+                              "spread_line": float(rng.integers(-9, 9)),
+                              "roof": "outdoors"})
+        for week in (1, 2, 3):
+            for home, away in pairs:
+                sched.append({"season": 2026, "week": week, "home_team": home,
+                              "away_team": away,
+                              "total_line": float(rng.integers(36, 56)),
+                              "spread_line": float(rng.integers(-9, 9)),
+                              "roof": "outdoors"})
+        monkeypatch.setattr(sources, "weekly_stats", lambda *_a, **_k: _weekly(weekly))
+        monkeypatch.setattr(sources, "schedules", lambda: _sched(sched))
+
+    def _full(self):
+        return stream.stream_kdst(
+            2026, 1, BANDS, ITEMS, {"DST": TEAMS, "K": KICKERS}, [2025],
+            team_of={k: TEAMS[i] for i, k in enumerate(KICKERS)}, look_ahead=3)
+
+    def test_the_uncompacted_answer_would_not_reach_the_user(self):
+        """The plant. Without this the test below could pass on an answer that
+        was never too big, and would be proving nothing."""
+        raw = len(json.dumps(self._full(), indent=2, default=str))
+        assert raw > server.PAYLOAD_LIMIT, (
+            f"the whole-league fixture emits {raw:,} characters, under the "
+            f"{server.PAYLOAD_LIMIT:,} cap, so it cannot show that compacting "
+            f"does anything; give it more teams or more weeks")
+
+    def test_the_compacted_answer_fits(self):
+        text = json.dumps(stream.compact(self._full()), indent=2, default=str)
+        assert len(text) <= server.PAYLOAD_LIMIT
+
+    def test_the_asked_week_keeps_its_head_and_says_how_deep_the_field_was(self):
+        out = stream.compact(self._full())
+        for pos in ("DST", "K"):
+            block = out["this_week"]["positions"][pos]
+            assert len(block["ranked"]) == stream.TOP_N
+            assert block["ranked_of"] == 32
+            assert block["ranked"][0]["rank"] == 1
+
+    def test_a_look_ahead_row_carries_only_what_a_bye_question_needs(self):
+        out = stream.compact(self._full())
+        row = out["look_ahead"][0]["positions"]["DST"]["ranked"][0]
+        assert set(row) == set(stream.LOOK_AHEAD_FIELDS)
+
+    def test_calibration_is_a_verdict_until_asked_for_the_evidence(self):
+        plain = stream.compact(self._full())["this_week"]["positions"]["DST"]
+        assert plain["calibration"]["blocks"] == 2
+        assert "detail" in plain["calibration"]
+        full = stream.compact(self._full(), detail=True)["this_week"]["positions"]["DST"]
+        assert isinstance(full["calibration"]["blocks"], list)
+        assert "coefficients" in full["calibration"]["blocks"][0]
+
+    def test_detail_keeps_the_whole_field(self):
+        out = stream.compact(self._full(), detail=True)
+        assert len(out["this_week"]["positions"]["DST"]["ranked"]) == 32
+
+    def test_the_tool_itself_stays_under_the_cap_through_emit(self):
+        # Through `_emit`, because that is what the client receives: the
+        # backstop applies even if the shaping above is later loosened.
+        text = server._emit(stream.compact(self._full()), indent=2, default=str)
+        assert len(text) <= server.PAYLOAD_LIMIT
+        assert json.loads(text)["this_week"]["positions"]["DST"]["ranked_of"] == 32

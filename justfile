@@ -317,6 +317,109 @@ stream $week $league_id='' $look_ahead='2':
             for r in p["unrankable"]:
                 print(f"    - {r['name']:<26} {r['line_basis']}")
 
+# How many characters each answer-shaped tool actually emits, against the client
+# limit that hides a tool entirely when it is exceeded (#52: stream_kdst at week 1
+# came back at 69,512 and the user could not read it at all). Prints the whole
+# payload's size and the size of each top-level key, so a regression names the
+# section that grew rather than only the total. $league_id defaults to
+# ESPN_LEAGUE_ID; $week is the week to price the streaming answer for.
+[script]
+payloads $league_id='' $week='1':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    env = json.load(open(".mcp.json"))["mcpServers"]["fantasy-draft"]["env"]
+    os.environ.update(env)
+    from ffdraft import server
+
+    league_id = os.environ["league_id"] or env.get("ESPN_LEAGUE_ID", "")
+    week = int(os.environ["week"])
+    cap = server.PAYLOAD_LIMIT
+
+    def report(label, text):
+        size = len(text)
+        mark = "OK " if size <= cap else "OVER"
+        print(f"{mark} {label:<34} {size:>7,} chars  ({size / cap:.0%} of cap)")
+        try:
+            body = json.loads(text)
+        except json.JSONDecodeError:
+            print("      (not JSON)")
+            return
+        if not isinstance(body, dict):
+            return
+        for key, value in sorted(body.items(),
+                                 key=lambda kv: -len(json.dumps(kv[1], default=str))):
+            part = len(json.dumps(value, default=str))
+            if part > 200:
+                print(f"      {key:<30} {part:>7,}")
+
+    print(f"client limit {cap:,} characters\n")
+    report(f"stream_kdst(week={week})", server.stream_kdst(league_id, week))
+    report(f"stream_kdst(week={week}, detail=True)",
+           server.stream_kdst(league_id, week, detail=True))
+    report(f"stream_kdst(week={week}, detail=True, look_ahead=1)",
+           server.stream_kdst(league_id, week, look_ahead=1, detail=True))
+
+    st = server._state()
+    mine = [p["name"] for p in st.picks if p["slot"] == st.my_slot]
+    # The counterparty first, then a player who is actually on that roster: a
+    # name from the wrong slot is refused, which measures the refusal.
+    other = next((p["slot"] for p in st.picks if p["slot"] != st.my_slot), None)
+    theirs = [p["name"] for p in st.picks if p["slot"] == other]
+    if mine and theirs:
+        for label, g, t in (("1 for 1", mine[:1], theirs[:1]),
+                            ("2 for 2", mine[:2], theirs[:2])):
+            text = server.evaluate_trade(",".join(g), ",".join(t),
+                                         counterparty_slot=other)
+            report(f"evaluate_trade({label})", text)
+            body = json.loads(text)
+            if body.get("ok") is False:
+                # A refusal is a few characters and tells us nothing about the
+                # size of an answer. Price the shape against a board that stands
+                # in for the picks it cannot price, which is what `my_rows`
+                # already does for the lineup model (#40).
+                import pandas as pd
+
+                from ffdraft import board as bd
+                from ffdraft import trade
+                b = server._build_board()
+                known = set(b["_key"])
+                extra = []
+                for p in st.picks:
+                    key = bd.norm_name(p["name"])
+                    if key in known or not p.get("position"):
+                        continue
+                    known.add(key)
+                    pos = str(p["position"])
+                    # The size of the answer does not depend on what the
+                    # stand-in is worth, only on there being a row, so this
+                    # takes the board's floor at the position rather than
+                    # claiming a valuation this recipe has no business making.
+                    at_pos = b[b["position"] == pos]["proj_points"]
+                    pts = float(at_pos.min()) if len(at_pos) else 0.0
+                    extra.append({"_key": key, "name": p["name"], "position": pos,
+                                  "proj_points": pts, "replacement_points": pts,
+                                  "adj_ppg": pts / 17.0, "exp_games": 17.0,
+                                  "vor": 0.0, "draft_score": 0.0, "adp": 300.0})
+                patched = pd.concat([b, pd.DataFrame(extra).reindex(columns=b.columns)],
+                                    ignore_index=True) if extra else b
+                by_slot = {}
+                for p in st.picks:
+                    by_slot.setdefault(p["slot"], []).append(p)
+                out = trade.evaluate(patched, by_slot, st.league, st.my_slot, other,
+                                     g, t, n_trials=trade.DEFAULT_TRIALS,
+                                     blocks=trade.DEFAULT_BLOCKS, seed=0)
+                report(f"   ^ same trade, stand-ins added ({label})",
+                       server._emit(out, indent=2, default=str))
+    else:
+        print("     evaluate_trade                  skipped: no two-sided draft record")
+
+    for around in (0, 2, 4):
+        report(f"draft_retrospective(around={around})",
+               server.draft_retrospective(league_id, around=around))
+
 # Your draft pick by pick against what the model would have taken, priced both
 # from the snapshot recorded at each pick and from today's board. $league_id
 # locates the snapshots; without it every row is priced from today's board.

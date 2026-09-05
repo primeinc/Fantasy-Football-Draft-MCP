@@ -564,15 +564,102 @@ def rank_week(season: int, week: int, bands: dict, items: dict,
                 r["margin_over_your_starter"] = round(float(r["score"]) - float(base), 2)
         out["positions"][pos] = {
             "margin_units": units,
+            # The full sentence lives here rather than in `note`, which a client
+            # renders inline and which has to stay short enough to read. Two
+            # fields, not one long one: the note says what may be done with the
+            # number, this says why.
+            "margin_units_reason": report["margin_units_reason"],
             "your_starter": held,
             "calibration": report,
             "unrankable": [r for r in rows if r["score"] is None],
             "ranked": scored,
             "note": ("margins are fantasy points under this league's own bands"
                      if units == adp.UNIT_POINTS else
-                     "ordinal only, because " + report["margin_units_reason"] +
-                     ". The order is usable and a points margin would not be"),
+                     "ordinal only: the ranking stands, the margin does not"),
         }
+    return out
+
+
+# How many rows of each position the asked week returns by default. A streaming
+# decision is between the few best available at a position, not a census: a
+# reader who wants the 19th-ranked defence is not making this week's start/sit
+# call. The full field is still counted, in `ranked_of`.
+TOP_N = 8
+# What a look-ahead row is for: whether next week's bye is covered and by whom.
+# The lines that far out are thin (`line_basis` says so), so the extra columns
+# would be precision the data does not have.
+LOOK_AHEAD_FIELDS = ("name", "opponent", "score", "line_basis")
+
+
+def _verdict_only(report: dict) -> dict:
+    """A calibration report cut to what a reader acts on.
+
+    Coefficients, per-block intercepts, held-out RMSE and the spread are the
+    evidence for the verdict, not the verdict. They are what `detail=True`
+    returns, and they are also most of why this answer did not fit.
+    """
+    return {"margin_units": report.get("margin_units"),
+            "margin_units_reason": report.get("margin_units_reason"),
+            "all_signs_agree": report.get("all_signs_agree"),
+            "beats_its_own_mean_out_of_sample": report.get(
+                "beats_its_own_mean_out_of_sample"),
+            "blocks": len(report.get("blocks", [])),
+            "detail": "pass detail=true for coefficients, held-out error and spread"}
+
+
+def compact(payload: dict, top: int = TOP_N, detail: bool = False) -> dict:
+    """The same answer at a size a client will actually show.
+
+    A tool result over the client's limit is not truncated, it is dropped, so a
+    complete answer nobody can read is worth less than a shorter one they can.
+    `stream_kdst(week=1)` returned 69,512 characters -- a row for every available
+    defence and kicker in every look-ahead week, each with the full calibration
+    report behind it -- and the user saw nothing at all (#52).
+
+    Three cuts, in order of how much they save and how little they cost. The
+    asked week keeps its top `top` rows and says how many it ranked. The
+    look-ahead weeks keep only the columns a bye question needs, because that is
+    the only question they are there to answer. Calibration collapses to its
+    verdict unless `detail`, since the evidence behind a verdict is not what a
+    start/sit decision consults.
+
+    Nothing is silently dropped: `ranked_of` carries the field size at every
+    position and week, so a reader can see they are looking at a head rather
+    than a table that happened to be short.
+    """
+    out = dict(payload)
+    weeks = []
+    for i, wk in enumerate([payload["this_week"], *payload["look_ahead"]]):
+        week = dict(wk)
+        if i and not detail:
+            # A look-ahead week's weather census and line coverage answer a
+            # question nobody asked of a week they are not setting a lineup for.
+            week.pop("weather", None)
+        week["positions"] = {}
+        for pos, block in wk["positions"].items():
+            ranked = block["ranked"]
+            # `detail` is the escape hatch and takes the whole field with it.
+            # It can still exceed the client's limit, in which case `_emit`'s
+            # backstop trims it and says so -- asking for everything is allowed,
+            # being handed a silent subset of it is not.
+            kept = ranked if detail else ranked[:top]
+            if i and not detail:
+                kept = [{f: r.get(f) for f in LOOK_AHEAD_FIELDS} for r in kept]
+            shaped = {**block, "ranked": kept, "ranked_of": len(ranked)}
+            if not detail:
+                shaped["calibration"] = _verdict_only(block["calibration"])
+                # Names and the reason each is unrankable, without the empty
+                # score columns that made them look like ranked rows.
+                shaped["unrankable"] = [{"name": r["name"],
+                                         "line_basis": r["line_basis"]}
+                                        for r in block["unrankable"]]
+            week["positions"][pos] = shaped
+        weeks.append(week)
+    out["this_week"] = weeks[0]
+    out["look_ahead"] = weeks[1:]
+    out["showing"] = (f"top {top} per position this week, and only "
+                      f"{', '.join(LOOK_AHEAD_FIELDS)} in the look-ahead weeks; "
+                      f"`ranked_of` is the full field")
     return out
 
 

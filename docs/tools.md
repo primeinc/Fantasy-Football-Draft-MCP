@@ -3,6 +3,42 @@
 Every tool the MCP server exposes. You won't call these by name in practice — ask in
 plain language and the model picks — but this is what's available and what each returns.
 
+## How big an answer may be
+
+A tool result over the client's limit is not shown truncated — it is not shown at
+all, so an answer that overruns is unreadable rather than merely verbose.
+`stream_kdst(week=1)` returned **69,512 characters** and the user could not read
+the tool (`#52`).
+
+Every payload leaves through one exit, `server._emit`, which caps it at
+`PAYLOAD_LIMIT` (20,000 characters) by trimming the longest tables first and
+adding a `truncated` field naming each path and how much of it survived. That is
+the backstop, not the plan: each tool shapes its own answer to a readable size,
+and the cap exists because no amount of shaping can promise a bound when the data
+behind it can always grow.
+
+Measured on the live league (`just payloads`), against a 20,000-character cap:
+
+| call | characters |
+|---|---|
+| `stream_kdst(week=1)` | 14,151 |
+| `stream_kdst(week=1, detail=true)` | 18,852 — trimmed by the backstop |
+| `stream_kdst(week=1, detail=true, look_ahead=1)` | 11,839 |
+| `evaluate_trade`, one for one | 5,999 |
+| `evaluate_trade`, two for two | 6,053 |
+| `draft_retrospective(around=0)` | 6,057 |
+| `draft_retrospective(around=2)` | 9,864 |
+| `draft_retrospective(around=4)` | 13,336 |
+
+`just payloads` re-measures all of them and prints the size of each top-level key,
+so a regression names the section that grew rather than only the total. The two
+trade rows are measured with stand-in rows added for roster players the board
+cannot price; without them `evaluate_trade` refuses outright on this league (see
+its section below).
+
+Indentation is about a third of every figure above — the payloads are emitted at
+`indent=2` for readability, and dropping it is the headroom of last resort.
+
 ## Setup
 
 ### `configure_league`
@@ -357,6 +393,15 @@ defence wants an opponent expected to score little, a kicker wants his own
 offence expected to score a lot. `look_ahead` weeks come back beside this one so
 a waiver claim can be judged against the bye it has to cover.
 
+**The asked week returns the top `top` rows per position, 8 by default**, with
+`ranked_of` giving the size of the field behind them. The look-ahead weeks carry
+only `name`, `opponent`, `score` and `line_basis`, because the only question they
+are there to answer is whether a bye is covered and by whom. Calibration collapses
+to its verdict. `detail=true` restores the whole field, the full look-ahead rows
+and the evidence behind each verdict — at `look_ahead=2` that exceeds the client's
+limit and comes back trimmed with a `truncated` field naming what was cut, so pair
+it with `look_ahead=1`.
+
 **Read `margin_units` per position before reading any margin.** The score is
 calibrated against real results under this league's own K and D/ST bands, in two
 disjoint blocks of weeks, and a margin ships in points only when *both* hold:
@@ -504,6 +549,16 @@ Score a proposed trade for both sides over the rest of the season. `give` and
 `get` are comma-separated names: `give` leaves your roster, `get` arrives on it.
 `counterparty_slot` is their draft slot; with a running watch for `league_id`
 both teams are named.
+
+**Known blocker on the live league.** A roster player the board cannot price
+stops the whole evaluation, whether or not he is part of the trade: on the
+current record MarShawn Lloyd has no board row, so every call returns
+`no board row for: MarShawn Lloyd` and no trade can be scored at all. Refusing
+when a *traded* piece cannot be priced is deliberate — a trade scored without one
+of its own pieces is a different trade — but a bystander on the roster is a
+different case, and `board.my_rows` already answers it by standing such a player
+in at replacement level. Measured, not inferred: `just payloads` reports the
+refusal and re-prices the same trade against a board carrying stand-ins.
 
 Each side's roster is simulated week by week on its own starting lineup, and
 each side is reported as points before and after, per-position depth before and
