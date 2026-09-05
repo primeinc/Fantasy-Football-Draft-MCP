@@ -98,10 +98,12 @@ ROLE_ENTROPY_EVIDENCE = ("monotonic in two seasons: 0.381/0.529/0.707 mean absol
 ROLE_CHANGE_EVIDENCE = (
     "MEASURED AND NEGATIVE: over 2022-2025 the top 10 by role change scored 6.4 to "
     "10.1 fewer PPR points over the following four weeks than the top 10 by recent "
-    "points per game, from the same undrafted pool. Both blocks agree in all four "
-    "seasons (spreads 0.48-1.06) and the sign holds at all eight (recent, prior) "
-    "windows tried, effects -7.1 to -8.6. Ranking claims by this score is worse "
-    "than ranking them by what the player just scored")
+    "points per game, from the same undrafted pool. Negative in every season, every "
+    "block, and all eight (recent, prior) windows tried, and still negative in all "
+    "16 blocks when a full prior window is required. The DIRECTION is the result; "
+    "the block spread is not a noise estimate here, because neighbouring weeks "
+    "share three of their four outcome weeks (marge). Ranking claims by this score "
+    "is worse than ranking them by what the player just scored")
 
 # Weeks either side of the split when measuring a role change. Two recent weeks
 # against the three before them: one week is a game script, and a window longer
@@ -508,6 +510,15 @@ def rank_claims(pool: pd.DataFrame, changes: pd.DataFrame, contingency: pd.DataF
     the licence for the weight being 0, exactly as the backtest was named as the
     licence for it being 1.
 
+    THE DECISION GOES FURTHER THAN THE MEASUREMENT, and the record should say so
+    rather than launder one into the other. What was measured is a two-arm
+    comparison: ranking by role change against ranking by recent points per game,
+    in the top ten of an undrafted pool. Points won. Nothing was measured about a
+    blend of the two, or about role change as a tiebreak among players already
+    close on points -- those were live options and remain untested. Ranking by
+    points is therefore the arm that won a race with one other runner, chosen as
+    policy by the lead, not the option the evidence singled out. marge's point.
+
     Zero rather than negative, deliberately. The sign is consistent and nobody
     can say why, and a term we cannot explain is not a feature because it points
     somewhere reliably -- inverting it would be fitting the direction of a
@@ -842,8 +853,12 @@ def _effect_summary(rows: list[dict]) -> dict:
         "blocks": rows,
         "effect": round(float(np.mean(gains)), 2) if gains else None,
         "block_effects": gains,
-        # The distance between blocks of the same configuration: this harness's
-        # own noise for this term, and the number to read `effect` against.
+        # The distance between blocks of the same configuration. NOT this
+        # harness's noise, unlike its namesake in the draft backtests: these
+        # blocks are alternating weeks whose outcome windows overlap by three
+        # weeks in four, so this is a lower bound on sampling variability and
+        # cannot be read as the number `effect` must clear. See
+        # `role_change_backtest`.
         "block_spread": round(float(max(gains) - min(gains)), 2) if gains else None,
         # No agreement, no finding. A block at exactly 0 agrees with nothing.
         "blocks_agree": agree,
@@ -866,11 +881,29 @@ def role_change_backtest(seasons: list[int], recent: int = RECENT_WEEKS,
     by role change and by recent points per game, and compare what the top ten of
     each actually went on to score.
 
-    Blocks are ALTERNATING weeks, not early-season against late. Two disjoint
-    samples of the same process is the point, and the season's halves are not the
-    same process -- a role change in week 5 is news and the same change in week
-    13 is a fact everyone already has. Splitting early/late would measure the
-    calendar and report it as harness noise.
+    Blocks are ALTERNATING weeks, not early-season against late. The season's
+    halves are not the same process -- a role change in week 5 is news and the
+    same change in week 13 is a fact everyone already has -- so an early/late
+    split would measure the calendar and report it as harness noise.
+
+    READ `block_spread` HERE AS A LOWER BOUND, NOT AS THIS HARNESS'S NOISE.
+    Alternating weeks buys calendar-neutrality at the cost of independence, and
+    the cost is large: each cohort's outcome window is w+1..w+4, so week 5's
+    outcome (weeks 6-9) and week 6's (weeks 7-10) share three of four weeks.
+    Every cohort in one block overlaps its neighbours in the other in
+    three-quarters of the data being averaged, so the two blocks are two
+    overlapping views of one sample rather than two samples, and they agree far
+    more than independent halves would. The draft backtests block on disjoint
+    seeds over independent trials, where the spread does carry that contract;
+    this one does not, and the numbers must not be read across as though it did.
+    Found by marge on review, after the first version of this docstring claimed
+    the tight spreads were evidence of stability.
+
+    So what this measures is the SIGN, which is robust: negative in every season,
+    every block, every window, and in all 16 blocks when a full prior window is
+    required. It does not measure how large the effect is relative to noise,
+    because the split cannot estimate the noise. A season-pair split would share
+    no outcome weeks, but four seasons gives two blocks of two.
 
     An effect whose blocks disagree in sign is a measurement of this harness and
     not of the score, and `verdict` says so in words rather than leaving it to be

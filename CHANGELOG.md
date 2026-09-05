@@ -322,9 +322,30 @@ All notable changes to this project. Format follows
       2024      -9.31  -8.71     -9.01     0.60   yes
       2025      -6.52  -7.00     -6.76     0.48   yes
 
-  Every block is negative and every spread is far smaller than the effect it
-  sits beside, which is the opposite of the bye result where the spread swallowed
-  the mean.
+  Every block is negative. **The spreads are NOT a noise estimate and the first
+  version of this entry wrongly said they were** — found by marge on review.
+  Blocks are alternating weeks and each cohort's outcome window is w+1..w+4, so
+  week 5's outcome (weeks 6-9) and week 6's (7-10) share three weeks of four:
+  the two blocks are overlapping views of one sample, not two samples, and they
+  agree far more than independent halves would. `block_spread` here is a lower
+  bound on sampling variability, unlike its namesake in the draft backtests where
+  blocks are disjoint seeds. The result is the **direction**, which is robust;
+  how large the effect is relative to noise is not measured, because this split
+  cannot estimate the noise.
+- Requiring a full prior window (`min_prior_games=3`) is the honest counterweight,
+  also marge's: the effect shrinks in three seasons and grows in one, and all 16
+  blocks stay negative.
+
+      season   effect 0 -> 3      spread 0 -> 3
+      2022     -10.06 -> -8.16    1.06 -> 3.17
+      2023      -6.40 -> -3.19    0.87 -> 1.20
+      2024      -9.01 -> -5.86    0.60 -> 2.77
+      2025      -6.76 -> -8.90    0.48 -> 2.40
+
+  The default admits players with no prior window at all, whose "change" is
+  measured against nothing — seven of ten in the 2022 week-10 role top had a
+  single recent game. So the tightest configuration is the one admitting players
+  whose baseline does not exist, which is worth knowing next to the numbers.
 - **Window sweep**, promised when the two-week/three-week choice was made, and
   the sign does not depend on it. `(recent, prior)` against effect and worst
   spread: (1,2) -8.61/7.05, (1,3) -8.62/10.50, (2,2) -8.34/3.65, **(2,3)
@@ -368,6 +389,13 @@ All notable changes to this project. Format follows
   labelled observation and is never a rank input. `just rolechange` is the
   licence for the weight being 0, exactly as the backtest was named as the
   licence for it being 1.
+- **The decision goes further than the measurement, and the record says so.**
+  What was measured is a two-arm race: role change against recent points per
+  game, in the top ten of an undrafted pool. Points won. A blend, and role change
+  as a tiebreak among players close on points, were live options and remain
+  untested — so ranking by points is the arm that beat it, chosen as policy, not
+  the option the evidence singled out. marge's point, and it is the difference
+  between citing a measurement and laundering a choice through one.
 - **Zero rather than negative.** The sign is consistent across 64 blocks and
   nobody can say why. A term we cannot explain is not a feature because it points
   somewhere reliably; inverting it would be fitting the direction of a result

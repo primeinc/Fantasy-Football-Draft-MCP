@@ -1156,9 +1156,11 @@ it to be inferred from a zero.
 the top ten by role change scored 6.4 to 10.1 fewer PPR points over the following
 four weeks than the top ten by recent points per game drawn from the same
 undrafted pool — every season, both blocks, and all eight `(recent, prior)`
-windows tried, 64 blocks in all, with block spreads of 0.48 to 1.06. That is not
-"no signal": it is signal pointing the wrong way, and the tight spreads are what
-make it readable as such. `just rolechange` reproduces it and
+windows tried, 64 blocks in all. That is not "no signal": it is signal pointing
+the wrong way. The block spreads are **not** a noise estimate here — blocks are
+alternating weeks and neighbouring cohorts share three of their four outcome
+weeks — so what this establishes is the direction, robustly, and not the size of
+the effect relative to noise. `just rolechange` reproduces it and
 `just rolechange names` prints the rows behind one Tuesday. The ordering was
 changed to recent points per game as a result, and `ROLE_CHANGE_RANK_WEIGHT` is
 0. Projection lag and contingent value remain `unmeasured`;
