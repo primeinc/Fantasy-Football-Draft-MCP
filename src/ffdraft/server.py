@@ -2347,12 +2347,20 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
             "pick_log": pick_log,
             "would_send": _queue_rows(w, ids, drafted)}
 
+    # A player the pick log says is gone is not sent, whoever queued him. ESPN
+    # sends no DRAFT_LIST when a pick empties a queue slot, so the last echo
+    # keeps naming drafted players, and on 2026-09-05 a merge sent three of
+    # them back (Marks, Downs, Charbonnet, taken at 138-141) and ESPN accepted
+    # them. Only a log that could be read decides; None drops nobody.
+    gone = set(drafted or {})
+    dropped = [pid for pid in ids + list(existing or []) if pid in gone]
+    ids = [pid for pid in ids if pid not in gone]
     if replace:
         send = ids
     else:
         # Ours first, in the order asked for, then everything the user already had
         # that we are not already sending.
-        send = ids + [pid for pid in (existing or []) if pid not in set(ids)]
+        send = ids + [pid for pid in (existing or []) if pid not in set(ids) and pid not in gone]
     try:
         accepted = await w.set_queue(send)
     except TimeoutError:
@@ -2382,6 +2390,7 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
         # ESPN drops ids it rejects and an already-drafted player is the ordinary
         # case, so this is where `drafted_at` answers the question the list asks.
         "removed": _queue_rows(w, removed, drafted),
+        "dropped_as_drafted": _queue_rows(w, dropped, drafted),
         "queue_before": _queue_rows(w, existing or [], drafted),
         "echoes_seen": len(w.queue_echoes),
         "accepted_ids": list(accepted),

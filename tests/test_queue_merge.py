@@ -267,6 +267,29 @@ class TestAQueuedPlayerWhoHasBeenDrafted:
         return len(espn_live.picks_from_init(
             espn_live.decode_init(self.FIXTURE.read_text().strip())))
 
+    def test_a_merge_does_not_send_a_drafted_player_back(self, live):
+        """2026-09-05, pick 141: a merge kept three drafted players from the
+        stale echo and sent them back; ESPN accepted them. The log knew."""
+        joined = self._joined(live)
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+        live.echo(f"SELECTED 7 {self.QUEUE[1]} 4 {{A}}")
+
+        out = _call(player_names="Cam Skattebo")
+
+        assert _ids(out["sent"]) == [self.QUEUE[0], self.QUEUE[2]]
+        assert _ids(out["dropped_as_drafted"]) == [self.QUEUE[1]]
+        assert out["dropped_as_drafted"][0]["drafted_at"] == joined + 1
+
+    def test_a_drafted_player_asked_for_by_name_is_dropped_too(self, live):
+        self._joined(live)
+        live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
+        live.echo(f"SELECTED 7 {self.QUEUE[1]} 4 {{A}}")
+
+        out = _call(player_names="Bijan Robinson, Cam Skattebo")
+
+        assert _ids(out["sent"]) == [self.QUEUE[0], self.QUEUE[2]]
+        assert _ids(out["dropped_as_drafted"]) == [self.QUEUE[1], self.QUEUE[1]]
+
     def test_a_drafted_queue_entry_is_marked_and_left_out_of_effective(self, live):
         joined = self._joined(live)
         live.echo("DRAFT_LIST " + " ".join(str(i) for i in self.QUEUE))
