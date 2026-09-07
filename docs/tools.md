@@ -296,6 +296,14 @@ Connection" dialog, and opening the room again pauses the watch (it pushes a
 runs and draft with `make_pick`, or open it to pick, then call `watch_draft` again.
 One watch per league; `stop_watch(league_id)` ends it.
 
+### `draft_history`
+
+Every pick made so far, in order, as compact rows `[pick, round, slot,
+position, player]` with `teams` naming each slot once. `slot` keeps one team's
+picks, `last` the most recent N. A full 16-team, 14-round draft fits the
+payload cap whole; `draft_replay` scores picks and windows to 32, this lists
+them. Team names come from the running watch; without one, slots only.
+
 ### `draft_room`
 Who is in the ESPN draft room right now and the latest room chat, from the running
 watch's socket, with team and owner names from the league member list. `upcoming`

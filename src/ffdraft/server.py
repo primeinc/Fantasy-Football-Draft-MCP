@@ -2398,6 +2398,46 @@ async def merge_queue_ids(w, ids: list[int], replace: bool = False,
 
 
 @mcp.tool(structured_output=False)
+def draft_history(league_id: str = "", slot: int = 0, last: int = 0) -> str:
+    """Every pick made so far, in order: one row per pick as
+    `[pick, round, slot, position, player]`, with `teams` naming each slot once.
+
+    `slot` keeps one team's picks; `last` keeps the most recent N. Rows are
+    compact lists rather than objects so a full 16-team, 14-round draft fits
+    the client's payload cap whole; `draft_replay` scores picks and windows
+    to 32, this lists them.
+
+    Names come from the running watch for `league_id` when there is one, and
+    from the saved draft state otherwise, where teams are known by slot only.
+    """
+    entry = _WATCHES.get(league_id) if league_id else None
+    if entry is not None:
+        w = entry[0]
+        state = w.state
+        team_of_slot = {s: t for t, s in w.slot_of.items()}
+        teams = {s: w.team_label(t) for s, t in sorted(team_of_slot.items())}
+    else:
+        state = _state()
+        teams = {}
+    teams_n = state.league.teams
+    picks = sorted(state.picks, key=lambda p: int(p["overall"]))
+    if slot:
+        picks = [p for p in picks if int(p["slot"]) == slot]
+    if last:
+        picks = picks[-last:]
+    rows = [[int(p["overall"]), (int(p["overall"]) - 1) // teams_n + 1, int(p["slot"]),
+             p.get("position"), p["name"]] for p in picks]
+    return _emit({
+        "columns": ["pick", "round", "slot", "position", "player"],
+        "count": len(rows),
+        "my_slot": state.my_slot,
+        "teams": teams or "slot only: no watch is running for this league",
+        "rows": rows,
+        **state.summary(),
+    }, separators=(",", ":"))
+
+
+@mcp.tool(structured_output=False)
 async def draft_room(league_id: str, chat_limit: int = 10, ctx: Context = None) -> str:
     """Who is in the ESPN draft room right now and the latest room chat, from the
     running watch's socket. Names come from the league's member list."""

@@ -23,6 +23,14 @@ All notable changes to this project. Format follows
   `eligible_slots` and `lineup_locked`, the latter `None` when ESPN did not say.
 - Unverified against a populated roster until the draft completes.
 
+### Added
+
+**`draft_history`: the pick list, whole**
+- No tool returned the draft as a list: `draft_replay` scores picks and its
+  window is 32, and at 153 picks the cap cut it to 19. `draft_history` returns
+  every pick as a compact row with the teams named once; a full 224-pick draft
+  fits under the cap.
+
 ### Fixed
 
 **Resume replaced a queue ESPN was holding, and said it held none (#50)**
