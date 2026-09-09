@@ -1723,6 +1723,10 @@ def _plan_pool(avail: pd.DataFrame, taken: set[str], from_pick: int, pick: int,
     if pool.empty:
         return pool
     survives = model.survival_probability_vec(pool["adp"].to_numpy(), from_pick, pick)
+    if "adp_source" in pool.columns:
+        # The market has not priced him, so it is not taking him: see `recommend`.
+        survives = np.where(pool["adp_source"].isin(model.SYNTHETIC_ADP_SOURCES),
+                            1.0, survives)
     keep = pool[survives >= PLAN_SURVIVAL]
     unfilled = _unfilled_starters(league, roster)
     drafted_by_position = Counter(str(p.get("position")) for p in state.picks)
@@ -1828,6 +1832,7 @@ def plan_my_draft(strategy: str = "balanced") -> str:
             "round": (pick - 1) // league.teams + 1, "pick": pick,
             "player": top["name"], "position": top["position"], "team": top.get("team"),
             "adp": round(float(top["adp"]), 1),
+            "adp_source": top.get("adp_source"),
             "proj_points": round(float(top["proj_points"]), 1),
             "consistency": round(float(top["consistency"]), 3),
             "alternates": [r["name"] for _, r in recs.iloc[1:].iterrows()],
@@ -3077,6 +3082,11 @@ def predict_pick(league_id: str = "", slot: int = 0) -> str:
         # far, and their forecast for this one.
         rp = replay.replay_draft(b, state, league, adp_shift=shift)
         out["forecast"], out["predictors"] = rp.get("forecast"), rp["predictors"]
+        # Prequential in fit order, but the features are today's board: ADP,
+        # ESPN rank and projection as they stand now, not as they stood at
+        # each pick. `draft_replay(as_of=true)` is the as-of score.
+        out["predictors_basis"] = ("scored out of sample in fit order on today's "
+                                   "market columns, not the market as of each pick")
     entry = _WATCHES.get(league_id) if league_id else None
     if entry is not None:
         w, _task = entry

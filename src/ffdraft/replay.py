@@ -39,10 +39,21 @@ AS_OF_COLUMNS = ("adp", "espn_rank", "espn_proj")
 
 def room_drift(board: pd.DataFrame, state: DraftState, last: int = 0) -> dict:
     """How far ahead of ADP this room drafts: the median of (ADP - pick number)
-    over the recorded picks the board prices, positive when players go earlier
+    over the recorded picks the MARKET prices, positive when players go earlier
     than ADP. `last` restricts it to the most recent picks (0 = all). Feed the
-    median to recommend(adp_shift=...) so survival odds match this room."""
-    adp = dict(zip(board["_key"], board["adp"])) if "_key" in board.columns else {}
+    median to recommend(adp_shift=...) so survival odds match this room.
+
+    A synthetic ADP (`adp_source` modelled or undrafted, filled from the
+    model's own rank) is left out: its reach measures the model against the
+    room, not the market against the room, and on league 1734659820 it was 26
+    of 220 priced picks -- 12 of 64 at RB -- feeding every RB's survival."""
+    if "_key" in board.columns:
+        market = (~board["adp_source"].isin(model.SYNTHETIC_ADP_SOURCES)
+                  if "adp_source" in board.columns else pd.Series(True, index=board.index))
+        priced = board[market]
+        adp = dict(zip(priced["_key"], priced["adp"]))
+    else:
+        adp = {}
     pos_of = dict(zip(board["_key"], board["position"])) if "_key" in board.columns else {}
     picks = sorted(state.picks, key=lambda p: p["overall"])
     if last:
@@ -320,6 +331,9 @@ def replay_draft(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         # empty; reported rather than assumed, the same way off_board is.
         "ambiguous_name_picks": guessed_rows,
         "teams": teams.to_dict(orient="records"),
+        "teams_ordered_by": ("proj_left_on_table, ascending: projected points the model's "
+                             "pick would have added, comparable across teams. pick_regret "
+                             "is in the model's per-pick units and is not."),
         # The dict rows, not the frame: a frame turns None into NaN.
         "picks": rows,
     }
@@ -801,7 +815,11 @@ def predict_pick(board: pd.DataFrame, state: DraftState, league: LeagueSettings,
         ranked = ranked.sort_values("espn_rank").head(8)
         espn_list = [{"player": r["name"], "position": r["position"],
                       "espn_rank": int(r["espn_rank"]),
-                      "adp": round(float(r["adp"]), 1)} for _, r in ranked.iterrows()]
+                      "adp": round(float(r["adp"]), 1),
+                      # The rank and ADP joins are independent: a row can carry
+                      # ESPN's rank and a model-made ADP, and the reader has to
+                      # be able to tell.
+                      "adp_source": r.get("adp_source")} for _, r in ranked.iterrows()]
     tendency = team_tendency(b, state, slot)
     caps = model.ROSTER_CAP
     open_slots = {pos: n - roster.get(pos, 0) for pos, n in league.starters.items()
@@ -850,7 +868,13 @@ def _team_totals(per_pick: pd.DataFrame, league: LeagueSettings, my_slot: int) -
             # players who would have been there next turn.
             "mean_urgency_waste": mean("p_available_next", 2),
         })
-    return pd.DataFrame(out).sort_values("pick_regret").reset_index(drop=True)
+    # Ordered on real points. `pick_regret` is in the model's own units at each
+    # pick -- need_mult, role_mult and bye_mult are folded into it, and they
+    # differ by team and by moment -- so two teams' sums are not one unit and
+    # cannot order the table. `_discount` bounds the worst case; it does not
+    # make the sums comparable.
+    return (pd.DataFrame(out).sort_values(["proj_left_on_table", "pick_regret"])
+            .reset_index(drop=True))
 
 
 def _score(f: pd.DataFrame) -> dict:

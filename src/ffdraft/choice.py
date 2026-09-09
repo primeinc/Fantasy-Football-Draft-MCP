@@ -21,6 +21,8 @@ from collections.abc import Hashable
 import numpy as np
 import pandas as pd
 
+from .model import SYNTHETIC_ADP_SOURCES
+
 RANK_FEATURES = ("log_espn_rank", "log_adp_rank", "log_model_rank")
 # Position indicators, the other half of what a team-specific effect can say:
 # "this team reaches for quarterbacks" is a preference the league weights have
@@ -76,8 +78,12 @@ def features(recs: pd.DataFrame, recent_positions: list[str]) -> pd.DataFrame:
     espn = pd.to_numeric(recs.get("espn_rank"), errors="coerce") if "espn_rank" in recs.columns \
         else pd.Series(np.nan, index=recs.index)
     out["log_espn_rank"] = np.log1p(espn.rank(method="min", na_option="bottom").to_numpy())
-    out["log_adp_rank"] = np.log1p(pd.to_numeric(recs["adp"], errors="coerce")
-                                   .rank(method="min", na_option="bottom").to_numpy())
+    adp = pd.to_numeric(recs["adp"], errors="coerce")
+    if "adp_source" in recs.columns:
+        # A synthetic ADP is not a market rank; the player ranks at the bottom
+        # with the others the market has not priced, not where the model put him.
+        adp = adp.where(~recs["adp_source"].isin(SYNTHETIC_ADP_SOURCES))
+    out["log_adp_rank"] = np.log1p(adp.rank(method="min", na_option="bottom").to_numpy())
     out["log_model_rank"] = np.log1p(np.arange(1, n + 1, dtype=float))
     need = recs["need_mult"] if "need_mult" in recs.columns else pd.Series(1.0, index=recs.index)
     out["need_mult"] = pd.to_numeric(need, errors="coerce").fillna(1.0).to_numpy()

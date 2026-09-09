@@ -578,6 +578,14 @@ def _norm_cdf_vec(z: np.ndarray) -> np.ndarray:
     return 0.5 * (1 + _erf_vec(z / math.sqrt(2)))
 
 
+# `adp_source` values whose `adp` the model filled in from its own rank
+# (`board.synthetic_adp`): "modelled" when the market join found no row,
+# "undrafted" when ESPN carries the row but declines to price it. Neither is a
+# price, so nothing that reads ADP as the market's opinion reads these.
+SYNTHETIC_ADP_SOURCES = ("modelled", "undrafted")
+SURVIVAL_NO_MARKET = "no market ADP; assumed available at your next pick"
+
+
 def survival_probability_vec(adp: np.ndarray, current_pick: int, next_pick: int,
                              sd_floor: float = ADP_SD_FLOOR,
                              tail: str | None = None) -> np.ndarray:
@@ -912,6 +920,15 @@ def recommend(board: pd.DataFrame, league: LeagueSettings, current_pick: int,
     if next_pick:
         avail["p_available_next"] = survival_probability_vec(
             avail["adp"].to_numpy() - shift, current_pick, next_pick)
+        # A synthetic ADP is the model's own rank wearing the market's clothes.
+        # Read as a price it turns an inflated projection into a low survival
+        # into "take him now": Jawhar Jordan at pick 189, adp 93.6 (undrafted),
+        # survival 0.53, top of the list. The market has not priced him, which
+        # says he will be there; the source column says so beside the number.
+        if "adp_source" in avail.columns:
+            synthetic = avail["adp_source"].isin(SYNTHETIC_ADP_SOURCES).to_numpy()
+            avail.loc[synthetic, "p_available_next"] = 1.0
+            avail.loc[synthetic, "survival_source"] = SURVIVAL_NO_MARKET
         if room_picks is not None and picks_so_far > 0:
             _apply_room_survival(avail, league, current_pick, next_pick,
                                  room_picks, picks_so_far, room_held)

@@ -55,6 +55,11 @@ def test_replay_scores_each_pick_and_calibrates(tmp_path, monkeypatch):
     assert p[3]["off_board"] and p[3]["actual_rank"] is None and p[3]["position"] == "K"
     assert p[4]["slot"] == 1
 
+    # Ordered on real points, not on pick_regret: the latter carries each pick's
+    # own multipliers, so two teams' sums are not one unit.
+    left = [t["proj_left_on_table"] for t in out["teams"]]
+    assert left == sorted(left)
+    assert "not" in out["teams_ordered_by"]
     teams = {t["slot"]: t for t in out["teams"]}
     # Slot 2's two picks are RB One (the model preferred WR One, see above) and
     # a kicker the board cannot price, so it matches the model on neither.
@@ -121,6 +126,9 @@ def test_predict_pick_follows_the_list_a_team_follows(tmp_path, monkeypatch):
     assert out["roster"] == {"QB": 1}
     assert out["tendency"]["median_espn_passes"] == 0.0 and out["tendency"]["follows_espn_list"]
     assert [e["player"] for e in out["espn_list"]][:2] == ["RB Two", "WR Two"]
+    # The rank and ADP joins are independent, so every listed ADP says where
+    # it came from; this board carries no source column, and that is said too.
+    assert all("adp_source" in e for e in out["espn_list"])
     assert out["predicted"] == {"player": "RB Two", "position": "RB",
                                 "basis": "ESPN list order at an open starting slot"}
     assert out["should"][0]["player"] == "RB Two"
@@ -136,6 +144,40 @@ def model_recs(b, league, shift):
 
     out = model.recommend(b, league, current_pick=10, next_pick=20, top_n=6, adp_shift=shift)
     return out.set_index("name")["p_available_next"]
+
+
+def test_a_synthetic_adp_never_says_take_him_now(tmp_path, monkeypatch):
+    # Jawhar Jordan, pick 189, 2026-09-08: adp 93.6 filled from his RB31 rank,
+    # `adp_source` undrafted, survival 0.53, top of who_should_i_pick. The
+    # market had not priced him, which says he will be there.
+    from ffdraft import model
+
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1)
+    b = _board()
+    b["adp_source"] = ["espn", "espn", "espn", "undrafted", "espn", "modelled"]
+    b["drafted"] = False
+    recs = model.recommend(b, league, current_pick=1, next_pick=4, top_n=6)
+    by = dict(zip(recs["name"], recs["p_available_next"]))
+    src = dict(zip(recs["name"], recs["survival_source"]))
+    assert by["WR Two"] == 1.0 and by["TE One"] == 1.0
+    assert src["WR Two"] == model.SURVIVAL_NO_MARKET
+    assert by["RB One"] < 1.0 and src["RB One"] == ""
+
+
+def test_room_drift_ignores_an_adp_the_model_made_up(tmp_path, monkeypatch):
+    # oracle-draft, 2026-09-09: 26 of 220 priced picks on the live board carried
+    # a synthetic adp_source, 12 of 64 at RB, and each fed its position's shift.
+    monkeypatch.setattr(board, "STATE_DIR", tmp_path)
+    league = LeagueSettings(name="t", teams=2, rounds=3, draft_slot=1)
+    st = board.DraftState(league)
+    st.record("WR Two", 1, 1)   # reach 5, market
+    st.record("RB One", 2, 2)   # reach -1, market
+    st.record("RB Two", 3, 2)   # synthetic: left out
+    b = _board()
+    b["adp_source"] = ["espn", "undrafted", "espn", "espn", "modelled", "espn"]
+    d = replay.room_drift(b, st)
+    assert d["n"] == 2
+    assert d["by_position"] == {"RB": {"median": -1.0, "n": 1}, "WR": {"median": 5.0, "n": 1}}
 
 
 def test_room_drift_last_n_and_empty(tmp_path, monkeypatch):
