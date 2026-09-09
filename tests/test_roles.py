@@ -439,6 +439,15 @@ class TestRoleEntropy:
         assert "snap share moved week to week" in text
         assert "share of team: targets 21%, carries 0%, red zone 11%, snaps 85%" in text
 
+    def test_explain_tells_a_trace_share_from_a_zero_one(self):
+        # Jared Wayne, 2026-09-08: target_share 0.0036 printed as "targets 0%"
+        # and was read as no targets, when it meant the join found two.
+        row = pd.Series({"name": "x", "position": "WR", "pos_rank": 44,
+                         "proj_points": 178.8, "adj_ppg": 13.7,
+                         "target_share": 0.0036, "carry_share": 0.0,
+                         "redzone_share": np.nan, "snap_share": 0.44})
+        assert "share of team: targets <1%, carries 0%, snaps 44%" in model.explain(row)
+
     def test_explain_says_nothing_when_the_columns_are_absent(self):
         row = pd.Series({"name": "x", "position": "WR", "pos_rank": 3,
                          "proj_points": 200.0, "adj_ppg": 12.0})

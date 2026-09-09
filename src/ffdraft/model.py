@@ -1285,7 +1285,11 @@ def explain(row: pd.Series) -> str:
     shares = [(label, row.get(key)) for label, key in
               (("targets", "target_share"), ("carries", "carry_share"),
                ("red zone", "redzone_share"), ("snaps", "snap_share"))]
-    named = [f"{label} {float(v):.0%}" for label, v in shares if v is not None and pd.notna(v)]
+    # A share under half a percent prints as "<1%", not "0%": a receiver with
+    # two targets and one with none read identically otherwise, and the
+    # difference is whether the usage join found him at all.
+    named = [f"{label} {'<1%' if 0 < float(v) < 0.005 else f'{float(v):.0%}'}"
+             for label, v in shares if v is not None and pd.notna(v)]
     if named:
         bits.append("share of team: " + ", ".join(named))
     return "; ".join(bits)
