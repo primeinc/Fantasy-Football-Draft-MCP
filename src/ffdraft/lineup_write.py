@@ -16,10 +16,11 @@ with `Content-Type: application/json`, `X-Fantasy-Source: kona` and
 `X-Fantasy-Platform: espn-fantasy-web` on the request. `memberId` is the
 `profile.swid`, braces included, which is the same string the cookie carries.
 
-Three refusals, each named in the plan rather than raised: a player the board
+Four refusals, each named in the plan rather than raised: a player the board
 knows but ESPN did not give an id, a move into a slot the player is not
-eligible for, and a move touching a player ESPN reports as lineup-locked. A
-plan with any refusal sends nothing.
+eligible for, a move touching a player ESPN reports as lineup-locked, and a
+starter the lineup chose who sits on injured reserve. A plan with any refusal
+sends nothing.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from typing import Any
 import pandas as pd
 
 from .board import READS_HOST, espn_cookies, espn_league_url
+from .rosters import BENCH_SLOT, IR_SLOT
 
 WRITES_HOST = READS_HOST.replace("lm-api-reads", "lm-api-writes")
 HEADERS = {"User-Agent": "ffdraft-mcp/1.0", "Accept": "application/json",
@@ -40,8 +42,6 @@ HEADERS = {"User-Agent": "ffdraft-mcp/1.0", "Accept": "application/json",
 # fills, plus the two a player leaves a lineup for.
 SLOT_IDS = {"QB": 0, "RB": 2, "WR": 4, "TE": 6, "DST": 16, "K": 17,
             "FLEX": 23, "SUPERFLEX": 7, "OP": 7, "BENCH": 20, "IR": 21}
-BENCH_SLOT = SLOT_IDS["BENCH"]
-IR_SLOT = SLOT_IDS["IR"]
 SLOT_COLUMN = "lineup_slot_filled"
 
 
@@ -99,6 +99,8 @@ def plan_moves(starters: pd.DataFrame, roster: pd.DataFrame) -> dict:
         before[name] = current
         if current == IR_SLOT:
             after[name] = current
+            if name in target:
+                refusals.append(f"{name}: he is on injured reserve and cannot start")
             continue
         want = target.get(name, BENCH_SLOT)
         after[name] = want

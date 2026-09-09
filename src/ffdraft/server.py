@@ -2453,6 +2453,40 @@ async def draft_room(league_id: str, chat_limit: int = 10, ctx: Context = None) 
     return _emit(w.room(chat_limit), indent=2, default=str)
 
 
+class NoPlayedWeeks(RuntimeError):
+    """`waiver_targets` asked for a season nflverse has published no week of."""
+
+
+ROSTER_LIVE = "ESPN's roster for the week"
+ROSTER_DRAFT = "the draft record; ESPN's roster could not be read"
+
+
+def _my_roster(league_id: str, season: int, week: int | None, board: pd.DataFrame,
+               state) -> tuple[pd.DataFrame, str]:
+    """My roster as ESPN holds it, and where it came from.
+
+    The draft record is right on draft night and wrong after the first add,
+    drop or trade, so ESPN's mRoster is the source; the draft record is the
+    fallback when the read fails (the read API withholds rosters until the
+    draft completes) and the basis names it, the way a priced row names its
+    basis. The frame is in the board's row shape either way, so every
+    consumer downstream reads the same columns.
+    """
+    from . import rosters
+
+    try:
+        teams = rosters.fetch_roster_teams(league_id, season, week)
+        team_id = rosters.my_team_id(teams)
+        if team_id is None:
+            raise RuntimeError("no team in this league is owned by ESPN_SWID")
+        mine = rosters.rosters_by_team(teams, board, bd._ESPN_POSITION_NAMES)[team_id]
+    except Exception:
+        return state.my_rows(board), ROSTER_DRAFT
+    if mine.empty:
+        return state.my_rows(board), ROSTER_DRAFT
+    return mine, ROSTER_LIVE
+
+
 def _waiver_inputs(league_id: str, week: int, season: int):
     """Everything `waivers.waiver_report` needs, assembled from board and ESPN.
 
@@ -2483,11 +2517,17 @@ def _waiver_inputs(league_id: str, week: int, season: int):
         pool["position"] = ["" if pd.isna(v)
                             else bd._ESPN_POSITION_NAMES.get(str(int(v)), "")
                             for v in ids]
-    changes = waivers.role_change(sources.weekly_stats([season]),
-                                  sources.snap_counts([season]), season, week)
+    try:
+        weekly, snaps = sources.weekly_stats([season]), sources.snap_counts([season])
+    except RuntimeError as exc:
+        raise NoPlayedWeeks(
+            f"no {season} weekly stats published yet: role change needs at least one "
+            f"played week, so there is nothing to rank before week 1 is in the books. "
+            f"ESPN's free-agent list is the only source until then.") from exc
+    changes = waivers.role_change(weekly, snaps, season, week)
     injury = {} if pool.empty else dict(zip(pool["name"], pool["injury_status"]))
     contingency = waivers.contingent_value(board, waivers.starters_out(board, injury))
-    mine = state.my_rows(board)
+    mine, roster_basis = _my_roster(league_id, season, week, board, state)
     # The bench by the league's own slots, not by rank order. What stood here was
     # `mine.iloc[sum(starters):]`, and `my_rows` carries the BOARD's order, so it
     # meant "outside my top n by rank" -- which stops being "not a starter" the
@@ -2511,7 +2551,7 @@ def _waiver_inputs(league_id: str, week: int, season: int):
     stranded = lineup.unplaceable(mine) if len(mine) else mine
     return {"pool": pool, "changes": changes, "contingency": contingency,
             "league": league, "rules": waivers.league_rules_from_settings(settings),
-            "mine": mine, "bench": bench,
+            "mine": mine, "bench": bench, "roster_basis": roster_basis,
             "unplaceable": [str(n) for n in stranded.get("name", [])]}
 
 
@@ -2562,6 +2602,11 @@ def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
 
     try:
         parts = _waiver_inputs(league_id, week, season)
+    except NoPlayedWeeks as exc:
+        # The ordinary state before week 1 is played, named as such rather than
+        # surfaced as a stack-trace string.
+        return _emit({"error": str(exc), "week": week, "season": season,
+                      "played_weeks": 0}, indent=2)
     except Exception as exc:
         return _emit({"error": f"could not assemble the waiver inputs: "
                                f"{type(exc).__name__}: {exc}"}, indent=2)
@@ -2571,6 +2616,10 @@ def waiver_targets(league_id: str, week: int, season: int = CURRENT_SEASON,
     return _emit({"week": week, "season": season,
                   "claim_priority_basis": parts["rules"].priority_basis,
                   "bench_slots": parts["rules"].bench_slots,
+                  # Which roster `drop` and the bench were read from. The draft
+                  # record is stale after the first add or drop, so a report
+                  # standing on it says so.
+                  "roster_basis": parts["roster_basis"],
                   # Empty on a roster the board understands. Non-empty means
                   # those players were left out of both the lineup and the drop
                   # candidates, which is worth seeing rather than inferring.
@@ -2600,11 +2649,12 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
     player who does not play scores nothing; QUESTIONABLE is not out, since by
     Friday it describes half the league.
 
-    **Read the basis.** ESPN publishes a weekly projection for well under half
-    the player pool, so most rows are priced from the board's per-game rate
-    instead, and the `basis` on each row says which. A lineup built from two
-    bases is still the best lineup available, but the margins between two players
-    priced differently are worth less than the margins between two priced alike.
+    **Read the basis.** ESPN's weekly projection joins on the player id the
+    roster entry carries; a row it does not cover is priced from the board's
+    per-game rate, and the `basis` on each row says which. A lineup built from
+    two bases is still the best lineup available, but the margins between two
+    players priced differently are worth less than the margins between two
+    priced alike.
 
     `versus_espn` is the control: this lineup against the one ESPN currently has
     set on the same roster, as the players to start, the players to bench, and
@@ -2615,9 +2665,8 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
     `unplaceable` names roster rows carrying no usable position -- a board defect
     rather than a set of players to bench.
 
-    **Shape unverified.** No populated ESPN roster has been read yet: the read
-    API withholds rosters until a draft completes, so every field here is parsed
-    against ESPN's documented shape and none of it has met a real one.
+    `shape` names the mRoster entry shape this was read against; the read API
+    withholds rosters until a draft completes.
     """
     from . import lineup, rosters
 
@@ -2639,7 +2688,7 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
                                f"are withheld by the read API until the draft "
                                f"completes.",
                       "week": week, "season": season,
-                      "shape": rosters.UNVERIFIED_SHAPE}, indent=2)
+                      "shape": rosters.ROSTER_SHAPE}, indent=2)
 
     starters, bench = lineup.starting_lineup(priced, league,
                                              value=lineup.WEEK_VALUE)
@@ -2698,7 +2747,7 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
         # by lena: a slot filled by a man with no basis at all is invisible in
         # `unfilled_slots`, because the slot is filled.
         "priced_by": priced[lineup.WEEK_BASIS].value_counts().to_dict(),
-        "shape": rosters.UNVERIFIED_SHAPE,
+        "shape": rosters.ROSTER_SHAPE,
     }), indent=2)
 
 
@@ -2913,7 +2962,7 @@ def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
     team_of = {str(r["name"]): str(r["team"])
                for _, r in free[free["position"] == "K"].iterrows()
                if pd.notna(r.get("team"))}
-    mine = state.my_rows(b)
+    mine, roster_basis = _my_roster(league_id, season, week, b, state)
     starters = {}
     for pos in ("DST", "K"):
         held = mine[mine["position"] == pos]
@@ -2923,8 +2972,8 @@ def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
     out = stream.stream_kdst(season, week, bands, items, available,
                              history_seasons=[season - 1], starters=starters,
                              team_of=team_of, look_ahead=max(1, look_ahead))
-    return _emit(_jsonable(stream.compact(out, top=top or stream.TOP_N,
-                                          detail=detail)), indent=2)
+    compact = stream.compact(out, top=top or stream.TOP_N, detail=detail)
+    return _emit(_jsonable({"roster_basis": roster_basis, **compact}), indent=2)
 
 
 @mcp.tool(structured_output=False)

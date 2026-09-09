@@ -20,13 +20,14 @@ from collections.abc import Mapping
 
 import pandas as pd
 
-from .board import is_position
+from .board import _ESPN_SLOT_NAMES, is_position
 from .config import OUT_STATUSES, LeagueSettings
 
 # SEASON_GAMES is imported rather than restated: I wrote `= 17` here first,
 # which would have been a second copy of the number `roles` already owns, in the
 # same hour I was objecting to exactly that. A heavier import is worth it.
 from .roles import SEASON_GAMES
+from .rosters import BENCH_SLOT, IR_SLOT
 
 # The slot a player fills, named on each starter. FLEX and superflex say so
 # rather than reporting the player's own position, because "your third receiver
@@ -52,6 +53,58 @@ def placeable(rows: pd.DataFrame) -> pd.Series:
     if "position" not in rows.columns or rows.empty:
         return pd.Series(False, index=rows.index)
     return rows["position"].map(is_position)
+
+
+def _slot_ids(rows: pd.DataFrame) -> pd.Series:
+    """ESPN's current slot per row as a number, NaN where the roster did not say."""
+    if "lineup_slot" not in rows.columns:
+        return pd.Series(float("nan"), index=rows.index)
+    return pd.to_numeric(rows["lineup_slot"], errors="coerce")
+
+
+def _locked(rows: pd.DataFrame) -> pd.Series:
+    """Whether ESPN reports each row's slot locked. Unknown reads as unlocked."""
+    if "lineup_locked" not in rows.columns:
+        return pd.Series(False, index=rows.index)
+    return rows["lineup_locked"].map(lambda v: bool(v) if v is True or v is False else False)
+
+
+def startable(rows: pd.DataFrame) -> pd.Series:
+    """`placeable`, minus the rows ESPN will not let into a starting slot today.
+
+    A player on injured reserve (slot 21) cannot start, whatever his projection:
+    on the live league he priced like anyone else and won an RB slot outright,
+    so the tool reported a full lineup with a man in it who cannot play. A
+    benched player whose game has kicked off is locked to the bench, and
+    proposing him is one refusal that voids the whole submission. A locked
+    STARTER stays here -- he cannot be moved either, and `starting_lineup` pins
+    him to his slot.
+    """
+    slot = _slot_ids(rows)
+    benched_and_locked = _locked(rows) & slot.isin([BENCH_SLOT])
+    return placeable(rows) & ~slot.isin([IR_SLOT]) & ~benched_and_locked
+
+
+def _pinned(rows: pd.DataFrame, league: LeagueSettings) -> dict[int, str]:
+    """Row position -> slot name for every locked starter, who cannot be moved.
+
+    ESPN's slot id names the slot he is locked into; FLEX and the superflex
+    ids read back as this module's names for them, and a base slot only pins
+    if the league actually has it, so a slot this league does not play (or a
+    RB/WR-style combined slot) is left to the ordinary fill.
+    """
+    slot = _slot_ids(rows)
+    locked = _locked(rows)
+    out: dict[int, str] = {}
+    for pos, (i, s) in enumerate(zip(rows.index, slot)):
+        if pd.isna(s) or int(s) in (BENCH_SLOT, IR_SLOT) or not locked.at[i]:
+            continue
+        name = _ESPN_SLOT_NAMES.get(str(int(s)))
+        if name == "OP":
+            name = SUPERFLEX_SLOT
+        if name == FLEX_SLOT or name == SUPERFLEX_SLOT or name in league.starters:
+            out[pos] = str(name)
+    return out
 
 
 def _take(pool: pd.DataFrame, eligible: tuple[str, ...], count: int,
@@ -98,6 +151,11 @@ def starting_lineup(rows: pd.DataFrame, league: LeagueSettings,
     against the league's. That is the case worth surfacing -- an empty starting
     slot is a real problem for the user -- and it is not this function's job to
     hide it by promoting a player who cannot play there.
+
+    When the rows carry ESPN's `lineup_slot` and `lineup_locked`, a locked
+    starter keeps his slot before anyone else is placed and a locked bench
+    player or an IR player is never placed: see `startable`. Rows without those
+    columns -- a draft-time roster -- are placed on position and value alone.
     """
     if rows.empty or "position" not in rows.columns:
         empty = rows.iloc[0:0].copy()
@@ -109,9 +167,11 @@ def starting_lineup(rows: pd.DataFrame, league: LeagueSettings,
     if value not in pool.columns:
         pool[value] = 0.0
     pool[value] = pd.to_numeric(pool[value], errors="coerce").fillna(0.0)
-    pool = pool[placeable(rows).to_numpy()]
+    pool = pool[startable(rows).to_numpy()]
 
-    filled: dict[int, str] = {}
+    filled: dict[int, str] = dict(_pinned(rows, league))
+    taken = {slot: sum(1 for s in filled.values() if s == slot)
+             for slot in set(filled.values())}
 
     def remaining() -> pd.DataFrame:
         return pool[~pool["_pos"].isin(list(filled))]
@@ -119,13 +179,15 @@ def starting_lineup(rows: pd.DataFrame, league: LeagueSettings,
     for position, count in league.starters.items():
         if position == FLEX_SLOT or not count:
             continue
-        for pos in _take(remaining(), (position,), int(count), value):
+        for pos in _take(remaining(), (position,),
+                         int(count) - taken.get(position, 0), value):
             filled[pos] = position
     for pos in _take(remaining(), tuple(league.flex_eligible),
-                     int(league.starters.get(FLEX_SLOT, 0)), value):
+                     int(league.starters.get(FLEX_SLOT, 0)) - taken.get(FLEX_SLOT, 0),
+                     value):
         filled[pos] = FLEX_SLOT
     for pos in _take(remaining(), tuple(league.flex_eligible) + ("QB",),
-                     int(league.superflex or 0), value):
+                     int(league.superflex or 0) - taken.get(SUPERFLEX_SLOT, 0), value):
         filled[pos] = SUPERFLEX_SLOT
 
     starting = sorted(filled)

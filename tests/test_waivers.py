@@ -544,6 +544,12 @@ class TestTheTool:
                 return b
 
         monkeypatch.setattr(server, "_state", lambda: FakeState())
+        # No ESPN roster to read here, so `_my_roster` stands on the draft
+        # record; the one test that supplies a live roster patches this again.
+        from ffdraft import rosters
+
+        monkeypatch.setattr(rosters, "fetch_roster_teams",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
         return server
 
     def rows(self):
@@ -719,6 +725,35 @@ class TestTheTool:
         assert out["unplaceable_on_my_roster"] == ["Kicker One"]
         assert all(c["drop"]["player"] != "Kicker One" for c in out["claims"])
 
+    def test_the_roster_names_its_basis_when_espn_could_not_be_read(self, monkeypatch):
+        server = self.wire(monkeypatch, self.rows())
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["roster_basis"] == server.ROSTER_DRAFT
+
+    def test_the_live_roster_wins_over_the_draft_record(self, monkeypatch):
+        # oracle-season, 2026-09-09: `mine` came from `state.my_rows`, the draft
+        # record, so after the first add or drop the bench and the drop
+        # candidate were a roster the team no longer held.
+        from ffdraft import rosters
+
+        server = self.wire(monkeypatch, self.rows())
+        live = pd.DataFrame({
+            "name": ["Starter Back", "Waiver Pickup"], "position": ["RB", "WR"],
+            "team": ["BBB", "CCC"], "proj_points": [250.0, 60.0],
+            "adj_ppg": [16.0, 4.0], "exp_games": [14.0, 17.0],
+            "injury_risk": [0.3, 0.1], "bye_week": [np.nan, 9],
+            "draft_score": [90.0, 5.0], "adp": [20.0, 200.0],
+        })
+        live["_key"] = live["name"].map(bd.norm_name)
+        monkeypatch.setattr(rosters, "fetch_roster_teams", lambda *a, **k: [{"id": 4}])
+        monkeypatch.setattr(rosters, "my_team_id", lambda teams, swid=None: 4)
+        monkeypatch.setattr(rosters, "rosters_by_team", lambda teams, b, positions: {4: live})
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["roster_basis"] == server.ROSTER_LIVE
+        drops = {c["drop"]["player"] for c in out["claims"] if c.get("drop")}
+        assert drops <= {"Waiver Pickup"}
+        assert "Bench Man" not in drops
+
     def test_an_empty_pool_still_round_trips_and_says_it_is_broken(self, monkeypatch):
         server = self.wire(monkeypatch, [])
         out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
@@ -733,6 +768,22 @@ class TestTheTool:
         out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
         assert "could not assemble the waiver inputs" in out["error"]
         assert "boom" in out["error"]
+
+    def test_before_week_one_the_refusal_is_named_not_a_traceback(self, monkeypatch):
+        # 2026-09-08, week 1 unplayed: nflverse has no 2026 weekly file, and the
+        # tool answered "RuntimeError: no weekly stats loaded", which reads as a
+        # broken tool rather than as the calendar.
+        from ffdraft import sources
+
+        server = self.wire(monkeypatch, self.rows())
+        monkeypatch.setattr(sources, "weekly_stats",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                RuntimeError("no weekly stats loaded")))
+        out = json.loads(server.waiver_targets("1", 1), parse_constant=self._reject)
+        assert "could not assemble" not in out["error"]
+        assert "weekly stats published yet" in out["error"]
+        assert out["played_weeks"] == 0
+        assert out["week"] == 1
 
 
 class TestTheOrderingFollowsPoints:

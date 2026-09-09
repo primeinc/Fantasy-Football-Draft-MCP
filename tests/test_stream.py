@@ -250,6 +250,17 @@ class TestRankWeek:
         assert pos["margin_units"] == "points"
         assert any(r["margin_over_your_starter"] is not None for r in pos["ranked"])
 
+    def test_the_starter_is_scored_even_though_he_is_not_a_free_agent(self, monkeypatch):
+        # League 1734659820 week 1: `your_starter` BAL, units points, and every
+        # `margin_over_your_starter` null, because the base was read out of the
+        # ranked field and a rostered defense is never in the free-agent field.
+        self._report(monkeypatch, True, [True, True])
+        out = stream.rank_week(2026, 1, BANDS, ITEMS, {"DST": ["SHUT"]},
+                               [2025], starters={"DST": "BOMB"})
+        pos = out["positions"]["DST"]
+        assert [r["name"] for r in pos["ranked"]] == ["SHUT"]
+        assert pos["ranked"][0]["margin_over_your_starter"] is not None
+
     def test_the_look_ahead_covers_the_next_weeks(self):
         out = stream.stream_kdst(2026, 1, BANDS, ITEMS, {"DST": ["SHUT", "BOMB"]},
                                  [2025], look_ahead=2)

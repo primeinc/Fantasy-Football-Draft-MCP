@@ -1,12 +1,9 @@
 """The in-season ESPN roster reader.
 
-Every fixture here is written from ESPN's documented entry shape, because no
-populated `mRoster` exists to write one from: the capture has
-`roster.entries: []` for all 16 teams while the draft is in progress. So these
-tests pin the mapping and the fallbacks, and they are NOT evidence that the live
-parse works -- the fixture and the parser come from the same reading of the
-shape, so they agree by construction. That is what `UNVERIFIED_SHAPE` says on
-the output, and it is why the label is asserted here rather than assumed.
+The entry fixture is the shape a populated `mRoster` returned on 2026-09-08
+(league 1734659820, team 3): id, name and position id on the player, slot on
+the entry, `eligibleSlots` on the player, `lineupLocked` on the pool entry, a
+defense named "Ravens D/ST" against the board's "Baltimore Ravens D/ST".
 """
 import pandas as pd
 
@@ -16,11 +13,16 @@ from ffdraft.board import _ESPN_POSITION_NAMES, UNPRICED, norm_name
 POSITIONS = _ESPN_POSITION_NAMES
 
 
-def _entry(pid, name, pos_id, slot=rosters.BENCH_SLOT, injury=None):
-    return {"playerId": pid, "lineupSlotId": slot,
-            "playerPoolEntry": {"player": {
-                "id": pid, "fullName": name, "defaultPositionId": pos_id,
-                "injuryStatus": injury, "injured": injury not in (None, "ACTIVE")}}}
+def _entry(pid, name, pos_id, slot=rosters.BENCH_SLOT, injury=None,
+           eligible=None, locked=None):
+    player = {"id": pid, "fullName": name, "defaultPositionId": pos_id,
+              "injuryStatus": injury, "injured": injury not in (None, "ACTIVE")}
+    if eligible is not None:
+        player["eligibleSlots"] = list(eligible)
+    pool = {"player": player}
+    if locked is not None:
+        pool["lineupLocked"] = locked
+    return {"playerId": pid, "lineupSlotId": slot, "playerPoolEntry": pool}
 
 
 def _board():
@@ -30,6 +32,7 @@ def _board():
         ("Other Back", "RB", 100.0, "3002"),
         ("A Receiver", "WR", 250.0, "3003"),
         ("Renamed Man", "RB", 150.0, None),
+        ("Baltimore Ravens D/ST", "DST", 120.0, "-16033"),
     ]
     return pd.DataFrame([{
         "name": n, "_key": norm_name(n), "position": p, "proj_points": pts,
@@ -128,9 +131,60 @@ class TestRosterRows:
         assert out["lineup_slot"].iloc[0] == 2
         assert out["espn_injury"].iloc[0] == "QUESTIONABLE"
 
-    def test_every_frame_says_its_shape_is_unverified(self):
+    def test_every_frame_names_the_shape_it_was_read_against(self):
         out = rosters.roster_rows([_entry(3001, "Real Back", 2)], _board(), POSITIONS)
-        assert out["shape"].iloc[0] == rosters.UNVERIFIED_SHAPE
+        assert out["shape"].iloc[0] == rosters.ROSTER_SHAPE
+
+    def test_the_entry_supplies_what_the_board_lacks(self):
+        # The live board carries no espn_id for any skill player, so the id,
+        # the eligible slots and the lock flag can only come from the entry.
+        # Without them `lineup.week_value` never joins ESPN's weekly projection
+        # and `lineup_write.plan_moves` refuses every move.
+        out = rosters.roster_rows(
+            [_entry(9999, "Renamed Man", 2, slot=2, eligible=[2, 3, 23, 7, 20, 21],
+                    locked=False)],
+            _board(), POSITIONS)
+        row = out.set_index("name").loc["Renamed Man"]
+        assert row["matched_by"] == rosters.MATCHED_BY_NAME
+        assert row["espn_id"] == "9999"
+        assert row["lineup_slot"] == 2
+        assert row["eligible_slots"] == [2, 3, 23, 7, 20, 21]
+        assert row["lineup_locked"] is False
+
+    def test_espn_own_id_wins_over_the_board_id(self):
+        # A lineup write sends the id back to ESPN, so it has to be the one
+        # ESPN handed over, whatever the board holds.
+        out = rosters.roster_rows([_entry(3001, "Real Back", 2)], _board(), POSITIONS)
+        assert out["espn_id"].iloc[0] == "3001"
+
+    def test_a_defense_named_differently_by_espn_still_gets_its_slot(self):
+        # ESPN: "Ravens D/ST", id -16033, position 16. Board: "Baltimore Ravens
+        # D/ST". The id matches the row; a name lookup for the slot left every
+        # defense with no slot and `plan_moves` moving it from nowhere.
+        out = rosters.roster_rows(
+            [_entry(-16033, "Ravens D/ST", 16, slot=16, locked=False)],
+            _board(), POSITIONS)
+        row = out.set_index("name").loc["Baltimore Ravens D/ST"]
+        assert row["matched_by"] == rosters.MATCHED_BY_ID
+        assert row["lineup_slot"] == 16
+        assert row["espn_id"] == "-16033"
+        assert row["lineup_locked"] is False
+
+    def test_a_stand_in_keeps_the_entry_facts_too(self):
+        out = rosters.roster_rows(
+            [_entry(3001, "Real Back", 2), _entry(7777, "Ghost Back", 2, slot=2,
+                                                   eligible=[2, 20], locked=True)],
+            _board(), POSITIONS)
+        ghost = out.set_index("name").loc["Ghost Back"]
+        assert ghost["espn_id"] == "7777"
+        assert ghost["lineup_slot"] == 2
+        assert ghost["eligible_slots"] == [2, 20]
+        assert ghost["lineup_locked"] is True
+
+    def test_facts_absent_from_the_entry_stay_absent(self):
+        out = rosters.roster_rows([_entry(3001, "Real Back", 2)], _board(), POSITIONS)
+        assert out["eligible_slots"].iloc[0] is None
+        assert out["lineup_locked"].iloc[0] is None
 
     def test_boolean_columns_survive_a_stand_in(self):
         out = rosters.roster_rows(

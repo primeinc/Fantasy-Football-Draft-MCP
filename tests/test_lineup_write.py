@@ -39,6 +39,13 @@ def test_moves_only_the_players_whose_slot_changes():
     assert plan["before"]["QB One"] == plan["after"]["QB One"] == 0
 
 
+def test_a_starter_on_injured_reserve_is_a_refusal_not_a_silent_skip():
+    plan = lw.plan_moves(_starters([("WR IR", "WR")]), _roster(BASE))
+    assert any("injured reserve" in r for r in plan["refusals"])
+    assert plan["after"]["WR IR"] == 21
+    assert all(i["playerId"] != 4 for i in plan["items"])
+
+
 def test_a_player_without_an_espn_id_refuses_the_whole_plan():
     rows = [dict(BASE[1], espn_id=None)] + BASE[2:]
     plan = lw.plan_moves(_starters([("RB One", "RB")]), _roster(rows))

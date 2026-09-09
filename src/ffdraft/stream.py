@@ -496,6 +496,31 @@ def _predict(row: dict, features: tuple[str, ...], coef) -> float | None:
     return float(np.dot(values, coef[:-1]) + coef[-1])
 
 
+def _week_row(name: str, pos: str, by_team: dict, team_of: dict[str, str],
+              features, coef) -> dict:
+    """One defence or kicker scored on his team's matchup this week."""
+    team = name if pos == "DST" else team_of.get(name, name)
+    m = by_team.get(team)
+    if m is None:
+        return {"name": name, "team": team, "playing": False,
+                "score": None, "line_basis": "no game this week"}
+    feed = dict(m)
+    feed["team_implied_points"] = (
+        None if m["total_line"] is None
+        else round(float(m["total_line"]) / 2
+                   + (float(m["spread_line"]) / 2
+                      if m["spread_line"] is not None else 0.0)
+                   * (1 if m["home"] else -1), 1))
+    return {
+        "name": name, "team": team, "opponent": m["opponent"],
+        "home": m["home"], "roof": m["roof"], "playing": True,
+        "opponent_implied_points": m["opponent_implied_points"],
+        "team_implied_points": feed["team_implied_points"],
+        "line_basis": m["line_basis"],
+        "score": _predict(feed, features, coef),
+    }
+
+
 def rank_week(season: int, week: int, bands: dict, items: dict,
               available: dict[str, list[str]], history_seasons: list[int],
               starters: dict[str, str] | None = None,
@@ -523,29 +548,8 @@ def rank_week(season: int, week: int, bands: dict, items: dict,
                  "weather": table["weather"], "positions": {}}
     for pos, features, coef, report in (("DST", DST_FEATURES, dst_coef, dst_report),
                                         ("K", K_FEATURES, k_coef, k_report)):
-        rows: list[dict] = []
-        for name in available.get(pos, []):
-            team = name if pos == "DST" else team_of.get(name, name)
-            m = by_team.get(team)
-            if m is None:
-                rows.append({"name": name, "team": team, "playing": False,
-                             "score": None, "line_basis": "no game this week"})
-                continue
-            feed = dict(m)
-            feed["team_implied_points"] = (
-                None if m["total_line"] is None
-                else round(float(m["total_line"]) / 2
-                           + (float(m["spread_line"]) / 2
-                              if m["spread_line"] is not None else 0.0)
-                           * (1 if m["home"] else -1), 1))
-            rows.append({
-                "name": name, "team": team, "opponent": m["opponent"],
-                "home": m["home"], "roof": m["roof"], "playing": True,
-                "opponent_implied_points": m["opponent_implied_points"],
-                "team_implied_points": feed["team_implied_points"],
-                "line_basis": m["line_basis"],
-                "score": _predict(feed, features, coef),
-            })
+        rows: list[dict] = [_week_row(name, pos, by_team, team_of, features, coef)
+                            for name in available.get(pos, [])]
         scored: list[dict] = [r for r in rows if r["score"] is not None]
         scored.sort(key=lambda r: float(r["score"]), reverse=True)
         for i, r in enumerate(scored, start=1):
@@ -556,7 +560,14 @@ def rank_week(season: int, week: int, bands: dict, items: dict,
         # than be quietly defaulted into the safe answer.
         units = report["margin_units"]
         held = starters.get(pos)
-        base = next((r["score"] for r in scored if r["name"] == held), None)
+        # The starter is scored on his own matchup whether or not he is in the
+        # field: on a real league he never is, since a rostered player is not a
+        # free agent, and reading him out of `scored` left every margin null.
+        base = None
+        if held is not None:
+            base = next((r["score"] for r in scored if r["name"] == held), None)
+            if base is None:
+                base = _week_row(held, pos, by_team, team_of, features, coef)["score"]
         for r in scored:
             if base is None or units != "points":
                 r["margin_over_your_starter"] = None

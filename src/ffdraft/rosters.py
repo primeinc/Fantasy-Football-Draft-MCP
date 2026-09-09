@@ -5,16 +5,11 @@ lineup from; #47's trade evaluator needs both sides of a trade as they stand
 after waivers. Both used to have to invent it, and #47 currently reads the draft
 record, which is the right source in week 1 and the wrong one in week 9.
 
-SHAPE UNVERIFIED. Measured on the 11:37 capture: `mRoster` returns
-`roster.entries: []` for all 16 teams while `draftDetail` reads
-`drafted=False, inProgress=True`, which is the same rule that withholds picks
-from the read API mid-draft. The `roster` and `tradeReservedEntries` keys are
-present and empty, so the container is right and nothing inside it has been
-seen. Everything here is written against ESPN's documented entry shape and the
-fields `kona_player_info` already decodes, and none of it has been exercised
-against a populated roster. A green fixture here is not evidence the live parse
-works: the fixture and the parser were written from the same reading, so they
-agree with each other by construction. `UNVERIFIED_SHAPE` says so on the output.
+`mRoster` returns `roster.entries: []` for every team while `draftDetail`
+reads `inProgress=True` -- the same rule that withholds picks from the read API
+mid-draft -- and a populated roster once the draft completes. The entry shape
+was read live on 2026-09-08 (see `ROSTER_SHAPE`); `entry_facts` names every
+field it takes.
 
 `mTeam` carries no roster at all -- its keys are team metadata. It is the right
 view for `tradeBlock` and `waiverRank` and the wrong one for players.
@@ -44,8 +39,18 @@ from .config import CURRENT_SEASON
 BENCH_SLOT = 20
 IR_SLOT = 21
 
-# Said on every frame this module returns, until the first post-draft pull.
-UNVERIFIED_SHAPE = "unverified-shape: no populated ESPN roster has been read yet"
+# Said on every frame this module returns. Read against a populated mRoster on
+# 2026-09-08: league 1734659820, team 3, 14 entries, every one carrying
+# `playerPoolEntry.player.id`, `fullName`, `defaultPositionId`,
+# `eligibleSlots`, `injuryStatus`, plus `lineupSlotId` and
+# `playerPoolEntry.lineupLocked`. A defense arrives as "Ravens D/ST", id
+# -16033, position id 16.
+ROSTER_SHAPE = "mRoster entry shape verified against a populated roster, 2026-09-08"
+
+# What the entry says about the player that the board cannot: carried onto the
+# row as ESPN reports it, and read by `lineup.week_value` (espn_id, to join the
+# weekly projection) and `lineup_write.plan_moves` (all five).
+LIVE_COLUMNS = ("espn_id", "lineup_slot", "espn_injury", "eligible_slots", "lineup_locked")
 
 # How a row got its position and projection, per player rather than per frame.
 # A fallback applied silently is the #39 defect in a new place: the number is
@@ -70,7 +75,8 @@ def entry_facts(entry: dict, positions: dict[str, str]) -> dict:
     """
     player = _player_of(entry)
     pid = player.get("id", entry.get("playerId"))
-    position = positions.get(str(player.get("defaultPositionId")) or "")
+    pos_id = player.get("defaultPositionId")
+    position = None if pos_id is None else positions.get(str(pos_id))
     return {
         "espn_id": None if pid is None else str(pid),
         "name": str(player.get("fullName") or ""),
@@ -119,6 +125,7 @@ def roster_rows(entries: list[dict], board: pd.DataFrame, positions: dict[str, s
     by_key = {k: i for i, k in board["_key"].items()}
 
     taken: dict[int, str] = {}
+    matched: dict[int, dict] = {}
     unmatched: list[tuple[str, str]] = []
     for f in facts:
         idx = by_id.get(f["espn_id"] or "")
@@ -131,6 +138,7 @@ def roster_rows(entries: list[dict], board: pd.DataFrame, positions: dict[str, s
                 unmatched.append((f["name"], f["position"]))
             continue
         taken[idx] = how
+        matched[idx] = f
 
     rows = board.loc[list(taken)].copy()
     rows[UNPRICED] = False
@@ -141,16 +149,28 @@ def roster_rows(entries: list[dict], board: pd.DataFrame, positions: dict[str, s
     # join, or a team of players the model does not carry.
     rows["matched_by"] = pd.Series([taken[i] for i in rows.index],
                                    index=rows.index, dtype="object")
+    # ESPN's own view of the player, from the entry that matched the row: his
+    # id, where the team has him now, today's injury status, where ESPN allows
+    # him, and whether ESPN has locked him. Taken by board index, not by name:
+    # the board says "Baltimore Ravens D/ST" where ESPN says "Ravens D/ST", and
+    # a name lookup left every defense with no slot. The id is ESPN's own even
+    # when the board carried one, because it is the id a lineup write sends,
+    # and the live board carries none for any skill player.
+    for col in LIVE_COLUMNS:
+        rows[col] = pd.Series([matched[i].get(col) for i in rows.index],
+                              index=rows.index, dtype="object")
     out = with_stand_ins(rows, board, unmatched)
     out.loc[out[UNPRICED], "matched_by"] = UNMATCHED
-
-    # ESPN's own view of the player, which the board either lacks or holds from
-    # a different pull: where the team has him now, and today's injury status.
-    live = {norm_name(f["name"]): f for f in facts if f["name"]}
-    keys = out["_key"].map(norm_name)
-    out["lineup_slot"] = [live.get(k, {}).get("lineup_slot") for k in keys]
-    out["espn_injury"] = [live.get(k, {}).get("espn_injury") for k in keys]
-    out["shape"] = UNVERIFIED_SHAPE
+    # A stand-in has no board row to match through, so his entry is found by
+    # the one thing both sides hold, the name.
+    if out[UNPRICED].any():
+        by_name = {norm_name(f["name"]): f for f in facts if f["name"]}
+        keys = out["_key"].map(norm_name)
+        for col in LIVE_COLUMNS:
+            fill = pd.Series([by_name.get(k, {}).get(col) for k in keys],
+                             index=out.index, dtype="object")
+            out[col] = out[col].astype("object").where(~out[UNPRICED], fill)
+    out["shape"] = ROSTER_SHAPE
     return out.reset_index(drop=True)
 
 

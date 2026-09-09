@@ -154,6 +154,66 @@ class TestStartingLineup:
         assert starters.empty and bench.empty
 
 
+def _live(players):
+    """(name, position, projection, lineup_slot, locked): a roster as ESPN holds it."""
+    rows = _rows([(n, p, v) for n, p, v, _s, _l in players])
+    rows["lineup_slot"] = [s for _n, _p, _v, s, _l in players]
+    rows["lineup_locked"] = [lk for _n, _p, _v, _s, lk in players]
+    return rows
+
+
+class TestWhatEspnWillNotLetStart:
+    """IR and lock status from the live roster bound the pool.
+
+    Found by oracle-season, 2026-09-09, against a single-RB league: an IR back
+    at 30 points won the slot over a healthy bench back at 10, the lineup came
+    back full with no refusal, and a locked bench player likewise -- whose one
+    refusal then voided the entire submission.
+    """
+
+    def league(self):
+        return _league(starters={"QB": 0, "RB": 1, "WR": 0, "TE": 0, "FLEX": 0,
+                                 "K": 0, "DST": 0})
+
+    def test_injured_reserve_never_starts_however_high_he_projects(self):
+        rows = _live([("IR Guy", "RB", 30.0, 21, False),
+                      ("Healthy Guy", "RB", 10.0, 20, False)])
+        starters, bench = lineup.starting_lineup(rows, self.league())
+        assert list(starters["name"]) == ["Healthy Guy"]
+        assert list(bench["name"]) == ["IR Guy"]
+        assert lineup.unfilled_slots(starters, self.league()) == {}
+
+    def test_a_locked_bench_player_is_not_proposed(self):
+        rows = _live([("Locked Bench Guy", "RB", 20.0, 20, True),
+                      ("Healthy Guy", "RB", 10.0, 20, False)])
+        starters, _ = lineup.starting_lineup(rows, self.league())
+        assert list(starters["name"]) == ["Healthy Guy"]
+
+    def test_a_locked_starter_keeps_his_slot_and_nobody_is_placed_over_him(self):
+        # His game has kicked off; ESPN will not move him, so the lineup does not
+        # try, even though the bench man projects higher.
+        rows = _live([("Locked Starter", "RB", 5.0, 2, True),
+                      ("Better Bench Guy", "RB", 25.0, 20, False)])
+        starters, bench = lineup.starting_lineup(rows, self.league())
+        assert list(starters["name"]) == ["Locked Starter"]
+        assert list(starters[lineup.SLOT_COLUMN]) == ["RB"]
+        assert list(bench["name"]) == ["Better Bench Guy"]
+
+    def test_a_locked_flex_starter_pins_the_flex_not_a_base_slot(self):
+        league = _league(starters={"QB": 0, "RB": 1, "WR": 0, "TE": 0, "FLEX": 1,
+                                   "K": 0, "DST": 0})
+        rows = _live([("Locked Flex", "WR", 5.0, 23, True),
+                      ("RB One", "RB", 25.0, 20, False),
+                      ("WR Two", "WR", 30.0, 20, False)])
+        starters, _ = lineup.starting_lineup(rows, league)
+        slots = dict(zip(starters["name"], starters[lineup.SLOT_COLUMN]))
+        assert slots == {"Locked Flex": "FLEX", "RB One": "RB"}
+
+    def test_rows_without_the_live_columns_are_placed_on_value_alone(self):
+        starters, _ = lineup.starting_lineup(_rows(UNBALANCED), _league())
+        assert len(starters) == 8
+
+
 class TestUnpricedStandIn:
     """#40's stand-ins occupy their slots here too."""
 
