@@ -121,8 +121,29 @@ def test_select_sends_and_resolves_on_own_selected(tmp_path, monkeypatch):
 
     result = asyncio.run(go())
     assert sent == ["SELECT 4429795\n"]
-    assert result == {"overall": 115, "player_id": 4429795, "name": "Jahmyr Gibbs"}
+    assert result == {"overall": 115, "player_id": 4429795, "name": "Jahmyr Gibbs",
+                      "requested_player_id": 4429795, "as_requested": True}
     assert w.state.picks[-1]["slot"] == 4 and w.own_pick is None
+
+
+def test_select_says_when_espn_recorded_a_different_player(tmp_path, monkeypatch):
+    # oracle-draft, 2026-09-09: the SELECTED for our team resolved the pick by
+    # team id alone, so an autopick on an expired clock read as our choice.
+    w, _events = _watch(tmp_path, monkeypatch)
+    asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
+
+    class Ws:
+        async def send(self, _text):
+            await w.handle_line("SELECTED 3 3117251 2")
+
+    async def go():
+        w.ws = Ws()
+        return await w.select(4429795, timeout=2)
+
+    result = asyncio.run(go())
+    assert result["player_id"] == 3117251
+    assert result["requested_player_id"] == 4429795
+    assert result["as_requested"] is False
 
 
 def test_select_surfaces_server_error(tmp_path, monkeypatch):
@@ -139,6 +160,31 @@ def test_select_surfaces_server_error(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="Not\\+your\\+turn"):
         asyncio.run(go())
+
+
+def test_a_finished_draft_ends_the_watch_as_finished_not_as_an_outage(tmp_path, monkeypatch):
+    # 2026-09-08, 224/224: ESPN closed the room and answered the reconnect with
+    # `ERROR 1 No+league+found+in+database`, which the watch retried five times
+    # and then reported as a failure.
+    from ffdraft import watchstore
+
+    monkeypatch.setattr(watchstore, "WATCH_DIR", tmp_path)
+    w, events = _watch(tmp_path, monkeypatch)
+    watchstore.save(watchstore.WatchRecord(league_id="1734659820", team_id=3, season=2026))
+    for overall in range(1, 16 * 14 + 1):
+        w.state.record(f"P{overall}", overall, (overall - 1) % 16 + 1)
+    calls = []
+
+    async def closed():
+        calls.append(1)
+        raise RuntimeError("ERROR 1 No+league+found+in+database+for+ID%3A+1734659820")
+
+    monkeypatch.setattr(w, "_session", closed)
+    asyncio.run(w.run())
+    assert calls == [1]
+    assert [m["event"] for _, m in events][-1] == "finished"
+    record = watchstore.load("1734659820")
+    assert record is not None and record.resume is False
 
 
 def test_select_without_connection_raises(tmp_path, monkeypatch):

@@ -24,7 +24,7 @@ import pandas as pd
 from websockets.asyncio.client import connect
 
 from . import board as bd
-from . import espn_live, model
+from . import espn_live, model, watchstore
 from .config import STATE_DIR, LeagueSettings
 
 log = logging.getLogger(__name__)
@@ -170,7 +170,8 @@ REBUILDABLE_STATE: dict[str, Callable[[], object]] = {
     "slot_of": dict, "picks_seen": int, "connected": bool, "last_line": str,
     "lines": list, "init_b64": lambda: None, "snapshots": list,
     "snapshot_failures": int, "ready": asyncio.Event, "bumped": bool,
-    "ws": lambda: None, "own_pick": lambda: None, "queue": lambda: None,
+    "ws": lambda: None, "own_pick": lambda: None, "own_pick_player": lambda: None,
+    "queue": lambda: None,
     "queue_echoes": list, "connection": int, "init_queue": lambda: None,
     "init_queue_checks": list, "queue_seen": asyncio.Event,
     "queue_echo": lambda: None,
@@ -298,6 +299,7 @@ class DraftWatch:
         self.ws = None
         # Set when a SELECTED for our own team arrives after select(); carries the pick.
         self.own_pick: asyncio.Future | None = None
+        self.own_pick_player: int | None = None
         # Our pick queue as ESPN last echoed it (DRAFT_LIST line); None until seen.
         self.queue: list[int] | None = None
         # Every echo, (epoch ms, connection, ids), oldest first. The queue is the
@@ -353,6 +355,16 @@ class DraftWatch:
                         "room and call watch_draft again to resume.",
                         {"league": self.league_id, "event": "paused"})
                     return
+                if self.draft_finished():
+                    # ESPN closes the room once the last pick is in and answers
+                    # a reconnect with `ERROR 1 No league found in database`.
+                    # Not an outage: the ordinary end, said as such once.
+                    await self.notify(
+                        f"the draft is finished: all {self.league.teams * self.league.rounds} "
+                        "picks are in and ESPN has closed the room. The watch has stopped.",
+                        {"league": self.league_id, "event": "finished"})
+                    watchstore.mark_stopped(self.league_id)
+                    return
                 if self.ready.is_set():
                     failures = 0
                 failures += 1
@@ -361,11 +373,16 @@ class DraftWatch:
                         f"draft watch stopped after {failures} failed connections; last error "
                         f"{type(exc).__name__}: {exc}. Call watch_draft again to restart.",
                         {"league": self.league_id, "event": "stopped"})
+                    watchstore.mark_stopped(self.league_id)
                     raise
                 await self.notify(
                     f"draft watch disconnected ({type(exc).__name__}: {exc}); "
                     f"reconnecting, attempt {failures + 1} of {MAX_FAILED_SESSIONS}",
                     {"league": self.league_id, "event": "disconnect"})
+
+    def draft_finished(self) -> bool:
+        """Every pick the league has is recorded."""
+        return self.state.on_the_clock > self.league.teams * self.league.rounds
 
     def _check_init_queue(self, echo: list[int]) -> None:
         """Record whether INIT's apparent queue matched this connection's first echo.
@@ -485,7 +502,13 @@ class DraftWatch:
             self.picks_seen += 1
             await self._snapshot()
             if team_id == self.team_id and self.own_pick and not self.own_pick.done():
-                self.own_pick.set_result({"overall": overall, "player_id": pid, "name": name})
+                # Our team's SELECTED is the answer to our SELECT, but not
+                # always the player we asked for: an autopick on an expired
+                # clock, or a queue pick racing ours, arrives the same way.
+                asked = self.own_pick_player
+                self.own_pick.set_result({"overall": overall, "player_id": pid, "name": name,
+                                          "requested_player_id": asked,
+                                          "as_requested": asked is not None and pid == asked})
             await self._announce_pick(overall, team_id, name)
         elif kind == "SELECTING" and len(fields) >= 2 and fields[1].isdigit():
             # ESPN naming the team that has just gone on the clock: the event the
@@ -648,15 +671,19 @@ class DraftWatch:
 
     async def select(self, player_id: int, timeout: float = 10.0) -> dict:
         """Make our pick: `SELECT <playerId>`, then wait for the server's SELECTED
-        for our team (or its ERROR line). Only valid while connected and on the clock."""
+        for our team (or its ERROR line). Only valid while connected and on the
+        clock. The result says whether the player ESPN recorded is the one asked
+        for (`as_requested`); a caller reads that before reporting the pick made."""
         if self.ws is None:
             raise RuntimeError("draft watch is not connected")
         self.own_pick = asyncio.get_running_loop().create_future()
+        self.own_pick_player = int(player_id)
         await self.ws.send(f"SELECT {player_id}\n")
         try:
             return await asyncio.wait_for(self.own_pick, timeout=timeout)
         finally:
             self.own_pick = None
+            self.own_pick_player = None
 
     async def _announce_pick(self, overall: int, team_id: int, name: str) -> None:
         s = self.state.summary()

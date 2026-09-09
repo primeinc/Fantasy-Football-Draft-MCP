@@ -2005,8 +2005,12 @@ async def make_pick(league_id: str, player_name: str) -> str:
     except Exception as exc:
         return _emit({"error": f"{type(exc).__name__}: {exc}",
                            "traceback": traceback.format_exc()})
-    return _emit({"picked": accepted, "resolved": resolved, "resolved_from": player_name,
-                       **w.state.summary()}, indent=2)
+    out = {"picked": accepted, "resolved": resolved, "resolved_from": player_name}
+    if not accepted.get("as_requested", True):
+        out["warning"] = (f"ESPN recorded {accepted['name']} for your team, not "
+                          f"{resolved}: the clock may have expired into an autopick, "
+                          f"or a queued player went first")
+    return _emit({**out, **w.state.summary()}, indent=2)
 
 
 def _watch_or_error(league_id: str):
