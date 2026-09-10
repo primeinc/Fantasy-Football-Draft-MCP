@@ -2470,6 +2470,47 @@ ROSTER_LIVE = "ESPN's roster for the week"
 ROSTER_DRAFT = "the draft record; ESPN's roster could not be read"
 
 
+def _status_text(v) -> str | None:
+    return None if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+
+
+@mcp.tool(structured_output=False)
+def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
+    """Every player on your roster against ESPN's dated injury feed.
+
+    Each row carries the roster's own `roster_status` (what the fantasy entry
+    says now) and, when the feed lists him, `feed_fantasy_status`, the
+    `injury`, the report line, and `as_of` -- the date ESPN filed that entry.
+    `agrees_with_roster` is false where the fantasy roster has not caught up
+    with the report, which is the row to act on. `in_feed` false is the
+    ordinary state of a healthy player, not a failed lookup.
+
+    The point of this tool is the date. A search summary reported a healthy
+    receiver as questionable from a January report; a status without a date
+    is not evidence and this surface refuses to print one. `feed_timestamp`
+    is when ESPN built the feed; `basis` names the source. If the feed cannot
+    be read the answer is an error, not the roster's status alone dressed up
+    as the report."""
+    from . import injuries
+
+    board = _build_board()
+    state = _state()
+    mine, roster_basis = _my_roster(league_id, season, week, board, state)
+    try:
+        feed, stamp = injuries.parse_injuries(injuries.fetch_injuries())
+    except Exception as exc:
+        return _emit({"error": f"could not read ESPN's injury feed: "
+                               f"{type(exc).__name__}: {exc}",
+                      "week": week, "season": season, "roster_basis": roster_basis})
+    rows = injuries.for_roster(feed, mine)
+    return _emit(_jsonable({
+        "week": week, "season": season, "feed_timestamp": stamp,
+        "basis": injuries.FEED_BASIS, "roster_basis": roster_basis,
+        "disagreements": [r["player"] for r in rows if r.get("agrees_with_roster") is False],
+        "players": rows,
+    }), indent=2)
+
+
 def _my_roster(league_id: str, season: int, week: int | None, board: pd.DataFrame,
                state) -> tuple[pd.DataFrame, str]:
     """My roster as ESPN holds it, and where it came from.
@@ -2741,6 +2782,10 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
             "position": str(row["position"]),
             "week_points": round(float(row[lineup.WEEK_VALUE]), 1),
             "basis": str(row[lineup.WEEK_BASIS]),
+            # The status the week_points stand on. QUESTIONABLE is not a zero
+            # (see week_value) but it is a fact the reader decides with, and it
+            # was not on this surface: it had to be probed out of the roster.
+            "injury_status": _status_text(row.get("espn_injury")),
             "why": lineup.why_started(row, alts, lineup.WEEK_VALUE),
             "alternatives": alts,
         })
@@ -2757,8 +2802,11 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
         "lineup": slots,
         "bench": [{"player": str(r["name"]), "position": str(r["position"]),
                    "week_points": round(float(r[lineup.WEEK_VALUE]), 1),
-                   "basis": str(r[lineup.WEEK_BASIS]), "kickoff": kickoff(r)}
+                   "basis": str(r[lineup.WEEK_BASIS]), "kickoff": kickoff(r),
+                   "injury_status": _status_text(r.get("espn_injury"))}
                   for _, r in bench.iterrows()],
+        "injury_basis": ("ESPN fantasy injuryStatus on the roster entry at read time; "
+                         "`injury_report` gives the dated report behind it"),
         # Every distinct kickoff on the roster with who locks at it, earliest
         # first, so the next deadline is read rather than remembered. A player
         # with no kickoff has no game this week or no team on his row.
@@ -3242,7 +3290,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "watchstore", "lineup_write")
+                "trade", "waivers", "watchstore", "lineup_write", "injuries")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

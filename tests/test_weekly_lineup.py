@@ -106,6 +106,16 @@ class TestThePayload:
         assert out["no_kickoff"] == []
         assert out["kickoff_basis"] == "nfldata schedule, Eastern time"
 
+    def test_every_row_carries_the_injury_status_its_points_stand_on(self, monkeypatch):
+        entries = _entries()
+        entries[3]["playerPoolEntry"]["player"]["injuryStatus"] = "QUESTIONABLE"  # WR One
+        _wire(monkeypatch, entries=entries)
+        out = _call()
+        status = {r["player"]: r["injury_status"] for r in out["lineup"] + out["bench"]}
+        assert status["WR One"] == "QUESTIONABLE"
+        assert status["QB One"] is None
+        assert "injury_report" in out["injury_basis"]
+
     def test_an_unreadable_schedule_is_said_not_guessed(self, monkeypatch):
         _wire(monkeypatch)
         monkeypatch.setattr(sources, "schedules",
