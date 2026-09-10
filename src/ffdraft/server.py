@@ -2696,6 +2696,84 @@ def _lineup_inputs(league_id: str, week: int, season: int):
 
 
 @mcp.tool(structured_output=False)
+def live_scores(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
+    """The games being played right now, and what they are doing to every
+    team in the league.
+
+    For each game in progress (or finished today): score and clock, then every
+    rostered player in it grouped by fantasy team -- started or benched, points
+    applied so far, ESPN's projection -- and for your own players the box-score
+    line behind the number. Then the matchup board: every pairing's live and
+    projected totals, yours marked. `no_game_in_progress` is said when nothing
+    is on; nothing is inferred from a game that has not started.
+
+    A read, not a model: the points are ESPN's own applied totals, and the
+    basis names the three surfaces they come from."""
+    from . import live
+
+    my_team = None
+    try:
+        payload = live.fetch_league_live(league_id, season, week)
+        players = live.league_players(payload, week)
+        board_rows = live.matchups(payload, week)
+        from . import rosters
+        my_team = rosters.my_team_id(payload.get("teams") or [])
+    except Exception as exc:
+        return _emit({"error": f"could not read the league: {type(exc).__name__}: {exc}",
+                      "week": week, "season": season})
+    try:
+        all_games = live.games(live.fetch_scoreboard())
+    except Exception as exc:
+        return _emit({"error": f"could not read the scoreboard: {type(exc).__name__}: {exc}",
+                      "week": week, "season": season})
+
+    on = [g for g in all_games if g["state"] in ("in", "post")]
+    out_games = []
+    for g in on:
+        lines: dict = {}
+        if g["state"] == "in" or any(p["fantasy_team_id"] == my_team and p["pro_team"] in g["teams"]
+                                     for p in players):
+            try:
+                lines = live.box_lines(live.fetch_summary(g["event_id"]))
+            except Exception as exc:
+                lines = {"_unread": f"{type(exc).__name__}: {exc}"}
+        by_team: dict[str, list] = {}
+        for p in players:
+            if p["pro_team"] not in g["teams"]:
+                continue
+            row = {"player": p["player"], "pro_team": p["pro_team"],
+                   "started": p["started"], "live": p["live"], "proj": p["proj"]}
+            if p["fantasy_team_id"] == my_team and p["player"] in lines:
+                row["box"] = lines[p["player"]]
+            by_team.setdefault(str(p["fantasy_team"]), []).append(row)
+        for rows in by_team.values():
+            rows.sort(key=lambda r: -(r["live"] or 0.0))
+        out_games.append({"game": g["name"], "state": g["state"], "detail": g["detail"],
+                          "home": g["home"], "away": g["away"],
+                          "box_unread": lines.get("_unread"),
+                          "players_by_fantasy_team": by_team})
+
+    board: list[dict[str, Any]] = []
+    for m in board_rows:
+        mine = my_team in (m["home"]["team_id"], m["away"]["team_id"])
+        board.append({**m, "mine": mine})
+
+    def hottest(m: dict[str, Any]) -> tuple[bool, float]:
+        return (not m["mine"], -max(float(m["home"]["live"]), float(m["away"]["live"])))
+
+    board.sort(key=hottest)
+    upcoming = sorted({g["detail"] for g in all_games if g["state"] == "pre"})
+    return _emit(_jsonable({
+        "week": week, "season": season,
+        "games": out_games,
+        "no_game_in_progress": not any(g["state"] == "in" for g in all_games),
+        "next_kickoff": upcoming[0] if upcoming else None,
+        "matchups": board,
+        "basis": live.LIVE_BASIS,
+    }), indent=2)
+
+
+@mcp.tool(structured_output=False)
 def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     """One compact read of everything that can change the week's action.
 
@@ -3380,7 +3458,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "watchstore", "lineup_write", "injuries")
+                "trade", "waivers", "watchstore", "lineup_write", "injuries", "live")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:
