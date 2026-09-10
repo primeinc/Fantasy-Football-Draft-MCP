@@ -47,8 +47,8 @@ class TestEntryFacts:
     def test_reads_the_fields_the_board_shape_needs(self):
         f = rosters.entry_facts(_entry(3001, "Real Back", 2, slot=2), POSITIONS)
         assert f == {"espn_id": "3001", "name": "Real Back", "position": "RB",
-                     "lineup_slot": 2, "espn_injury": None, "injured": False,
-                     "eligible_slots": None, "lineup_locked": None}
+                     "team": None, "lineup_slot": 2, "espn_injury": None,
+                     "injured": False, "eligible_slots": None, "lineup_locked": None}
 
     def test_an_injury_status_is_carried_as_espn_files_it(self):
         f = rosters.entry_facts(
@@ -180,6 +180,20 @@ class TestRosterRows:
         assert ghost["lineup_slot"] == 2
         assert ghost["eligible_slots"] == [2, 20]
         assert ghost["lineup_locked"] is True
+
+    def test_a_stand_in_gets_his_team_and_bye_from_espn_and_the_board(self):
+        # MarShawn Lloyd, 2026-09-09: off the board (no 2025 stats), so a
+        # stand-in with team NaN and bye NaN -- no bye zeroing, no kickoff.
+        # ESPN's entry carries proTeamId 9 (GB); the board knows GB's bye.
+        board = _board()
+        board["team"] = ["NE", "NE", "CIN", "NE", "BAL"]
+        board["bye_week"] = [11.0, 11.0, 6.0, 11.0, 13.0]
+        entry = _entry(7777, "Ghost Back", 2)
+        entry["playerPoolEntry"]["player"]["proTeamId"] = 17
+        out = rosters.roster_rows([_entry(3001, "Real Back", 2), entry], board, POSITIONS)
+        ghost = out.set_index("name").loc["Ghost Back"]
+        assert ghost["team"] == "NE"
+        assert ghost["bye_week"] == 11.0
 
     def test_facts_absent_from_the_entry_stay_absent(self):
         out = rosters.roster_rows([_entry(3001, "Real Back", 2)], _board(), POSITIONS)

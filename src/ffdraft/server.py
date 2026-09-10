@@ -2701,12 +2701,26 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
 
     starters, bench = lineup.starting_lineup(priced, league,
                                              value=lineup.WEEK_VALUE)
+    # When each man locks, from the schedule and not from the calendar: the
+    # 2026 opener was a Wednesday. Absent when the schedule cannot be read,
+    # and said so, rather than guessed.
+    try:
+        kicks = lineup.kickoff_times(sources.schedules(), season, week)
+        kickoff_basis = "nfldata schedule, Eastern time"
+    except Exception as exc:
+        kicks, kickoff_basis = {}, f"schedule unavailable: {type(exc).__name__}: {exc}"
+
+    def kickoff(row) -> str | None:
+        team = row.get("team")
+        return None if team is None or pd.isna(team) else kicks.get(str(team))
+
     slots = []
     for _, row in starters.iterrows():
         alts = lineup.slot_alternatives(row, bench, league, lineup.WEEK_VALUE)
         slot_name = str(row[lineup.SLOT_COLUMN])
         slots.append({
             "slot": slot_name,
+            "kickoff": kickoff(row),
             # The label ESPN's UI shows, because `slot` is the league's internal
             # name and this output is now instructions a human retypes into that
             # UI -- a label that does not match the screen is where a
@@ -2743,8 +2757,17 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
         "lineup": slots,
         "bench": [{"player": str(r["name"]), "position": str(r["position"]),
                    "week_points": round(float(r[lineup.WEEK_VALUE]), 1),
-                   "basis": str(r[lineup.WEEK_BASIS])}
+                   "basis": str(r[lineup.WEEK_BASIS]), "kickoff": kickoff(r)}
                   for _, r in bench.iterrows()],
+        # Every distinct kickoff on the roster with who locks at it, earliest
+        # first, so the next deadline is read rather than remembered. A player
+        # with no kickoff has no game this week or no team on his row.
+        "locks": [{"kickoff": k, "players": [str(r["name"]) for _, r in priced.iterrows()
+                                             if kickoff(r) == k]}
+                  for k in sorted(k for k in {kickoff(r) for _, r in priced.iterrows()}
+                                  if k is not None)],
+        "no_kickoff": [str(r["name"]) for _, r in priced.iterrows() if kickoff(r) is None],
+        "kickoff_basis": kickoff_basis,
         "unfilled_slots": lineup.unfilled_slots(starters, league),
         "unplaceable": [str(n) for n in lineup.unplaceable(priced).get("name", [])],
         # How many of the pool ESPN gave a weekly projection for, so the reader

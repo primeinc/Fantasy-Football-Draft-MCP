@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 
 from .board import (
+    _ESPN_TEAM_ABBR,
     UNPRICED,
     espn_cookies,
     espn_league_url,
@@ -77,9 +78,15 @@ def entry_facts(entry: dict, positions: dict[str, str]) -> dict:
     pid = player.get("id", entry.get("playerId"))
     pos_id = player.get("defaultPositionId")
     position = None if pos_id is None else positions.get(str(pos_id))
+    pro_team = player.get("proTeamId")
     return {
         "espn_id": None if pid is None else str(pid),
         "name": str(player.get("fullName") or ""),
+        # ESPN's team, in the board's abbreviation, so a player the board does
+        # not carry still has a team -- and through it a bye week and a kickoff.
+        # MarShawn Lloyd (GB, no 2025 stats, off the board) had neither.
+        "team": (_ESPN_TEAM_ABBR.get(int(pro_team))
+                 if pro_team not in (None, 0, "0") else None),
         # Through the one rule, so an unmapped id yields no position rather than
         # something that fails a slot match later and looks like a data gap.
         "position": position if is_position(position) else None,
@@ -170,6 +177,18 @@ def roster_rows(entries: list[dict], board: pd.DataFrame, positions: dict[str, s
             fill = pd.Series([by_name.get(k, {}).get(col) for k in keys],
                              index=out.index, dtype="object")
             out[col] = out[col].astype("object").where(~out[UNPRICED], fill)
+        # `with_stand_ins` leaves team and bye empty because the draft record
+        # knows neither. ESPN's entry knows the team, and the board knows each
+        # team's bye, so a stand-in read from ESPN gets both as facts.
+        if "team" in out.columns:
+            team_fill = pd.Series([by_name.get(k, {}).get("team") for k in keys],
+                                  index=out.index, dtype="object")
+            out["team"] = out["team"].astype("object").where(~out[UNPRICED], team_fill)
+            if "bye_week" in out.columns and "bye_week" in board.columns:
+                byes = (board.dropna(subset=["team", "bye_week"])
+                        .drop_duplicates("team").set_index("team")["bye_week"])
+                bye_fill = out["team"].map(byes)
+                out["bye_week"] = out["bye_week"].where(~out[UNPRICED], bye_fill)
     out["shape"] = ROSTER_SHAPE
     return out.reset_index(drop=True)
 

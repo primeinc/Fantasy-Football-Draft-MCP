@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from ffdraft import board as bd
-from ffdraft import lineup, rosters, server
+from ffdraft import lineup, rosters, server, sources
 from ffdraft.config import LeagueSettings
 
 
@@ -40,8 +40,17 @@ def _board():
         "espn_id": str(1000 + i), "replacement_points": 100.0, "vor": v - 100.0,
         "draft_score": v - 100.0, "adj_ppg": v / 17.0, "exp_games": 17.0,
         "bye_week": 5, "espn_injury": None, "off_roster": False,
-        "is_rookie": False,
+        "is_rookie": False, "team": "AAA" if i % 2 else "BBB",
     } for i, (n, p, _pid, v) in enumerate(ROSTER)])
+
+
+def _schedule():
+    """Week 9: AAA plays Sunday early, BBB plays Monday night."""
+    return pd.DataFrame({
+        "season": [2026, 2026], "week": [9, 9], "game_type": ["REG", "REG"],
+        "gameday": ["2026-11-01", "2026-11-02"], "gametime": ["13:00", "20:15"],
+        "home_team": ["AAA", "BBB"], "away_team": ["CCC", "DDD"],
+    })
 
 
 def _entries(started=("WR One", "WR Two", "RB One", "RB Two", "QB One",
@@ -67,6 +76,7 @@ def _wire(monkeypatch, *, weekly=None, entries=None, board=None, league=None):
                                                      else entries}}])
     monkeypatch.setattr(rosters, "fetch_weekly_projections",
                         lambda *a, **k: weekly or {})
+    monkeypatch.setattr(sources, "schedules", _schedule)
     monkeypatch.setenv("ESPN_SWID", "{ME}")
 
 
@@ -81,6 +91,29 @@ class TestThePayload:
         assert sorted(s["slot"] for s in out["lineup"]) == [
             "DST", "K", "QB", "RB", "RB", "TE", "WR", "WR"]
         assert out["unfilled_slots"] == {}
+
+    def test_every_man_says_when_he_locks_and_the_deadlines_are_listed(self, monkeypatch):
+        # 2026-09-09: the opener was a Wednesday and the deadlines were being
+        # read off the calendar. They come from the schedule now.
+        _wire(monkeypatch)
+        out = _call()
+        assert all(s["kickoff"] in ("2026-11-01 13:00 ET", "2026-11-02 20:15 ET")
+                   for s in out["lineup"] + out["bench"])
+        assert [lk["kickoff"] for lk in out["locks"]] == [
+            "2026-11-01 13:00 ET", "2026-11-02 20:15 ET"]
+        assert "QB One" in out["locks"][1]["players"]      # BBB, index 0
+        assert "RB One" in out["locks"][0]["players"]      # AAA, index 1
+        assert out["no_kickoff"] == []
+        assert out["kickoff_basis"] == "nfldata schedule, Eastern time"
+
+    def test_an_unreadable_schedule_is_said_not_guessed(self, monkeypatch):
+        _wire(monkeypatch)
+        monkeypatch.setattr(sources, "schedules",
+                            lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+        out = _call()
+        assert out["locks"] == []
+        assert len(out["no_kickoff"]) == len(ROSTER)
+        assert "offline" in out["kickoff_basis"]
 
     def test_the_lowest_projected_players_still_start_when_only_they_can(
             self, monkeypatch):

@@ -162,6 +162,21 @@ def _live(players):
     return rows
 
 
+class TestKickoffTimes:
+    def test_each_team_gets_its_game_time_and_a_bye_is_absent(self):
+        sched = pd.DataFrame({
+            "season": [2026, 2026, 2026], "week": [1, 1, 2],
+            "game_type": ["REG", "REG", "REG"],
+            "gameday": ["2026-09-09", "2026-09-13", "2026-09-17"],
+            "gametime": ["20:20", "13:00", "20:15"],
+            "home_team": ["SEA", "CIN", "GB"], "away_team": ["NE", "TB", "MIN"],
+        })
+        kicks = lineup.kickoff_times(sched, 2026, 1)
+        assert kicks == {"SEA": "2026-09-09 20:20 ET", "NE": "2026-09-09 20:20 ET",
+                         "CIN": "2026-09-13 13:00 ET", "TB": "2026-09-13 13:00 ET"}
+        assert lineup.kickoff_times(sched.iloc[0:0], 2026, 1) == {}
+
+
 class TestWhatEspnWillNotLetStart:
     """IR and lock status from the live roster bound the pool.
 

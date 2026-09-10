@@ -200,6 +200,28 @@ def starting_lineup(rows: pd.DataFrame, league: LeagueSettings,
 WEEK_VALUE = "week_points"
 WEEK_BASIS = "week_points_basis"
 
+
+def kickoff_times(schedule: pd.DataFrame, season: int, week: int) -> dict[str, str]:
+    """Team -> "YYYY-MM-DD HH:MM ET" for its game in `week`, from the nfldata
+    schedule (gametime is Eastern there). A team with no game that week is
+    absent, which is what a bye looks like.
+
+    The reason this is a column and not an assumption: the 2026 season opened
+    on a WEDNESDAY (NE@SEA, Sept 9), and the lock deadlines were being read
+    off the calendar convention rather than the schedule.
+    """
+    if schedule.empty:
+        return {}
+    games = schedule[(schedule["season"] == season) & (schedule["week"] == week)]
+    if "game_type" in games.columns:
+        games = games[games["game_type"] == "REG"]
+    out: dict[str, str] = {}
+    for _, g in games.iterrows():
+        when = f"{g['gameday']} {g['gametime']} ET"
+        out[str(g["home_team"])] = when
+        out[str(g["away_team"])] = when
+    return out
+
 # Why a player is worth what he is worth this week, per row. A fallback applied
 # silently is #39's defect in a new place: the number is not wrong, it just
 # cannot be told apart from a measured one. 639 of the 1036 players in the live
