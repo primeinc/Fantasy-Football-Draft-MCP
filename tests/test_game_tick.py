@@ -41,10 +41,21 @@ def test_a_quiet_week_reads_as_quiet_with_every_basis_named(monkeypatch):
 def test_a_roster_that_lags_the_feed_is_a_disagreement(monkeypatch):
     # WR One is QUESTIONABLE in the feed and ACTIVE on the roster: the row to
     # act on. The fixture roster's team is not JAX, so the join is by name.
-    out = _tick(monkeypatch)
+    # ACTIVE is said explicitly: a roster entry with no status is not ACTIVE
+    # and would make the comparison undecidable rather than a disagreement.
+    entries = _entries()
+    for e in entries:
+        if e["playerPoolEntry"]["player"]["fullName"] == "WR One":
+            e["playerPoolEntry"]["player"]["injuryStatus"] = "ACTIVE"
+    out = _tick(monkeypatch, entries=entries)
     assert [d["player"] for d in out["disagreements"]] == ["WR One"]
     assert out["disagreements"][0]["as_of"] == "2026-09-09T16:28Z"
     assert out["newest_feed_entry"]["player"] == "WR One"
+    # The feed entry carried no id, so the join was by name, and the tick says so.
+    assert out["name_joined"] == ["WR One"]
+    # Everyone else on the fixture carries no status at all, and that is its
+    # own state on the surface, not ACTIVE.
+    assert "WR One" not in out["status_unknown"] and len(out["status_unknown"]) == 8
 
 
 def test_an_unreadable_feed_or_schedule_is_named_not_filled(monkeypatch):

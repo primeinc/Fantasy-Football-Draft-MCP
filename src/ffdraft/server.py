@@ -2507,6 +2507,12 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
         "week": week, "season": season, "feed_timestamp": stamp,
         "basis": injuries.FEED_BASIS, "roster_basis": roster_basis,
         "disagreements": [r["player"] for r in rows if r.get("agrees_with_roster") is False],
+        # Joined by name rather than id: the heuristic path, named so a
+        # suffix or a rename cannot pass for an id match.
+        "name_joined": [r["player"] for r in rows if r["joined_by"] == injuries.JOINED_BY_NAME],
+        # No status on the roster entry at all. Not ACTIVE: ESPN files none
+        # for a defense, and "no status" is what it is.
+        "status_unknown": [r["player"] for r in rows if r["roster_status"] is None],
         "players": rows,
     }), indent=2)
 
@@ -2716,8 +2722,11 @@ def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     locked = [str(r["name"]) for _, r in priced.iterrows() if r.get("lineup_locked") is True]
     statuses = {str(r["name"]): _status_text(r.get("espn_injury")) for _, r in priced.iterrows()
                 if _status_text(r.get("espn_injury")) not in (None, "ACTIVE")}
+    # No status at all is its own state, not ACTIVE. A defense has none.
+    status_unknown = [str(r["name"]) for _, r in priced.iterrows()
+                      if _status_text(r.get("espn_injury")) is None]
 
-    feed_stamp, disagreements, newest = None, [], None
+    feed_stamp, disagreements, newest, name_joined = None, [], None, []
     try:
         feed, feed_stamp = injuries.parse_injuries(injuries.fetch_injuries())
         rows = injuries.for_roster(feed, priced)
@@ -2725,6 +2734,7 @@ def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
                           "feed": r.get("feed_fantasy_status"), "as_of": r.get("as_of"),
                           "comment": r.get("comment")}
                          for r in rows if r.get("agrees_with_roster") is False]
+        name_joined = [r["player"] for r in rows if r["joined_by"] == injuries.JOINED_BY_NAME]
         dated = [r for r in rows if r.get("as_of")]
         if dated:
             top = max(dated, key=lambda r: str(r["as_of"]))
@@ -2756,9 +2766,12 @@ def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         "espn_weekly_projections_seen": weekly_seen,
         "locked": locked,
         "statuses": statuses,
-        "status_basis": "ESPN fantasy injuryStatus on the roster entry at read time",
+        "status_unknown": status_unknown,
+        "status_basis": ("ESPN fantasy injuryStatus on the roster entry at read time; "
+                         "absent from the feed is absence from the feed, not health"),
         "feed_timestamp": feed_stamp,
         "disagreements": disagreements,
+        "name_joined": name_joined,
         "newest_feed_entry": newest,
         "next_lock": next_lock,
         "next_lock_basis": "nfldata schedule, Eastern time; players not already locked",
