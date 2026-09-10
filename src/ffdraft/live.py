@@ -76,6 +76,7 @@ def games(scoreboard: dict) -> list[dict]:
             sides[c.get("homeAway")] = {"team": _abbr(c.get("team") or {}),
                                         "score": c.get("score")}
         out.append({"event_id": str(ev.get("id")), "name": ev.get("shortName"),
+                    "date": ev.get("date"),
                     "state": status.get("state"), "detail": status.get("detail"),
                     "home": sides.get("home"), "away": sides.get("away"),
                     "teams": {s["team"] for s in sides.values()}})

@@ -2762,12 +2762,15 @@ def live_scores(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         return (not m["mine"], -max(float(m["home"]["live"]), float(m["away"]["live"])))
 
     board.sort(key=hottest)
-    upcoming = sorted({g["detail"] for g in all_games if g["state"] == "pre"})
+    # Ordered by the event's ISO date, not its display string: "Mon" sorts
+    # before "Thu" as text, and the first live run said Monday's game was next.
+    upcoming = sorted((g for g in all_games if g["state"] == "pre"),
+                      key=lambda g: str(g.get("date") or ""))
     return _emit(_jsonable({
         "week": week, "season": season,
         "games": out_games,
         "no_game_in_progress": not any(g["state"] == "in" for g in all_games),
-        "next_kickoff": upcoming[0] if upcoming else None,
+        "next_kickoff": upcoming[0]["detail"] if upcoming else None,
         "matchups": board,
         "basis": live.LIVE_BASIS,
     }), indent=2)

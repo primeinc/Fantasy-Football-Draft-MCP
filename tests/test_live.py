@@ -6,12 +6,19 @@ import json
 from ffdraft import live, server
 
 SCOREBOARD = {"events": [
-    {"id": "401", "shortName": "NE @ SEA",
+    {"id": "401", "shortName": "NE @ SEA", "date": "2026-09-10T00:20Z",
      "status": {"type": {"state": "in", "detail": "Halftime"}},
      "competitions": [{"competitors": [
          {"homeAway": "home", "team": {"id": 26, "abbreviation": "SEA"}, "score": "0"},
          {"homeAway": "away", "team": {"id": 17, "abbreviation": "NE"}, "score": "7"}]}]},
-    {"id": "402", "shortName": "SF VS LAR",
+    # Listed before Thursday's game on purpose: "Mon" sorts before "Thu" as
+    # text, and the first live run said Monday was next.
+    {"id": "403", "shortName": "DEN @ KC", "date": "2026-09-15T00:15Z",
+     "status": {"type": {"state": "pre", "detail": "Mon, September 14th at 8:15 PM EDT"}},
+     "competitions": [{"competitors": [
+         {"homeAway": "home", "team": {"id": 12, "abbreviation": "KC"}, "score": "0"},
+         {"homeAway": "away", "team": {"id": 7, "abbreviation": "DEN"}, "score": "0"}]}]},
+    {"id": "402", "shortName": "SF VS LAR", "date": "2026-09-11T00:35Z",
      "status": {"type": {"state": "pre", "detail": "Thu, September 10th at 8:35 PM EDT"}},
      "competitions": [{"competitors": [
          {"homeAway": "home", "team": {"id": 14, "abbreviation": "LAR"}, "score": "0"},
@@ -59,7 +66,7 @@ class TestTheReads:
         g = live.games(SCOREBOARD)
         assert g[0]["state"] == "in" and g[0]["away"] == {"team": "NE", "score": "7"}
         # LAR on the scoreboard is LA on the board; the id decides.
-        assert g[1]["home"]["team"] == "LA" and g[1]["state"] == "pre"
+        assert g[2]["home"]["team"] == "LA" and g[2]["state"] == "pre"
 
     def test_box_lines_are_labelled(self):
         lines = live.box_lines(SUMMARY)
@@ -102,7 +109,7 @@ class TestTheTool:
         assert out["next_kickoff"] == "Thu, September 10th at 8:35 PM EDT"
 
     def test_no_game_on_is_said_not_inferred(self, monkeypatch):
-        pre = {"events": [dict(SCOREBOARD["events"][1])]}
+        pre = {"events": [dict(SCOREBOARD["events"][2])]}
         self.wire(monkeypatch, scoreboard=pre)
         out = json.loads(server.live_scores("1", 1))
         assert out["no_game_in_progress"] is True and out["games"] == []
