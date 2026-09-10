@@ -2690,6 +2690,83 @@ def _lineup_inputs(league_id: str, week: int, season: int):
 
 
 @mcp.tool(structured_output=False)
+def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
+    """One compact read of everything that can change the week's action.
+
+    For a loop that checks every few minutes: what the model's lineup would
+    change against ESPN's (`versus_espn`, empty when they agree), who is
+    locked, every non-ACTIVE status, the injury feed's timestamp and the
+    players whose roster status lags it (`disagreements`), the newest feed
+    entry for anyone on the roster, and the next kickoff not yet passed with
+    who locks at it. Each number names its basis. A part that cannot be read
+    is reported as such in `unread`, never filled in.
+
+    `weekly_lineup` is the reasoning; this is the delta. Read this first and
+    the full tool only when something here moved."""
+    from . import injuries, lineup, rosters
+
+    unread: dict[str, str] = {}
+    try:
+        league, priced, weekly_seen, _team_id = _lineup_inputs(league_id, week, season)
+    except Exception as exc:
+        return _emit({"error": f"could not read the roster: {type(exc).__name__}: {exc}",
+                      "week": week, "season": season})
+    starters, _bench = lineup.starting_lineup(priced, league, value=lineup.WEEK_VALUE)
+    versus = lineup.against_espn(starters, rosters.started(priced), lineup.WEEK_VALUE)
+    locked = [str(r["name"]) for _, r in priced.iterrows() if r.get("lineup_locked") is True]
+    statuses = {str(r["name"]): _status_text(r.get("espn_injury")) for _, r in priced.iterrows()
+                if _status_text(r.get("espn_injury")) not in (None, "ACTIVE")}
+
+    feed_stamp, disagreements, newest = None, [], None
+    try:
+        feed, feed_stamp = injuries.parse_injuries(injuries.fetch_injuries())
+        rows = injuries.for_roster(feed, priced)
+        disagreements = [{"player": r["player"], "roster": r["roster_status"],
+                          "feed": r.get("feed_fantasy_status"), "as_of": r.get("as_of"),
+                          "comment": r.get("comment")}
+                         for r in rows if r.get("agrees_with_roster") is False]
+        dated = [r for r in rows if r.get("as_of")]
+        if dated:
+            top = max(dated, key=lambda r: str(r["as_of"]))
+            newest = {"player": top["player"], "as_of": top["as_of"],
+                      "feed_fantasy_status": top.get("feed_fantasy_status"),
+                      "comment": top.get("comment")}
+    except Exception as exc:
+        unread["injury_feed"] = f"{type(exc).__name__}: {exc}"
+
+    next_lock = None
+    try:
+        kicks = lineup.kickoff_times(sources.schedules(), season, week)
+        unlocked = [(str(r["name"]), kicks[str(r["team"])]) for _, r in priced.iterrows()
+                    if r.get("team") is not None and pd.notna(r.get("team"))
+                    and str(r["team"]) in kicks and r.get("lineup_locked") is not True]
+        if unlocked:
+            soonest = min(k for _, k in unlocked)
+            next_lock = {"kickoff": soonest,
+                         "players": [n for n, k in unlocked if k == soonest]}
+    except Exception as exc:
+        unread["schedule"] = f"{type(exc).__name__}: {exc}"
+
+    return _emit(_jsonable({
+        "week": week, "season": season,
+        "versus_espn": versus,
+        "projected_points": round(float(starters[lineup.WEEK_VALUE].sum()), 1)
+        if not starters.empty else 0.0,
+        "priced_by": priced[lineup.WEEK_BASIS].value_counts().to_dict(),
+        "espn_weekly_projections_seen": weekly_seen,
+        "locked": locked,
+        "statuses": statuses,
+        "status_basis": "ESPN fantasy injuryStatus on the roster entry at read time",
+        "feed_timestamp": feed_stamp,
+        "disagreements": disagreements,
+        "newest_feed_entry": newest,
+        "next_lock": next_lock,
+        "next_lock_basis": "nfldata schedule, Eastern time; players not already locked",
+        "unread": unread,
+    }), indent=2)
+
+
+@mcp.tool(structured_output=False)
 def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     """The lineup that maximises expected points this week, and why each slot.
 
