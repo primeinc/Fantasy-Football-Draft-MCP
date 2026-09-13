@@ -640,6 +640,22 @@ Not yet run against a populated roster: ESPN withholds rosters until the draft
 completes. The first real send is a bench-to-bench move the user approves, read
 back afterwards.
 
+### `league_rosters`
+
+Every team in the league and who is on it, from ESPN's `mRoster`+`mTeam` views:
+`league_rosters(league_id, week=0, team="")`. One row per player,
+`[player, position, pro_team, slot, status]`, where `slot` is where that team has
+him (QB, RB, WR, TE, FLEX, K, DST, BENCH, IR) and `status` is ESPN's fantasy
+injury status, null where ESPN files none. Adds, drops and trades are in it; the
+draft record is not read. Players the board does not carry are listed like any
+other, and nothing is priced.
+
+Your team is first and marked `mine`. Owners are display names from `members`,
+never SWIDs. A position or slot id outside ESPN's tables prints as its id. `team`
+narrows to an id, or a name or owner substring, and `no_team_matches` says when
+it narrowed to nothing. `week` 0 reads the current scoring period. An unreadable
+response is an `error`, never an empty league.
+
 ### `league_rules`
 The ESPN league's rules as ESPN states them, from the `mSettings` view: draft
 type, rounds and clock, starting slots, bench and IR, position limits, every

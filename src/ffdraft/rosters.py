@@ -28,6 +28,7 @@ from .board import (
     espn_cookies,
     espn_league_url,
     is_position,
+    league_directory_from_mteam,
     norm_name,
     with_stand_ins,
 )
@@ -193,10 +194,11 @@ def roster_rows(entries: list[dict], board: pd.DataFrame, positions: dict[str, s
     return out.reset_index(drop=True)
 
 
-def fetch_roster_teams(league_id: str, season: int = CURRENT_SEASON,
-                       week: int | None = None, swid: str | None = None,
-                       espn_s2: str | None = None) -> list[dict]:
-    """The mRoster view's teams, each carrying its roster entries.
+def fetch_roster_payload(league_id: str, season: int = CURRENT_SEASON,
+                         week: int | None = None, swid: str | None = None,
+                         espn_s2: str | None = None) -> dict:
+    """The whole mRoster+mTeam response: `teams` with their roster entries, and
+    `members`, which is the only place an owner's display name lives.
 
     `week` becomes `scoringPeriodId`, which is what makes this a question about
     a particular week rather than about now -- #47 evaluating a trade in week 9
@@ -220,7 +222,52 @@ def fetch_roster_teams(league_id: str, season: int = CURRENT_SEASON,
                         cookies=espn_cookies(swid, espn_s2), timeout=30,
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
     resp.raise_for_status()
-    return resp.json().get("teams") or []
+    return resp.json()
+
+
+def fetch_roster_teams(league_id: str, season: int = CURRENT_SEASON,
+                       week: int | None = None, swid: str | None = None,
+                       espn_s2: str | None = None) -> list[dict]:
+    """The mRoster view's teams, each carrying its roster entries."""
+    return fetch_roster_payload(league_id, season, week, swid, espn_s2).get("teams") or []
+
+
+def league_table(payload: dict, positions: dict[str, str], slot_names: dict[str, str],
+                 swid: str | None = None) -> list[dict]:
+    """Every team's roster as ESPN holds it, one compact row per player.
+
+    Row: `[player, position, pro_team, slot, status]`. Read from the entries
+    alone, not through the board, so a player the model does not carry is listed
+    like any other and nothing is priced. A position or slot id outside ESPN's
+    published tables prints as its id ("slot 24") rather than a neighbour's
+    name. Owners are named from `members` through
+    `board.league_directory_from_mteam`, never by SWID. Your team first, then
+    ESPN team id order; a team with no entries is listed with none.
+    """
+    directory = league_directory_from_mteam(payload)
+    teams = [t for t in payload.get("teams") or [] if t.get("id") is not None]
+    mine = my_team_id(teams, swid)
+    out = []
+    for team in teams:
+        team_id = int(team["id"])
+        rows = []
+        for entry in (team.get("roster") or {}).get("entries") or []:
+            facts = entry_facts(entry, positions)
+            pos_id = _player_of(entry).get("defaultPositionId")
+            slot = facts["lineup_slot"]
+            rows.append([
+                facts["name"],
+                facts["position"] or (None if pos_id is None else f"position {pos_id}"),
+                facts["team"],
+                None if slot is None else slot_names.get(str(slot), f"slot {slot}"),
+                facts["espn_injury"],
+            ])
+        info = directory.get(team_id, {})
+        out.append({"team_id": team_id, "team": info.get("name", ""),
+                    "owners": info.get("owners", []), "mine": team_id == mine,
+                    "players": rows})
+    out.sort(key=lambda t: (not t["mine"], t["team_id"]))
+    return out
 
 
 def my_team_id(teams: list[dict], swid: str | None = None) -> int | None:

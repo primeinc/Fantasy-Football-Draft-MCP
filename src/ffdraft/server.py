@@ -2517,6 +2517,46 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
     }), indent=2)
 
 
+@mcp.tool(structured_output=False)
+def league_rosters(league_id: str, week: int = 0, team: str = "",
+                   season: int = CURRENT_SEASON) -> str:
+    """Who is on every team in the league, as ESPN holds the rosters.
+
+    One row per player, `[player, position, pro_team, slot, status]`: `slot` is
+    where that team has him (QB, RB, WR, TE, FLEX, K, DST, BENCH, IR), `status`
+    is ESPN's fantasy injury status, null where ESPN files none (a defense).
+    Read from mRoster, so every add, drop and trade is in it, and a player the
+    model does not carry is listed like any other. Your team is first and
+    marked `mine`; owners are display names.
+
+    `team` narrows to the team whose id equals it or whose name or owner
+    contains it, case-insensitive. `week` reads the rosters for that scoring
+    period; 0 is the current one.
+    """
+    from . import rosters
+
+    period = week or None
+    try:
+        payload = rosters.fetch_roster_payload(league_id, season, period)
+    except Exception as exc:
+        return _emit({"error": f"could not read ESPN's rosters: {type(exc).__name__}: {exc}",
+                      "season": season, "week": period})
+    table = rosters.league_table(payload, bd._ESPN_POSITION_NAMES, bd._ESPN_SLOT_NAMES)
+    needle = team.strip().lower()
+    if needle:
+        table = [t for t in table
+                 if needle == str(t["team_id"]) or needle in t["team"].lower()
+                 or any(needle in o.lower() for o in t["owners"])]
+    return _emit({
+        "season": season, "week": period or "current",
+        "columns": ["player", "position", "pro_team", "slot", "status"],
+        "teams": table,
+        "empty_rosters": [t["team"] for t in table if not t["players"]],
+        "no_team_matches": team if needle and not table else None,
+        "basis": "ESPN mRoster+mTeam for this league; slot and status as ESPN holds them at read time",
+    })
+
+
 def _my_roster(league_id: str, season: int, week: int | None, board: pd.DataFrame,
                state) -> tuple[pd.DataFrame, str]:
     """My roster as ESPN holds it, and where it came from.
