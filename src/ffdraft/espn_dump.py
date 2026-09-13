@@ -33,6 +33,7 @@ READ_VIEWS = (
     "mSettings", "mTeam", "mRoster", "mDraftDetail", "mMatchup", "mMatchupScore",
     "mSchedule", "mScoreboard", "mStatus", "mNav", "mPendingTransactions",
     "mLiveScoring", "mBoxscore", "mPositionalRatings", "kona_league_communication",
+    "mTransactions2",
 )
 PLAYER_FILTER = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS", "ONTEAM"]},
                              "limit": 2000,

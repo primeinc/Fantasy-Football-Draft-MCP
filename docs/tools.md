@@ -656,6 +656,46 @@ narrows to an id, or a name or owner substring, and `no_team_matches` says when
 it narrowed to nothing. `week` 0 reads the current scoring period. An unreadable
 response is an `error`, never an empty league.
 
+### `league_free_agents`
+
+Who can be added, from ESPN's in-season `kona_player_info` for the league:
+`league_free_agents(league_id, week, position="", names="", sort="week_points",
+limit=40)`. Acquirable means ESPN files the player FREEAGENT or WAIVERS **and**
+`onTeamId` is 0; absence from `league_rosters` is not the test. Rows are
+`[player, position, pro_team, status, waiver_clears, percent_owned, week_points,
+week_proj, injury_status, espn_id]`: `waiver_clears` is ESPN's
+`waiverProcessDate` in Eastern, `week_points` ESPN's applied total for the
+period so far, `week_proj` its projection, null where ESPN has no row. `names`
+returns the matches, lists a named player a team holds under `not_acquirable`,
+and a name the pool lacks under `not_found`. `census` counts the pool by status.
+Shape verified live 2026-09-13: 1038 entries, 433 FREEAGENT, 380 WAIVERS, 225
+ONTEAM.
+
+### `league_transactions`
+
+Every add, drop, trade and waiver result for one scoring period, from
+`mTransactions2`: `league_transactions(league_id, week, team="",
+include_lineup=false, include_draft=false)`. Newest first; each move is
+`[type, player, from_team, to_team]` with null for free agency. A waiver run
+carries its `processDate`; a direct move its `proposedDate`. Lineup-only moves
+and draft picks are hidden by default and `counts` covers everything. `memberId`
+is never printed. A failed waiver claim has not been observed in a live pull, so
+how ESPN records one is unverified.
+
+### `player_week`
+
+One week for named players, every part with its basis: `player_week(league_id,
+week, names)`. From ESPN's pool: status, owning team id, injury status,
+`week_points`, `week_proj`, and `espn_line`, the stat row ESPN applied, named by
+the espn-api stat map (`refs/cwendt94/espn-api/espn_api/football/constant.py`);
+a stat ESPN did not send is left out, not filled. From the nfldata schedule:
+`opponent`, null on a bye. From nflverse, when the week is published: targets,
+carries, receptions, target and carry share of the team's week, PPR points,
+offensive snaps and snap share. `nflverse_weeks` lists weeks with any published
+rows; nflverse publishes game by game, so a listed week can be partial (2026-09-13:
+week 1 carried Devaughn Vele's NO game and not Christian Watson's GB game). A
+source that cannot be read is named in `unread`.
+
 ### `league_rules`
 The ESPN league's rules as ESPN states them, from the `mSettings` view: draft
 type, rounds and clock, starting slots, bench and IR, position limits, every

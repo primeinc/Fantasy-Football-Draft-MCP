@@ -2518,6 +2518,194 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
 
 
 @mcp.tool(structured_output=False)
+def player_week(league_id: str, week: int, names: str, season: int = CURRENT_SEASON) -> str:
+    """One week for each named player, every part with its basis.
+
+    `names` is comma-separated; each matches ESPN's pool by name (up to three
+    players per name). Per player: status and owning team id, injury status,
+    `opponent` from the nfldata schedule (null on a bye), `week_points` and
+    `week_proj` from ESPN, `espn_line` -- the stat row ESPN applied, named, with
+    a stat ESPN did not send left out rather than zeroed -- and `nflverse`:
+    targets, carries, receptions, target and carry share of the team's week,
+    PPR points, offensive snaps and snap share. `nflverse` is null when the
+    published data does not carry the player. `nflverse_weeks` lists weeks with
+    any published rows, and a week publishes game by game: on 2026-09-13 week 1
+    carried New Orleans and not Green Bay, so a listed week is not a complete
+    one. A source that cannot be read is named in `unread`.
+    """
+    from . import playerweek, pool
+
+    wanted = [n.strip() for n in names.split(",") if n.strip()]
+    if not wanted:
+        return _emit({"error": "names is required: a comma-separated list of players"})
+    try:
+        players = pool.fetch_pool(league_id, season, week)
+    except Exception as exc:
+        return _emit({"error": f"could not read ESPN's player pool: {type(exc).__name__}: {exc}",
+                      "week": week, "season": season})
+    unread: dict[str, str] = {}
+    schedule = weekly = snaps = None
+    try:
+        schedule = sources.schedules()
+    except Exception as exc:
+        unread["schedule"] = f"{type(exc).__name__}: {exc}"
+    try:
+        weekly = sources.weekly_stats([season])
+    except Exception as exc:
+        unread["nflverse_weekly"] = f"{type(exc).__name__}: {exc}"
+    try:
+        snaps = sources.snap_counts([season])
+    except Exception as exc:
+        unread["nflverse_snaps"] = f"{type(exc).__name__}: {exc}"
+    rows: list[dict] = []
+    not_found: list[str] = []
+    for name in wanted:
+        key = bd.norm_name(name)
+        hits = [e for e in players
+                if key in bd.norm_name((e.get("player") or {}).get("fullName") or "")]
+        if not hits:
+            not_found.append(name)
+        rows += [playerweek.player_week_row(e, season, week, bd._ESPN_POSITION_NAMES,
+                                            schedule, weekly, snaps) for e in hits[:3]]
+    return _emit({
+        "week": week, "season": season, "players": rows, "not_found": not_found,
+        "nflverse_weeks": None if weekly is None else playerweek.published_weeks(weekly, season),
+        "unread": unread,
+        "basis": ("ESPN kona_player_info for status, points and the applied stat row; "
+                  "nfldata schedule for the opponent; nflverse weekly stats and snap counts "
+                  "for usage"),
+    })
+
+
+@mcp.tool(structured_output=False)
+def league_transactions(league_id: str, week: int, team: str = "",
+                        include_lineup: bool = False, include_draft: bool = False,
+                        season: int = CURRENT_SEASON) -> str:
+    """Every add, drop, trade and waiver result in the league for one week.
+
+    Newest first. Each transaction: `when` (Eastern; a waiver run's process
+    time, otherwise when it was made), ESPN `type` (FREEAGENT, WAIVER, TRADE,
+    ...), `status`, the team, and `moves` as `[type, player, from_team,
+    to_team]` with null for free agency. Lineup-only moves and draft picks are
+    hidden unless `include_lineup` / `include_draft`; `counts` covers every
+    transaction in the period, hidden ones included. `team` narrows by team id
+    or name substring. Player and team names come from the pool and mTeam; a
+    lookup that fails is named in `unread` and ids stand in.
+    """
+    from . import pool, transactions
+
+    try:
+        payload = transactions.fetch_transactions(league_id, season, week)
+    except Exception as exc:
+        return _emit({"error": f"could not read ESPN's transactions: {type(exc).__name__}: {exc}",
+                      "week": week, "season": season})
+    unread: dict[str, str] = {}
+    team_names: dict[int, str] = {}
+    player_names: dict[int, str] = {}
+    try:
+        team_names = {tid: info["name"]
+                      for tid, info in bd.espn_league_directory(league_id, season).items()}
+    except Exception as exc:
+        unread["team_names"] = f"{type(exc).__name__}: {exc}"
+    try:
+        player_names = {int(e["id"]): str((e.get("player") or {}).get("fullName"))
+                        for e in pool.fetch_pool(league_id, season) if e.get("id") is not None}
+    except Exception as exc:
+        unread["player_names"] = f"{type(exc).__name__}: {exc}"
+    rows = transactions.transaction_rows(payload, team_names, player_names,
+                                         include_lineup, include_draft)
+    needle = team.strip().lower()
+    if needle:
+        rows = [r for r in rows
+                if needle == str(r["team_id"]) or needle in (r["team"] or "").lower()]
+    return _emit({
+        "week": week, "season": season,
+        "scoring_period": payload.get("scoringPeriodId"),
+        "counts": transactions.type_counts(payload),
+        "transactions": rows,
+        "hidden": [h for h, shown in (("lineup-only moves", include_lineup),
+                                      ("draft picks", include_draft)) if not shown],
+        "unread": unread,
+        "basis": "ESPN mTransactions2 for this league and scoring period",
+        "shape": transactions.TXN_SHAPE,
+    })
+
+
+FREE_AGENT_COLUMNS = ["player", "position", "pro_team", "status", "waiver_clears",
+                      "percent_owned", "week_points", "week_proj", "injury_status", "espn_id"]
+FREE_AGENT_SORTS = ("week_points", "week_proj", "percent_owned", "percent_change")
+
+
+@mcp.tool(structured_output=False)
+def league_free_agents(league_id: str, week: int, position: str = "", names: str = "",
+                       sort: str = "week_points", limit: int = 40,
+                       season: int = CURRENT_SEASON) -> str:
+    """Who this league's teams can add right now, as ESPN's own pool states it.
+
+    A row is acquirable when ESPN files him FREEAGENT or WAIVERS and no team
+    holds him; being absent from `league_rosters` is not the test. Each row:
+    `[player, position, pro_team, status, waiver_clears, percent_owned,
+    week_points, week_proj, injury_status, espn_id]`. `waiver_clears` is when
+    ESPN processes claims on a WAIVERS player (Eastern); a FREEAGENT can be
+    added outright. `week_points` is ESPN's applied fantasy total for `week`
+    so far and `week_proj` its projection; null means ESPN has no row for the
+    week, not zero.
+
+    `position` narrows (QB, RB, WR, TE, K, DST). `names` is a comma-separated
+    list: matches come back as rows, a named player a team holds is listed in
+    `not_acquirable` with his status and team id, and a name ESPN's pool does
+    not carry is in `not_found`. `sort` is one of week_points, week_proj,
+    percent_owned, percent_change, highest first, nulls last. `census` counts
+    the whole pool by status.
+    """
+    from . import pool
+
+    if sort not in FREE_AGENT_SORTS:
+        return _emit({"error": f"sort must be one of {', '.join(FREE_AGENT_SORTS)}; got {sort!r}"})
+    try:
+        players = pool.fetch_pool(league_id, season, week)
+    except Exception as exc:
+        return _emit({"error": f"could not read ESPN's player pool: {type(exc).__name__}: {exc}",
+                      "week": week, "season": season})
+    rows = pool.pool_rows(players, bd._ESPN_POSITION_NAMES, season, week)
+    census: dict[str, int] = {}
+    for r in rows:
+        census[str(r["status"])] = census.get(str(r["status"]), 0) + 1
+    open_rows = pool.acquirable(rows)
+    picked = open_rows
+    wanted_position = position.strip().upper()
+    if wanted_position:
+        picked = [r for r in picked if str(r["position"]).upper() == wanted_position]
+    not_acquirable: list[dict] = []
+    not_found: list[str] = []
+    wanted = [n.strip() for n in names.split(",") if n.strip()]
+    if wanted:
+        keys = [bd.norm_name(n) for n in wanted]
+        picked = [r for r in picked
+                  if any(k in bd.norm_name(r["player"] or "") for k in keys)]
+        for name, key in zip(wanted, keys):
+            hits = [r for r in rows if key in bd.norm_name(r["player"] or "")]
+            if not hits:
+                not_found.append(name)
+            not_acquirable += [{"player": r["player"], "status": r["status"],
+                                "on_team_id": r["on_team_id"]}
+                               for r in hits if r not in open_rows]
+    picked = sorted(picked, key=lambda r: (r[sort] is None, -(r[sort] or 0)))
+    return _emit({
+        "week": week, "season": season,
+        "columns": FREE_AGENT_COLUMNS,
+        "players": [[r[c] for c in FREE_AGENT_COLUMNS] for r in picked[:max(1, limit)]],
+        "matched": len(picked), "acquirable": len(open_rows),
+        "census": dict(sorted(census.items())),
+        "not_acquirable": not_acquirable, "not_found": not_found,
+        "basis": ("ESPN kona_player_info for this league: status and onTeamId decide who is "
+                  "acquirable; week_points is ESPN's applied total for the period so far, "
+                  "week_proj its projection"),
+        "shape": pool.POOL_SHAPE,
+    })
+
+
+@mcp.tool(structured_output=False)
 def league_rosters(league_id: str, week: int = 0, team: str = "",
                    season: int = CURRENT_SEASON) -> str:
     """Who is on every team in the league, as ESPN holds the rosters.
@@ -3501,7 +3689,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "watchstore", "lineup_write", "injuries", "live")
+                "trade", "waivers", "pool", "transactions", "playerweek", "watchstore", "lineup_write", "injuries", "live")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

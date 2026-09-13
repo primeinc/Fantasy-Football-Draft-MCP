@@ -1,0 +1,100 @@
+"""ESPN's player pool as this league holds it: who can be added, and how.
+
+`kona_player_info` with `waivers.POOL_FILTER` returns every player in the pool
+with the league's own view of him. Read live on 2026-09-13, week 1, league
+1734659820: 1038 entries, 433 FREEAGENT, 380 WAIVERS, 225 ONTEAM. Each entry
+carries `status`, `onTeamId` (0 when no team holds him), `waiverProcessDate`
+(epoch ms; 2026-09-16T07:00Z on every WAIVERS row that day) and `player`,
+whose `stats` rows are keyed by `(seasonId, scoringPeriodId, statSourceId,
+statSplitTypeId)`: source 0 is what happened, source 1 is ESPN's projection,
+split 1 is a single scoring period.
+
+A player absent from every roster is not thereby addable; `status` and
+`onTeamId` together are the fact, and this module reads both.
+"""
+from __future__ import annotations
+
+import json
+
+import pandas as pd
+import requests
+
+from .board import _ESPN_TEAM_ABBR, espn_cookies, espn_league_url
+from .config import CURRENT_SEASON
+from .waivers import POOL_FILTER
+
+POOL_SHAPE = "kona_player_info entry shape verified in-season against the live league, 2026-09-13"
+ACQUIRABLE = ("FREEAGENT", "WAIVERS")
+ACTUAL_SOURCE = 0
+PROJECTED_SOURCE = 1
+SINGLE_PERIOD_SPLIT = 1
+
+
+def fetch_pool(league_id: str, season: int = CURRENT_SEASON, week: int | None = None,
+               swid: str | None = None, espn_s2: str | None = None) -> list[dict]:
+    """Every pool entry for the league, stats carried for `week` when given."""
+    params = {"view": "kona_player_info"}
+    if week:
+        params["scoringPeriodId"] = str(int(week))
+    resp = requests.get(espn_league_url(league_id, season), params=params,
+                        cookies=espn_cookies(swid, espn_s2), timeout=30,
+                        headers={"User-Agent": "ffdraft-mcp/1.0",
+                                 "X-Fantasy-Source": "kona",
+                                 "X-Fantasy-Filter": json.dumps(POOL_FILTER)})
+    resp.raise_for_status()
+    return resp.json().get("players") or []
+
+
+def week_total(player: dict, season: int, week: int, source: int) -> float | None:
+    """ESPN's applied fantasy total for one scoring period, or None when ESPN
+    carries no row for it. None is "no row", never zero: a player with no game
+    yet and a player who scored nothing are different facts."""
+    for stat in player.get("stats") or []:
+        if (stat.get("seasonId") == season and stat.get("scoringPeriodId") == week
+                and stat.get("statSourceId") == source
+                and stat.get("statSplitTypeId") == SINGLE_PERIOD_SPLIT):
+            total = stat.get("appliedTotal")
+            return None if total is None else round(float(total), 2)
+    return None
+
+
+def eastern(ms) -> str | None:
+    """Epoch milliseconds as "YYYY-MM-DD HH:MM ET", the form every deadline in
+    this codebase prints in."""
+    if ms in (None, 0):
+        return None
+    stamp = pd.Timestamp(int(ms), unit="ms", tz="UTC").tz_convert("America/New_York")
+    return stamp.strftime("%Y-%m-%d %H:%M ET")
+
+
+def pool_rows(players: list[dict], positions: dict[str, str], season: int,
+              week: int) -> list[dict]:
+    """One row per pool entry, every player whatever his status."""
+    rows = []
+    for entry in players or []:
+        player = entry.get("player") or {}
+        own = player.get("ownership") or {}
+        pos_id = player.get("defaultPositionId")
+        pro = player.get("proTeamId")
+        status = entry.get("status")
+        rows.append({
+            "espn_id": entry.get("id", player.get("id")),
+            "player": player.get("fullName"),
+            "position": (positions.get(str(pos_id))
+                         or (None if pos_id is None else f"position {pos_id}")),
+            "pro_team": None if pro in (None, 0) else _ESPN_TEAM_ABBR.get(int(pro), f"team {pro}"),
+            "status": status,
+            "on_team_id": entry.get("onTeamId") or 0,
+            "waiver_clears": eastern(entry.get("waiverProcessDate")) if status == "WAIVERS" else None,
+            "injury_status": player.get("injuryStatus"),
+            "percent_owned": own.get("percentOwned"),
+            "percent_change": own.get("percentChange"),
+            "week_points": week_total(player, season, week, ACTUAL_SOURCE),
+            "week_proj": week_total(player, season, week, PROJECTED_SOURCE),
+        })
+    return rows
+
+
+def acquirable(rows: list[dict]) -> list[dict]:
+    """Rows a team can claim or add now: FREEAGENT or WAIVERS, and held by nobody."""
+    return [r for r in rows if r["status"] in ACQUIRABLE and r["on_team_id"] == 0]
