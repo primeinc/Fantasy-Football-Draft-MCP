@@ -28,12 +28,9 @@ rankings included; only the order of those lists differed.
 """
 from __future__ import annotations
 
-import json
-
 import pandas as pd
-import requests
 
-from .board import _ESPN_TEAM_ABBR, espn_cookies, espn_league_url
+from .board import _ESPN_TEAM_ABBR, espn_league_get
 from .config import CURRENT_SEASON
 from .waivers import POOL_FILTER
 
@@ -50,11 +47,7 @@ def fetch_pool(league_id: str, season: int = CURRENT_SEASON, week: int | None = 
     params = {"view": "kona_player_info"}
     if week:
         params["scoringPeriodId"] = str(int(week))
-    resp = requests.get(espn_league_url(league_id, season), params=params,
-                        cookies=espn_cookies(swid, espn_s2), timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0",
-                                 "X-Fantasy-Source": "kona",
-                                 "X-Fantasy-Filter": json.dumps(POOL_FILTER)})
+    resp = espn_league_get(league_id, season, params, swid, espn_s2, player_filter=POOL_FILTER)
     resp.raise_for_status()
     return resp.json().get("players") or []
 
@@ -65,10 +58,8 @@ def next_waiver_clear(league_id: str, season: int = CURRENT_SEASON, swid: str | 
     None when nobody is on waivers. A small pull: the full pool is 4 MB."""
     flt = {"players": {**POOL_FILTER["players"], "filterStatus": {"value": ["WAIVERS"]},
                        "limit": 25}}
-    resp = requests.get(espn_league_url(league_id, season), params={"view": "kona_player_info"},
-                        cookies=espn_cookies(swid, espn_s2), timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona",
-                                 "X-Fantasy-Filter": json.dumps(flt)})
+    resp = espn_league_get(league_id, season, {"view": "kona_player_info"}, swid, espn_s2,
+                           player_filter=flt)
     resp.raise_for_status()
     dates = [int(e["waiverProcessDate"]) for e in resp.json().get("players") or []
              if e.get("status") == "WAIVERS" and e.get("waiverProcessDate")]

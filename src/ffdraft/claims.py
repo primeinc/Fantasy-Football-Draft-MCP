@@ -19,9 +19,8 @@ never offered as a drop.
 from __future__ import annotations
 
 import pandas as pd
-import requests
 
-from .board import espn_cookies, espn_league_url
+from .board import espn_league_get
 from .config import CURRENT_SEASON, OUT_STATUSES
 from .pool import acquirable
 
@@ -58,9 +57,7 @@ BASIS = {
 def fetch_settings(league_id: str, season: int = CURRENT_SEASON, swid: str | None = None,
                    espn_s2: str | None = None) -> dict:
     """The league's mSettings `settings` object."""
-    resp = requests.get(espn_league_url(league_id, season), params={"view": "mSettings"},
-                        cookies=espn_cookies(swid, espn_s2), timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp = espn_league_get(league_id, season, {"view": "mSettings"}, swid, espn_s2)
     resp.raise_for_status()
     return resp.json().get("settings") or {}
 

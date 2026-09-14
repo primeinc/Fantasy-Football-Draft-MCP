@@ -7,7 +7,7 @@ defense named "Ravens D/ST" against the board's "Baltimore Ravens D/ST".
 """
 import pandas as pd
 
-from ffdraft import rosters
+from ffdraft import board, rosters
 from ffdraft.board import _ESPN_POSITION_NAMES, UNPRICED, norm_name
 
 POSITIONS = _ESPN_POSITION_NAMES
@@ -260,7 +260,7 @@ class TestFetch:
         # What makes this a question about week 9 rather than about now, which
         # is the whole reason #47 needs it.
         captured: dict = {}
-        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        monkeypatch.setattr(board.requests, "get",self._fake(captured))
         rosters.fetch_roster_teams("123", season=2026, week=9)
         # Sent as a string: requests encodes an int identically on the wire, and
         # a homogeneous list is what the params type wants.
@@ -269,7 +269,7 @@ class TestFetch:
 
     def test_no_week_asks_for_the_current_period(self, monkeypatch):
         captured: dict = {}
-        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        monkeypatch.setattr(board.requests, "get",self._fake(captured))
         rosters.fetch_roster_teams("123", season=2026)
         assert not any(k == "scoringPeriodId" for k, _ in captured["params"])
 
@@ -283,7 +283,7 @@ class TestFetch:
         # sends. Only the live run found it, which is why this asserts the
         # request rather than the parse.
         captured: dict = {}
-        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        monkeypatch.setattr(board.requests, "get",self._fake(captured))
         rosters.fetch_roster_teams("123", season=2026, week=9)
         views = [v for k, v in captured["params"] if k == "view"]
         assert sorted(views) == ["mRoster", "mTeam"]
@@ -292,19 +292,19 @@ class TestFetch:
         # ESPN rejects a bare SWID. The wrapping lived in five copies before
         # board.espn_cookies; this asserts the reader uses it rather than a sixth.
         captured: dict = {}
-        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        monkeypatch.setattr(board.requests, "get",self._fake(captured))
         rosters.fetch_roster_teams("123", swid="ABC", espn_s2="s2")
         assert captured["cookies"] == {"SWID": "{ABC}", "espn_s2": "s2"}
 
     def test_an_already_wrapped_swid_is_not_wrapped_twice(self, monkeypatch):
         captured: dict = {}
-        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        monkeypatch.setattr(board.requests, "get",self._fake(captured))
         rosters.fetch_roster_teams("123", swid="{ABC}", espn_s2="s2")
         assert captured["cookies"]["SWID"] == "{ABC}"
 
     def test_missing_credentials_send_no_cookies_rather_than_half(self, monkeypatch):
         captured: dict = {}
-        monkeypatch.setattr(rosters.requests, "get", self._fake(captured))
+        monkeypatch.setattr(board.requests, "get",self._fake(captured))
         monkeypatch.delenv("ESPN_SWID", raising=False)
         monkeypatch.delenv("ESPN_S2", raising=False)
         rosters.fetch_roster_teams("123", swid="ABC", espn_s2=None)

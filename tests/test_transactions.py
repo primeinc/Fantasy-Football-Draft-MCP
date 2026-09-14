@@ -92,7 +92,7 @@ class TestRows:
     def test_no_ids_no_request(self, monkeypatch):
         def get(*a, **k):
             raise AssertionError("no request expected")
-        monkeypatch.setattr(transactions.requests, "get", get)
+        monkeypatch.setattr(board.requests, "get",get)
         assert transactions.fetch_player_names("123", []) == {}
 
     def test_counts_cover_hidden_types(self):
@@ -125,7 +125,7 @@ class TestTool:
 
         monkeypatch.setattr(transactions, "fetch_transactions", fetch)
         monkeypatch.setattr(board, "espn_league_directory", directory)
-        monkeypatch.setattr(transactions.requests, "get", get)
+        monkeypatch.setattr(board.requests, "get",get)
         monkeypatch.setattr(pool, "fetch_pool", whole_pool)
         return json.loads(server.league_transactions("123", 1, **kw)), captured
 
@@ -147,7 +147,7 @@ class TestTool:
         def boom(*a, **k):
             raise RuntimeError("500")
         self.run(monkeypatch)
-        monkeypatch.setattr(transactions.requests, "get", boom)
+        monkeypatch.setattr(board.requests, "get",boom)
         out = json.loads(server.league_transactions("123", 1))
         assert out["unread"]["player_names"] == "RuntimeError: 500"
         assert out["transactions"][0]["moves"][0][1] == "player 4429086"

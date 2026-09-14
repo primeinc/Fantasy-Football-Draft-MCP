@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import requests
 
-from .board import _ESPN_TEAM_ABBR, espn_cookies, espn_league_url
+from .board import _ESPN_TEAM_ABBR, espn_league_get
 
 SCOREBOARD_URL = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 SUMMARY_URL = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/summary"
@@ -48,17 +48,16 @@ def fetch_league_status(league_id: str, season: int, timeout: float = 30.0) -> d
     """The league's own periods: top-level `scoringPeriodId` and `status`
     (`currentMatchupPeriod`, `latestScoringPeriod`), the fields espn-api reads
     (refs/cwendt94/espn-api league.py). ESPN's NFL scoreboard week is not these."""
-    resp = requests.get(espn_league_url(league_id, season), params={"view": "mStatus"},
-                        cookies=espn_cookies(None, None), headers=HEADERS, timeout=timeout)
+    resp = espn_league_get(league_id, season, {"view": "mStatus"}, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
 
 def fetch_league_live(league_id: str, season: int, week: int, timeout: float = 30.0) -> dict:
-    resp = requests.get(espn_league_url(league_id, season),
-                        params=[("view", "mMatchupScore"), ("view", "mRoster"),
-                                ("view", "mTeam"), ("scoringPeriodId", str(int(week)))],
-                        cookies=espn_cookies(None, None), headers=HEADERS, timeout=timeout)
+    resp = espn_league_get(league_id, season,
+                           [("view", "mMatchupScore"), ("view", "mRoster"),
+                            ("view", "mTeam"), ("scoringPeriodId", str(int(week)))],
+                           timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 

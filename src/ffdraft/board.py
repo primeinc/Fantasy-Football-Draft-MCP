@@ -88,14 +88,11 @@ def load_espn_adp(league_id: str, season: int = CURRENT_SEASON,
     This is the list your ESPN opponents draft from, so it is the right input to
     survival odds in an ESPN league; consensus rank is a different market.
     """
-    cookies = espn_cookies(swid, espn_s2)
-    url = espn_league_url(league_id, season)
     flt = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS", "ONTEAM"]},
                        "limit": 1000,
                        "sortDraftRanks": {"sortPriority": 100, "sortAsc": True, "value": "PPR"}}}
-    resp = requests.get(url, params={"view": "kona_player_info"}, cookies=cookies, timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona",
-                                 "X-Fantasy-Filter": json.dumps(flt)})
+    resp = espn_league_get(league_id, season, {"view": "kona_player_info"}, swid, espn_s2,
+                           player_filter=flt)
     resp.raise_for_status()
     rows = []
     for entry in resp.json().get("players") or []:
@@ -678,6 +675,21 @@ def espn_league_url(league_id: str, season: int) -> str:
             f"/segments/0/leagues/{league_id}")
 
 
+def espn_league_get(league_id: str, season: int, params, swid: str | None = None,
+                    espn_s2: str | None = None, player_filter: dict | None = None,
+                    timeout: float = 30) -> requests.Response:
+    """Every read of the league document: `params` (views, scoringPeriodId) on
+    `espn_league_url`, with `espn_cookies` and the User-Agent. `player_filter`
+    goes out as `X-Fantasy-Filter` with `X-Fantasy-Source: kona`; without a
+    filter kona_player_info answers a default slice. The response is returned
+    unchecked: each caller decides what a non-200 means."""
+    headers = {"User-Agent": "ffdraft-mcp/1.0"}
+    if player_filter is not None:
+        headers |= {"X-Fantasy-Source": "kona", "X-Fantasy-Filter": json.dumps(player_filter)}
+    return requests.get(espn_league_url(league_id, season), params=params,
+                        cookies=espn_cookies(swid, espn_s2), timeout=timeout, headers=headers)
+
+
 def with_stand_ins(rows: pd.DataFrame, board: pd.DataFrame,
                    missing: list[tuple[str, str]]) -> pd.DataFrame:
     """Append a replacement-level stand-in for each (name, position) not priced.
@@ -1025,13 +1037,9 @@ def sync_espn(league_id: str, season: int = CURRENT_SEASON,
     espn_s2 cookies from a logged-in browser session, passed here or set as the
     ESPN_SWID / ESPN_S2 environment variables.
     """
-    swid = swid or os.environ.get("ESPN_SWID")
-    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
-    url = espn_league_url(league_id, season)
-    cookies = espn_cookies(swid, espn_s2)
-    resp = requests.get(url, params={"view": ["mDraftDetail", "mTeam", "kona_player_info"]},
-                        cookies=cookies, timeout=20,
-                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp = espn_league_get(league_id, season,
+                           {"view": ["mDraftDetail", "mTeam", "kona_player_info"]},
+                           swid, espn_s2, timeout=20)
     resp.raise_for_status()
     data = resp.json()
     detail = data.get("draftDetail") or {}
@@ -1167,11 +1175,8 @@ def espn_league_context(league_id: str, season: int = CURRENT_SEASON,
     Used by draft_backtest so a season/league_id is enough to run -- no manual
     configure_league bookkeeping for a season you're not actively drafting.
     """
-    cookies = espn_cookies(swid, espn_s2)
-    url = espn_league_url(league_id, season)
-    resp = requests.get(url, params={"view": ["mTeam", "mSettings", "mDraftDetail"]},
-                        cookies=cookies, timeout=20,
-                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp = espn_league_get(league_id, season, {"view": ["mTeam", "mSettings", "mDraftDetail"]},
+                           swid, espn_s2, timeout=20)
     resp.raise_for_status()
     data = resp.json()
     settings = data.get("settings") or {}
@@ -1335,10 +1340,8 @@ def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
     the season. First-party, so nothing here is assumed from a default template."""
     from . import features
 
-    cookies = espn_cookies(swid, espn_s2)
-    url = espn_league_url(league_id, season)
-    resp = requests.get(url, params={"view": ["mSettings", "mTeam"]}, cookies=cookies,
-                        timeout=20, headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp = espn_league_get(league_id, season, {"view": ["mSettings", "mTeam"]}, swid, espn_s2,
+                           timeout=20)
     resp.raise_for_status()
     data = resp.json()
     s = data.get("settings") or {}
@@ -1498,10 +1501,7 @@ def team_strength(board: pd.DataFrame, state: DraftState,
 def espn_league_directory(league_id: str, season: int = CURRENT_SEASON,
                           swid: str | None = None, espn_s2: str | None = None) -> dict[int, dict]:
     """ESPN team id -> team name and owner display names, for labelling room events."""
-    cookies = espn_cookies(swid, espn_s2)
-    url = espn_league_url(league_id, season)
-    resp = requests.get(url, params={"view": ["mTeam"]}, cookies=cookies, timeout=20,
-                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp = espn_league_get(league_id, season, {"view": ["mTeam"]}, swid, espn_s2, timeout=20)
     resp.raise_for_status()
     return league_directory_from_mteam(resp.json())
 

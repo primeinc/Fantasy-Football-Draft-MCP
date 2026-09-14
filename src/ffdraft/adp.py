@@ -1504,8 +1504,6 @@ def champion_strategies(league_id: str, seasons: list[int]) -> dict:
     data but no value verdicts or steal context. ESPN only.
     """
 
-    import requests
-
     from . import board as bd
     from . import sources
     from .board import norm_name
@@ -1520,16 +1518,12 @@ def champion_strategies(league_id: str, seasons: list[int]) -> dict:
             return "DST"
         return pos_map.get(norm_name(name), "UNK")
 
-    from .board import espn_cookies, espn_league_url
-
-    cookies = espn_cookies()
+    from .board import espn_league_get
 
     out_seasons = []
     for season in seasons:
-        url = espn_league_url(league_id, season)
-        resp = requests.get(url, params={"view": ["mTeam", "mDraftDetail"]},
-                           cookies=cookies, timeout=20,
-                           headers={"User-Agent": "ffdraft-mcp/1.0"})
+        resp = espn_league_get(league_id, season, {"view": ["mTeam", "mDraftDetail"]},
+                               timeout=20)
         if resp.status_code != 200:
             out_seasons.append({"season": season, "error": f"fetch failed ({resp.status_code})"})
             continue

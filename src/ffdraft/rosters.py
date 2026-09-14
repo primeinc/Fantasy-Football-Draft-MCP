@@ -16,17 +16,14 @@ view for `tradeBlock` and `waiverRank` and the wrong one for players.
 """
 from __future__ import annotations
 
-import json
 import os
 
 import pandas as pd
-import requests
 
 from .board import (
     _ESPN_TEAM_ABBR,
     UNPRICED,
-    espn_cookies,
-    espn_league_url,
+    espn_league_get,
     is_position,
     league_directory_from_mteam,
     norm_name,
@@ -218,9 +215,7 @@ def fetch_roster_payload(league_id: str, season: int = CURRENT_SEASON,
     params: list[tuple[str, str]] = [("view", "mRoster"), ("view", "mTeam")]
     if week:
         params.append(("scoringPeriodId", str(int(week))))
-    resp = requests.get(espn_league_url(league_id, season), params=params,
-                        cookies=espn_cookies(swid, espn_s2), timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp = espn_league_get(league_id, season, params, swid, espn_s2)
     resp.raise_for_status()
     return resp.json()
 
@@ -310,11 +305,7 @@ def fetch_weekly_projections(league_id: str, season: int = CURRENT_SEASON,
     params: dict[str, str] = {"view": "kona_player_info"}
     if week:
         params["scoringPeriodId"] = str(int(week))
-    resp = requests.get(espn_league_url(league_id, season), params=params,
-                        cookies=espn_cookies(swid, espn_s2), timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0",
-                                 "X-Fantasy-Source": "kona",
-                                 "X-Fantasy-Filter": json.dumps(POOL_FILTER)})
+    resp = espn_league_get(league_id, season, params, swid, espn_s2, player_filter=POOL_FILTER)
     resp.raise_for_status()
     return weekly_projections(resp.json().get("players") or [], week)
 

@@ -12,11 +12,7 @@ pull, so how ESPN records one is unobserved.
 """
 from __future__ import annotations
 
-import json
-
-import requests
-
-from .board import espn_cookies, espn_league_url
+from .board import espn_league_get
 from .config import CURRENT_SEASON
 from .pool import eastern
 
@@ -30,9 +26,7 @@ def fetch_transactions(league_id: str, season: int = CURRENT_SEASON, week: int |
     params: list[tuple[str, str]] = [("view", "mTransactions2")]
     if week:
         params.append(("scoringPeriodId", str(int(week))))
-    resp = requests.get(espn_league_url(league_id, season), params=params,
-                        cookies=espn_cookies(swid, espn_s2), timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0"})
+    resp = espn_league_get(league_id, season, params, swid, espn_s2)
     resp.raise_for_status()
     return resp.json()
 
@@ -68,10 +62,8 @@ def fetch_player_names(league_id: str, ids: list[int], season: int = CURRENT_SEA
     if not ids:
         return {}
     flt = {"players": {"filterIds": {"value": [int(i) for i in ids]}}}
-    resp = requests.get(espn_league_url(league_id, season), params={"view": "kona_player_info"},
-                        cookies=espn_cookies(swid, espn_s2), timeout=30,
-                        headers={"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona",
-                                 "X-Fantasy-Filter": json.dumps(flt)})
+    resp = espn_league_get(league_id, season, {"view": "kona_player_info"}, swid, espn_s2,
+                           player_filter=flt)
     resp.raise_for_status()
     return {int(e["id"]): str((e.get("player") or {}).get("fullName"))
             for e in resp.json().get("players") or [] if e.get("id") is not None}
