@@ -3849,7 +3849,7 @@ RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
                 "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "injuries", "live",
-                "governor", "improve", "ticks", "runner")
+                "governor", "improve", "ticks", "contain", "runner")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

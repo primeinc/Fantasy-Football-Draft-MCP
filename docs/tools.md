@@ -778,31 +778,40 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   `game_tick` error is a failed tick, not "no change".
 - IDLE or DEEP_IDLE: the first open item in `.agent/improvement-queue.jsonl`
   that fits the budget and risk class and has no run record is leased. The
-  lease is the engineering lock. The runner creates each worktree, then runs:
-  1. the fixer, on a new `queue/<id>` branch;
-  2. the runner's own commit of that work. It first checks that the worktree's
-     `.git` gitfile points inside `.git/worktrees` and that its HEAD is the
-     queue branch, then commits through that explicit git dir with hooks off.
-     The commit SHA is recorded;
-  3. the verifier, in a detached worktree at that commit;
+  lease is the engineering lock. Each agent works in a throwaway
+  `git clone --no-hardlinks` under `%TEMP%/ffdraft-runner`, with its origin
+  remote removed and its own `.venv` built by `just setup` with
+  `UV_LINK_MODE=copy`; no file in it is shared with the main checkout, its
+  `.git`, its `.venv` or the uv cache. The runner runs:
+  1. the fixer, in a clone at `HEAD`;
+  2. the runner's own record of that work: the clone's files are read into the
+     main repository through the main `.git` with a temporary index, hooks off
+     and `core.fsmonitor=false`, and `queue/<id>` is created with `update-ref`
+     only if it does not exist. Git never runs in the fixer's `.git` after the
+     fixer has. The commit SHA is recorded;
+  3. the verifier, in a clone at that commit;
   4. `just check` there, whose exit code is the `full_suite` gate;
-  5. the angel and devil reviews of a diff the runner produced, in a fresh
-     worktree no tests ran in. They must return APPROVE and NO-EXPLOIT or
-     OVERCAUTIOUS.
+  5. the angel and devil reviews of a diff the runner produced, in a clone no
+     tests ran in. They must return APPROVE and NO-EXPLOIT or OVERCAUTIOUS.
 
-  Every agent runs with `--restricted` (file tools confined to its working
-  directory), on `claude-opus-5 --effort medium`, and in `dontAsk` mode. Its
-  definition comes from the main checkout's `.claude/agents`. Queue text and the
-  diff are fenced as data. A run whose init event shows another model or mode
-  fails the step.
+  Every agent runs with `--restricted` (file tools confined to its clone; user,
+  project and local settings files ignored), on `claude-opus-5 --effort medium`,
+  and in `dontAsk` mode. Its definition comes from the main checkout's
+  `.claude/agents`. Queue text and the diff are fenced as data. A run whose init
+  event shows another model or mode fails the step. Every agent, venv build and
+  `just check` runs under `python -m ffdraft.contain`, which puts it in a
+  Windows job object with kill-on-close: no process it starts, detached or not,
+  outlives it.
 
   One fingerprint is taken before the fixer and compared after the fixer, after
   the commit and after the tests. It covers git status, `git diff HEAD`, every
-  ref except this item's branch, and the size and mtime of `.mcp.json`, the
-  Claude settings, `~/.gitconfig`, `.venv` config and `.pth` files, and
-  `.git/config` and hooks. A detected change fails the run, names the keys that
-  moved, and reverts nothing. Code that restores a file's size and mtime is not
-  detected; the user's acceptance below is the control.
+  ref except this item's branch, the content of `.mcp.json`, the Claude
+  settings, `~/.gitconfig`, `.git/config` and hooks, the policy file and the
+  top-level files of the main `.venv`'s site-packages, and the name, size and
+  mtime of every other file in the main `.venv` outside `__pycache__`. A detected
+  change fails the run, names the keys that moved, and reverts nothing. It is a
+  tripwire: writes elsewhere in the user profile (`~/.claude.json`, the uv cache)
+  are not covered, and the user's acceptance below is the control.
 
   The risk class and the promotion verdict come from the branch's actual diff.
   `targeted_tests` is the verifier model's report, so no promotion may merge on
