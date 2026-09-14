@@ -12,6 +12,8 @@ pull, so how ESPN records one is unobserved.
 """
 from __future__ import annotations
 
+import json
+
 import requests
 
 from .board import espn_cookies, espn_league_url
@@ -33,6 +35,46 @@ def fetch_transactions(league_id: str, season: int = CURRENT_SEASON, week: int |
                         headers={"User-Agent": "ffdraft-mcp/1.0"})
     resp.raise_for_status()
     return resp.json()
+
+
+def _shown(payload: dict, include_lineup: bool, include_draft: bool) -> list[dict]:
+    kept = []
+    for t in payload.get("transactions") or []:
+        items = t.get("items") or []
+        if not include_draft and t.get("type") == "DRAFT":
+            continue
+        if not include_lineup and items and all(i.get("type") == "LINEUP" for i in items):
+            continue
+        kept.append(t)
+    return kept
+
+
+def player_ids(payload: dict, include_lineup: bool = False,
+               include_draft: bool = False) -> list[int]:
+    """The player ids the shown transactions move, sorted, each once."""
+    return sorted({int(i["playerId"])
+                   for t in _shown(payload, include_lineup, include_draft)
+                   for i in t.get("items") or [] if i.get("playerId") is not None})
+
+
+def fetch_player_names(league_id: str, ids: list[int], season: int = CURRENT_SEASON,
+                       swid: str | None = None, espn_s2: str | None = None) -> dict[int, str]:
+    """Names for just `ids`, one `kona_player_info` pull filtered by `filterIds`
+    rather than the whole pool (4.3 MB in the 2026-09-13 dump). No ids, no
+    request. The filter carries no `limit`: ESPN answers a limit without a sort
+    with HTTP 400 FILTER_LIMIT_MISSING_SORT. Checked live 2026-09-14 on week 1's
+    227 moved ids, D/ST included: all 227 returned, every name equal to the
+    whole pool's."""
+    if not ids:
+        return {}
+    flt = {"players": {"filterIds": {"value": [int(i) for i in ids]}}}
+    resp = requests.get(espn_league_url(league_id, season), params={"view": "kona_player_info"},
+                        cookies=espn_cookies(swid, espn_s2), timeout=30,
+                        headers={"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona",
+                                 "X-Fantasy-Filter": json.dumps(flt)})
+    resp.raise_for_status()
+    return {int(e["id"]): str((e.get("player") or {}).get("fullName"))
+            for e in resp.json().get("players") or [] if e.get("id") is not None}
 
 
 def _team(team_names: dict[int, str], team_id) -> str | None:
@@ -62,12 +104,8 @@ def transaction_rows(payload: dict, team_names: dict[int, str], player_names: di
     moves are left out unless asked for; a transaction carrying any add, drop
     or trade item is always kept, whatever its type."""
     keyed: list[tuple[int, dict]] = []
-    for t in payload.get("transactions") or []:
+    for t in _shown(payload, include_lineup, include_draft):
         items = t.get("items") or []
-        if not include_draft and t.get("type") == "DRAFT":
-            continue
-        if not include_lineup and items and all(i.get("type") == "LINEUP" for i in items):
-            continue
         when = int(t.get("processDate") or t.get("proposedDate") or 0)
         keyed.append((when, {
             "when": eastern(when),

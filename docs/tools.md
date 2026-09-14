@@ -684,8 +684,10 @@ Every add, drop, trade and waiver result for one scoring period, from
 include_lineup=false, include_draft=false)`. Newest first; each move is
 `[type, player, from_team, to_team]` with null for free agency. A waiver run
 carries its `processDate`; a direct move its `proposedDate`. Lineup-only moves
-and draft picks are hidden by default and `counts` covers everything. `memberId`
-is never printed. A failed waiver claim has not been observed in a live pull, so
+and draft picks are hidden by default and `counts` covers everything. Player
+names come from one `kona_player_info` pull filtered to the shown moves' ids
+(`filterIds`, no limit), team names from mTeam; a failed lookup is named in
+`unread` and ids stand in. `memberId` is never printed. A failed waiver claim has not been observed in a live pull, so
 how ESPN records one is unverified.
 
 ### `waiver_candidates`

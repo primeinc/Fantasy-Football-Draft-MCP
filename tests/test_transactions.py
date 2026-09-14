@@ -37,6 +37,17 @@ def _payload():
     ]}
 
 
+class _Resp:
+    def __init__(self, body):
+        self.body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.body
+
+
 TEAMS = {8: "Andrea's Closing Team", 12: "Post Closing King"}
 PLAYERS = {4243331: "Waiver Back", 4682648: "Cut Receiver", 4429086: "Free Agent End"}
 
@@ -73,6 +84,17 @@ class TestRows:
         rows = transactions.transaction_rows(_payload(), TEAMS, PLAYERS, True, True)
         assert "D7B05DE8" not in json.dumps(rows)
 
+    def test_player_ids_follow_what_is_shown(self):
+        assert transactions.player_ids(_payload()) == [4243331, 4429086, 4682648]
+        assert transactions.player_ids(_payload(), True, True) == [
+            4243331, 4429086, 4432665, 4569987, 4682648]
+
+    def test_no_ids_no_request(self, monkeypatch):
+        def get(*a, **k):
+            raise AssertionError("no request expected")
+        monkeypatch.setattr(transactions.requests, "get", get)
+        assert transactions.fetch_player_names("123", []) == {}
+
     def test_counts_cover_hidden_types(self):
         assert transactions.type_counts(_payload()) == {
             "DRAFT": 1, "FREEAGENT": 1, "ROSTER": 1, "WAIVER": 1}
@@ -91,11 +113,44 @@ class TestTool:
                 raise RuntimeError("401")
             return {tid: {"name": n, "owners": [], "owner_ids": []} for tid, n in TEAMS.items()}
 
-        pool_entries = [{"id": pid, "player": {"fullName": n}} for pid, n in PLAYERS.items()]
+        def get(url, *, params: dict, headers: dict, **k):
+            flt = json.loads(headers["X-Fantasy-Filter"])
+            captured.setdefault("name_pulls", []).append({"params": params, "filter": flt})
+            wanted = set(flt["players"]["filterIds"]["value"])
+            return _Resp({"players": [{"id": pid, "player": {"fullName": n}}
+                                      for pid, n in PLAYERS.items() if pid in wanted]})
+
+        def whole_pool(*a, **k):
+            raise AssertionError("the whole pool is not pulled for names")
+
         monkeypatch.setattr(transactions, "fetch_transactions", fetch)
         monkeypatch.setattr(board, "espn_league_directory", directory)
-        monkeypatch.setattr(pool, "fetch_pool", lambda *a, **k: pool_entries)
+        monkeypatch.setattr(transactions.requests, "get", get)
+        monkeypatch.setattr(pool, "fetch_pool", whole_pool)
         return json.loads(server.league_transactions("123", 1, **kw)), captured
+
+    def test_names_come_from_one_pull_filtered_to_the_moved_ids(self, monkeypatch):
+        out, captured = self.run(monkeypatch)
+        assert len(captured["name_pulls"]) == 1
+        pull = captured["name_pulls"][0]
+        assert pull["params"] == {"view": "kona_player_info"}
+        # No limit: ESPN rejects a limit without a sort (HTTP 400, probed 2026-09-14).
+        assert pull["filter"] == {"players": {"filterIds": {"value": [4243331, 4429086, 4682648]}}}
+        assert out["unread"] == {}
+
+    def test_same_rows_as_names_from_the_whole_pool(self, monkeypatch):
+        out, _ = self.run(monkeypatch, include_lineup=True, include_draft=True)
+        expected = transactions.transaction_rows(_payload(), TEAMS, PLAYERS, True, True)
+        assert out["transactions"] == json.loads(json.dumps(expected))
+
+    def test_a_failed_player_name_pull_is_named(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("500")
+        self.run(monkeypatch)
+        monkeypatch.setattr(transactions.requests, "get", boom)
+        out = json.loads(server.league_transactions("123", 1))
+        assert out["unread"]["player_names"] == "RuntimeError: 500"
+        assert out["transactions"][0]["moves"][0][1] == "player 4429086"
 
     def test_lists_the_weeks_moves_with_counts_and_what_is_hidden(self, monkeypatch):
         out, captured = self.run(monkeypatch)

@@ -2838,10 +2838,11 @@ def league_transactions(league_id: str, week: int, team: str = "",
     to_team]` with null for free agency. Lineup-only moves and draft picks are
     hidden unless `include_lineup` / `include_draft`; `counts` covers every
     transaction in the period, hidden ones included. `team` narrows by team id
-    or name substring. Player and team names come from the pool and mTeam; a
-    lookup that fails is named in `unread` and ids stand in.
+    or name substring. Player names come from a pool pull filtered to the shown
+    moves' player ids, team names from mTeam; a lookup that fails is named in
+    `unread` and ids stand in.
     """
-    from . import pool, transactions
+    from . import transactions
 
     try:
         payload = transactions.fetch_transactions(league_id, season, week)
@@ -2857,8 +2858,8 @@ def league_transactions(league_id: str, week: int, team: str = "",
     except Exception as exc:
         unread["team_names"] = f"{type(exc).__name__}: {exc}"
     try:
-        player_names = {int(e["id"]): str((e.get("player") or {}).get("fullName"))
-                        for e in pool.fetch_pool(league_id, season) if e.get("id") is not None}
+        player_names = transactions.fetch_player_names(
+            league_id, transactions.player_ids(payload, include_lineup, include_draft), season)
     except Exception as exc:
         unread["player_names"] = f"{type(exc).__name__}: {exc}"
     rows = transactions.transaction_rows(payload, team_names, player_names,
