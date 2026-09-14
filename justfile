@@ -1170,6 +1170,33 @@ period-diff $dump $week:
         for k in diff:
             print(f"    {now[k]['name']}: current {now[k][field]} -> period {per[k][field]}")
 
+    def kinds(doc):
+        # (seasonId, scoringPeriodId, statSourceId, statSplitTypeId) -> entries carrying it
+        out = {}
+        for e in doc.get("players") or []:
+            for key in {(s.get("seasonId"), s.get("scoringPeriodId"), s.get("statSourceId"),
+                         s.get("statSplitTypeId")) for s in (e.get("player") or {}).get("stats") or []}:
+                out[key] = out.get(key, 0) + 1
+        return out
+
+    knw, kper = kinds(load("kona_player_info.json")), kinds(load(f"kona_player_info_period_{week}.json"))
+    print("stat rows (season, period, source, split): entries in current / period pull")
+    for key in sorted(knw.keys() | kper.keys(), key=str):
+        print(f"    {key}: {knw.get(key, 0)} / {kper.get(key, 0)}")
+
+    def totals(doc):
+        return {(e["id"], s.get("seasonId"), s.get("statSourceId")): s.get("appliedTotal")
+                for e in doc.get("players") or [] for s in (e.get("player") or {}).get("stats") or []
+                if str(s.get("scoringPeriodId")) == week and s.get("statSplitTypeId") == 1}
+
+    tnow, tper = totals(load("kona_player_info.json")), totals(load(f"kona_player_info_period_{week}.json"))
+    diff = sorted(k for k in tnow.keys() | tper.keys() if tnow.get(k) != tper.get(k))
+    print(f"period {week} single-period appliedTotal: {len(tnow)} current, {len(tper)} period, "
+          f"{len(diff)} differ or missing on one side")
+    for k in diff:
+        print(f"    {now.get(k[0], per.get(k[0], {})).get('name')} season {k[1]} source {k[2]}: "
+              f"current {tnow.get(k)} -> period {tper.get(k)}")
+
     def roster(doc):
         return {e.get("playerId"): ((e.get("playerPoolEntry") or {}).get("player") or {})
                 for t in doc.get("teams") or [] for e in (t.get("roster") or {}).get("entries") or []}

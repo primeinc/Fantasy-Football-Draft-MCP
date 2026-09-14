@@ -19,6 +19,12 @@ FREEAGENT and 409 different `waiverProcessDate`s; `onTeamId` and
 `injuryStatus` matched in every entry, and in all 225 mRoster entries. So a
 caller takes status and waiver time from `fetch_pool` with no week, and a
 week's totals from a pull for that week, through `stats`.
+
+A pull for the current period is the pull with no week. Paired capture
+2026-09-14 03:04 ET, mStatus scoringPeriodId 1 (`dump_draft(period=1)`, `just
+period-diff`): all 1041 entries matched in every field, stat rows keyed by
+`(seasonId, scoringPeriodId, statSourceId, statSplitTypeId, externalId)` and
+rankings included; only the order of those lists differed.
 """
 from __future__ import annotations
 
