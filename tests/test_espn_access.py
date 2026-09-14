@@ -108,10 +108,9 @@ def test_the_league_path_is_built_in_exactly_one_place():
 
 
 def test_the_read_host_literal_lives_only_in_named_constants():
-    # espn_live: the draft socket's own read of the security token.
     # espn_dump: leagueHistory, which is not a league document.
     hits = _count("lm-api-reads.fantasy.espn.com")
-    assert set(hits) <= {"board.py", "espn_live.py", "espn_dump.py"}, hits
+    assert set(hits) <= {"board.py", "espn_dump.py"}, hits
     for name in hits:
         text = (SRC / name).read_text(encoding="utf-8")
         assert 'READS_HOST = "https://lm-api-reads.fantasy.espn.com"' in text, name

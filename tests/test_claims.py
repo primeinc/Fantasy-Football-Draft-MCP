@@ -238,9 +238,10 @@ def _event(away, home, state):
 
 class TestTool:
     def run(self, monkeypatch, scoreboard_week=1, pool_rows=None, scoreboard_error=False,
-            espn_period=1, statuses=(1, 1), pulls=None):
+            espn_period=1, statuses=(1, 1), pulls=None, stray_week=None):
         """`statuses` are successive mStatus scoringPeriodIds, None for an
-        unreadable one; `pulls` collects each pool pull's period."""
+        unreadable one; `pulls` collects each pool pull's period; `stray_week`
+        puts one projection row for that week on one entry of the no-period pull."""
         rows = _pool() if pool_rows is None else pool_rows
         pulls = [] if pulls is None else pulls
         answers = list(statuses)
@@ -253,7 +254,12 @@ class TestTool:
 
         def fetch_pool(league_id, season, week=None):
             pulls.append(week)
-            return [_entry(r, week, espn_period) for r in rows]
+            entries = [_entry(r, week, espn_period) for r in rows]
+            if week is None and stray_week is not None:
+                entries[-1]["player"]["stats"].append({
+                    "seasonId": 2026, "scoringPeriodId": stray_week, "statSourceId": 1,
+                    "statSplitTypeId": 1, "appliedTotal": 1.0})
+            return entries
         monkeypatch.setattr(pool, "fetch_pool", fetch_pool)
 
         def league_status(*a, **k):
@@ -338,6 +344,17 @@ class TestTool:
         out = self.run(monkeypatch, espn_period=1, statuses=(2, 2), pulls=ahead)
         assert ahead == [None, 2, 1]
         assert self.run(monkeypatch, espn_period=1, statuses=(None, None), pulls=every) == out
+        assert [(c["add"], c["drop"]) for c in out["claims"]] == [
+            ("Jacoby Brissett", "Jerry Jeudy"), ("Carson Wentz", "Jerry Jeudy")]
+
+    def test_a_pull_naming_two_weeks_is_not_reused(self, monkeypatch):
+        # mStatus ahead of a week 1 pool that carries one stray week 2 row (devil on
+        # bb69f34): a row for the week somewhere is not a pull for that week.
+        mixed, every = [], []
+        out = self.run(monkeypatch, espn_period=1, statuses=(2, 2), pulls=mixed, stray_week=2)
+        assert mixed == [None, 2, 1]
+        assert self.run(monkeypatch, espn_period=1, statuses=(None, None), pulls=every,
+                        stray_week=2) == out
         assert [(c["add"], c["drop"]) for c in out["claims"]] == [
             ("Jacoby Brissett", "Jerry Jeudy"), ("Carson Wentz", "Jerry Jeudy")]
 
