@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,8 @@ ITEM = {"id": "q-a", "title": "t", "evidence": "e", "scope": ["tests/test_pool.p
         "discovered_by": "x", "last_attempt": None, "status": "open"}
 APPROVE = {"verifier": '{"targeted_tests": true, "full_suite": true}',
            "angel": '{"verdict": "APPROVE"}', "devil": '{"verdict": "NO-EXPLOIT"}'}
-CONTAIN = [sys.executable, "-m", "ffdraft.contain", "--"]
+CONTAIN = [sys.executable, "-B", "-m", "ffdraft.contain", "--"]
+TASK_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 
 
 def state(mode, allowed=False, actionable=()):
@@ -26,44 +28,48 @@ def state(mode, allowed=False, actionable=()):
 
 
 def git_args(cmd):
-    """The git subcommand and its arguments, the `-C` directory, and the `--git-dir`."""
-    i, where, git_dir = 1, None, None
+    """The git subcommand and its arguments, the `-C` directory, the `--git-dir`, and
+    the `-c` settings."""
+    i, where, git_dir, config = 1, None, None, []
     while i < len(cmd):
         if cmd[i] == "-C":
             where, i = cmd[i + 1], i + 2
         elif cmd[i] == "-c":
+            config.append(cmd[i + 1])
             i += 2
         elif cmd[i].startswith("--git-dir="):
             git_dir, i = cmd[i][len("--git-dir="):], i + 1
-        elif cmd[i].startswith("--work-tree="):
+        elif cmd[i].startswith(("--work-tree=", "--attr-source=")):
             i += 1
         else:
             break
-    return cmd[i:], where, git_dir
+    return cmd[i:], where, git_dir, config
 
 
 class FakeRun:
     """git, just and claude, recorded, with the contain wrapper removed.
     `git clone` creates the directory; `diffs` are successive `git diff HEAD`
     results; `refs` is what `for-each-ref` returns, `refs_after_commit` what it
-    returns once the runner has recorded the tree; `on_fixer(clone)` runs as the
-    fixer's code would."""
+    returns once the runner has recorded the tree; `tree_changes` is what
+    `diff-tree` lists; `on_step[role](clone)` runs as that role's code would."""
 
     def __init__(self, verdicts=None, changed="tests/test_pool.py", dirty=True,
                  diffs=("",), model="claude-opus-5", timeout_role=None, check_rc=0, setup_rc=0,
-                 refs="refs/heads/feat x1", refs_after_commit=None, on_fixer=None,
+                 refs="refs/heads/feat x1", refs_after_commit=None, on_fixer=None, on_step=None,
+                 tree_changes="tests/test_pool.py",
                  review_diff="diff --git a/tests/test_pool.py b/tests/test_pool.py"):
         self.calls, self.cwds, self.envs, self.raw = [], [], [], []
         self.verdicts, self.changed, self.dirty = verdicts or {}, changed, dirty
         self.diffs, self.model, self.timeout_role = list(diffs), model, timeout_role
         self.check_rc, self.setup_rc = check_rc, setup_rc
         self.refs, self.refs_after_commit = refs, refs_after_commit
-        self.on_fixer, self.review_diff, self.committed = on_fixer, review_diff, False
+        self.on_step = dict(on_step or {}) | ({"fixer": on_fixer} if on_fixer else {})
+        self.tree_changes, self.review_diff, self.committed = tree_changes, review_diff, False
 
     def __call__(self, cmd, **kw):
         self.raw.append(cmd)
-        if cmd[:4] == CONTAIN:
-            cmd = cmd[4:]
+        if cmd[:5] == CONTAIN:
+            cmd = cmd[5:]
         self.calls.append(cmd)
         self.cwds.append(kw.get("cwd"))
         self.envs.append(kw.get("env"))
@@ -75,8 +81,8 @@ class FakeRun:
         if cmd[0] == "git":
             return subprocess.CompletedProcess(cmd, 0, stdout=self.git_out(cmd), stderr="")
         role = self.role(cmd)
-        if role == "fixer" and self.on_fixer:
-            self.on_fixer(Path(kw["cwd"]))
+        if role in self.on_step:
+            self.on_step[role](Path(kw["cwd"]))
         if role == self.timeout_role:
             raise subprocess.TimeoutExpired(cmd, 1)
         events = [{"type": "system", "subtype": "init", "model": self.model,
@@ -85,13 +91,15 @@ class FakeRun:
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(events), stderr="")
 
     def git_out(self, cmd):
-        args, _where, _git_dir = git_args(cmd)
+        args = git_args(cmd)[0]
         if args[:1] == ["clone"]:
             (Path(args[-1]) / ".git").mkdir(parents=True)
         elif args[:1] == ["write-tree"]:
             return "tree-new" if self.dirty else "tree-base"
         elif args[:1] == ["rev-parse"] and args[1].endswith("^{tree}"):
             return "tree-base"
+        elif args[:1] == ["diff-tree"]:
+            return self.tree_changes
         elif args[:1] == ["commit-tree"]:
             return "commit456"
         elif args[:1] == ["update-ref"]:
@@ -126,10 +134,10 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "FANTASY_LOCK", tmp_path / "lock")
     monkeypatch.setattr(runner, "FANTASY_LAST", tmp_path / "fantasy-last.json")
     monkeypatch.setattr(runner, "POLICY", tmp_path / "policy.json")
-    monkeypatch.setattr(runner, "NO_HOOKS", tmp_path / "no-hooks")
     monkeypatch.setattr(runner, "GIT_DIR", tmp_path / "gitdir")
     monkeypatch.setattr(runner, "TREES", tmp_path / "trees")
     monkeypatch.setattr(runner, "MAIN_VENV", tmp_path / "venv")
+    monkeypatch.setattr(runner, "BYTECODE_ROOTS", ())
     monkeypatch.setattr(runner, "SENSITIVE", ())
     monkeypatch.setattr(improve, "LEASE", tmp_path / "lease.json")
     monkeypatch.setattr(improve, "RUNS", tmp_path / "runs.jsonl")
@@ -163,6 +171,9 @@ class TestCommand:
                                          if not t.startswith("mcp__")}))
         mcp = cmd[cmd.index("--mcp-config") + 1]
         assert mcp.endswith(".mcp.json") if role == "fantasy" else mcp == '{"mcpServers": {}}'
+
+    def test_contain_runs_without_writing_bytecode(self):
+        assert runner.contained(["x"]) == [*CONTAIN, "x"]
 
     def test_no_unattended_role_can_write_espn_or_merge(self):
         every = [t for tools in runner.ROLE_TOOLS.values() for t in tools]
@@ -203,6 +214,29 @@ class TestCommand:
         assert runner.accepted_unsandboxed(path) is False
         path.write_text(json.dumps({"unsandboxed_tests_accepted": True, "user_quote": "yes, run it"}))
         assert runner.accepted_unsandboxed(path) is True
+
+    def test_base_python_is_the_pyvenv_home(self, tmp_path):
+        (tmp_path / "pyvenv.cfg").write_text("home = C:\\uv\\python\ninclude-system-site-packages = false\n")
+        assert runner.base_python(tmp_path) == Path("C:\\uv\\python")
+        assert runner.base_python(tmp_path / "none") is None
+
+
+class TestTaskXml:
+    def parse(self, minutes=30):
+        xml = runner.task_xml(minutes, "C:\\a&b\\python.exe", "C:\\repo", "2026-09-14T02:00:00")
+        return ET.fromstring(xml.encode("utf-16"))
+
+    def test_instances_run_in_parallel_with_a_time_limit(self):
+        task = self.parse()
+        assert task.find("t:Settings/t:MultipleInstancesPolicy", TASK_NS).text == "Parallel"
+        assert task.find("t:Settings/t:ExecutionTimeLimit", TASK_NS).text == "PT3H"
+        assert task.find("t:Triggers/t:TimeTrigger/t:Repetition/t:Interval", TASK_NS).text == "PT30M"
+
+    def test_the_action_is_the_tick_without_bytecode(self):
+        exec_ = self.parse(minutes=15).find("t:Actions/t:Exec", TASK_NS)
+        assert exec_.find("t:Command", TASK_NS).text == "C:\\a&b\\python.exe"
+        assert exec_.find("t:Arguments", TASK_NS).text == "-B -m ffdraft.runner tick"
+        assert exec_.find("t:WorkingDirectory", TASK_NS).text == "C:\\repo"
 
 
 class TestLock:
@@ -246,7 +280,7 @@ class TestFantasy:
                    run=run)
         (cmd,) = run.models()
         assert "Murray: QUESTIONABLE -> OUT" in cmd[2] and "cannot change the lineup" in cmd[2]
-        assert run.raw[0][:4] == CONTAIN
+        assert run.raw[0][:5] == CONTAIN
         assert out["outcome"] == "fantasy report rc 0"
 
     def test_an_unreadable_game_tick_is_a_failure_not_no_change(self, isolated):
@@ -286,7 +320,7 @@ class TestEngineering:
                 if cmd[0] != "git" and cmd[1:] != ["setup"]]
         assert cwds == ["fix", "review", "review", "oracle", "oracle"]
         # Every agent, venv build and just check runs under contain; git does not.
-        assert all(raw[:4] == CONTAIN for raw in run.raw if raw[0] != "git")
+        assert all(raw[:5] == CONTAIN for raw in run.raw if raw[0] != "git")
         setups = [env for env, cmd in zip(run.envs, run.calls) if cmd[1:] == ["setup"]]
         assert len(setups) == 2 and all(e["UV_LINK_MODE"] == "copy" and "VIRTUAL_ENV" not in e
                                         for e in setups)
@@ -308,6 +342,16 @@ class TestEngineering:
         assert improve.attempted(isolated / "runs.jsonl") == {"q-a"}
         assert tick([state("IDLE", allowed=True)])["outcome"] == "idle: nothing to take"
 
+    def test_every_git_call_has_a_fresh_empty_hooks_directory_and_no_fsmonitor(self, isolated):
+        run = FakeRun(verdicts=APPROVE)
+        tick([state("IDLE", allowed=True)], run=run)
+        gits = [git_args(c)[3] for c in run.calls if c[0] == "git"]
+        assert gits and all("core.fsmonitor=false" in config for config in gits)
+        hooks = [s.split("=", 1)[1] for config in gits for s in config
+                 if s.startswith("core.hooksPath=")]
+        assert len(hooks) == len(gits) == len(set(hooks))
+        assert not any(Path(h).exists() for h in hooks)
+
     def test_the_fixer_tree_is_recorded_through_the_main_git_dir_never_the_clones(self, isolated):
         def poison(clone):
             (clone / ".git" / "config").write_text("[core]\n\thooksPath = /evil\n\tfsmonitor = evil")
@@ -318,17 +362,27 @@ class TestEngineering:
                         if c[0] != "git" and c[1:] not in (["setup"], ["check"]))
         fix = str(Path(out["trees"]) / "fix")
         later = [git_args(c) for c in run.calls[fixer_at:] if c[0] == "git"]
-        assert not any(where == fix for _args, where, _gd in later)
+        assert not any(where == fix for _args, where, _gd, _cfg in later)
         recorded = [c for c in run.calls[fixer_at:] if c[0] == "git" and git_args(c)[2]]
         assert {git_args(c)[0][0] for c in recorded} >= {"read-tree", "add", "write-tree",
-                                                         "commit-tree", "update-ref"}
-        assert all(git_args(c)[2] == str(runner.GIT_DIR) and f"core.hooksPath={runner.NO_HOOKS}" in c
-                   and "core.fsmonitor=false" in c for c in recorded)
+                                                         "diff-tree", "commit-tree", "update-ref"}
+        assert all(git_args(c)[2] == str(runner.GIT_DIR) and "--attr-source=base123" in c
+                   for c in recorded)
 
-    def test_the_class_comes_from_the_actual_diff(self, isolated):
-        run = FakeRun(verdicts=APPROVE, changed="tests/test_pool.py\nsrc/ffdraft/governor.py")
+    def test_a_fixer_gitattributes_is_refused_before_any_ref(self, isolated):
+        run = FakeRun(tree_changes="src/x.py\nsub/.gitattributes")
+        out = tick([state("IDLE", allowed=True)], run=run)
+        assert out["outcome"].startswith("failed: commit: StepRefused: the fixer changed "
+                                         "sub/.gitattributes")
+        assert not run.git("update-ref") and len(run.models()) == 1
+
+    def test_a_class_c_diff_parks_before_any_venv_test_or_review(self, isolated):
+        run = FakeRun(verdicts=APPROVE, changed="justfile")
         out = tick([state("IDLE", allowed=True)], run=run)
         assert out["candidate_risk"] == "C" and out["promotion"]["promote"] is False
+        assert out["outcome"] == "parked: queue/q-a at commit456 is class C; a human reviews it"
+        assert len(run.models()) == 1 and len([c for c in run.calls if c[1:] == ["setup"]]) == 1
+        assert len(run.git("clone")) == 1
 
     def test_the_full_suite_gate_is_the_runners_exit_code_not_the_verifiers_word(self, isolated):
         out = tick([state("IDLE", allowed=True)], run=FakeRun(verdicts=APPROVE, check_rc=1))
@@ -357,28 +411,79 @@ class TestEngineering:
         assert len(run.models()) == 1 and not Path(out["trees"]).exists()
         assert not (isolated / "lease.json").exists()
 
-    def test_a_write_into_the_main_venv_aborts(self, isolated):
+    def test_a_same_size_swap_deep_in_the_venv_with_its_mtime_restored_aborts(self, isolated):
+        frame = runner.MAIN_VENV / "Lib" / "site-packages" / "pandas" / "core" / "frame.py"
+        frame.parent.mkdir(parents=True)
+        frame.write_text("class DataFrame: ...\n")
+
+        def swap(_clone):
+            st = frame.stat()
+            frame.write_text("import os; os.X(1)\n\n")
+            os.utime(frame, ns=(st.st_atime_ns, st.st_mtime_ns))
+            assert frame.stat().st_size == st.st_size
+        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=swap))
+        rel = str(Path("Lib/site-packages/pandas/core/frame.py"))
+        assert out["outcome"].endswith(f"the fixer ran: venv ({rel})")
+
+    def test_planted_bytecode_in_the_venv_or_under_src_aborts(self, isolated, monkeypatch):
+        src = isolated / "src"
+        cache = src / "ffdraft" / "__pycache__"
+        cache.mkdir(parents=True)
+        monkeypatch.setattr(runner, "BYTECODE_ROOTS", (src,))
+
+        def plant(_clone):
+            (cache / "runner.cpython-312.pyc").write_bytes(b"\x00evil")
+        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=plant))
+        assert "bytecode (src/" in out["outcome"] and "runner.cpython-312.pyc" in out["outcome"]
+
+        venv_cache = runner.MAIN_VENV / "Lib" / "site-packages" / "mcp" / "__pycache__"
+        venv_cache.mkdir(parents=True)
+        (improve.RUNS).unlink()
+
+        def plant_venv(_clone):
+            (venv_cache / "server.cpython-312.pyc").write_bytes(b"\x00evil")
+        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=plant_venv))
+        assert "venv (" in out["outcome"] and "server.cpython-312.pyc" in out["outcome"]
+
+    def test_the_base_interpreter_is_covered(self, isolated):
+        base = isolated / "uv-python"
+        (base / "Lib").mkdir(parents=True)
+        (base / "Lib" / "os.py").write_text("x")
+        runner.MAIN_VENV.mkdir()
+        (runner.MAIN_VENV / "pyvenv.cfg").write_text(f"home = {base}\n")
+
+        def poison(_clone):
+            (base / "Lib" / "sitecustomize.py").write_text("import os")
+        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=poison))
+        assert "base_python (" in out["outcome"] and "sitecustomize.py" in out["outcome"]
+
+    def test_a_changed_git_config_is_refused_before_git_runs_again(self, isolated):
+        config = runner.GIT_DIR / "config"
+        config.parent.mkdir(parents=True)
+        config.write_text("[core]\n")
+        (runner.GIT_DIR / "info").mkdir()
+        run = FakeRun()
+
+        def poison(_clone):
+            (runner.GIT_DIR / "info" / "attributes").write_text("* filter=lfs\n")
+        run.on_step["fixer"] = poison
+        out = tick([state("IDLE", allowed=True)], run=run)
+        assert out["outcome"].endswith(f"the fixer ran: {runner.GIT_DIR / 'info' / 'attributes'}")
+        fixer_at = next(i for i, c in enumerate(run.calls)
+                        if c[0] != "git" and c[1:] not in (["setup"], ["check"]))
+        assert not [c for c in run.calls[fixer_at:] if c[0] == "git"]
+
+    def test_a_change_during_the_reviews_fails_before_the_gates(self, isolated):
         site = runner.MAIN_VENV / "Lib" / "site-packages"
         site.mkdir(parents=True)
-        (site / "ffdraft.pth").write_text("src")
 
         def persist(_clone):
-            (site / "sitecustomize.py").write_text("import os")
-        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=persist))
-        assert out["outcome"].startswith("failed: fixer: StepRefused: the main checkout changed")
-        assert out["outcome"].endswith(f"{site / 'sitecustomize.py'}, venv")
-
-    def test_content_is_compared_not_size_and_mtime(self, isolated, monkeypatch):
-        config = isolated / "gitconfig"
-        config.write_text("[core]\n\tautocrlf = x")
-        monkeypatch.setattr(runner, "SENSITIVE", (config,))
-
-        def same_size(_clone):
-            st = config.stat()
-            config.write_text("[core]\n\thooksPat= x")
-            os.utime(config, ns=(st.st_atime_ns, st.st_mtime_ns))
-        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=same_size))
-        assert out["outcome"].endswith(f"the fixer ran: {config}")
+            (site / "evil.pth").write_text("import os")
+        run = FakeRun(verdicts=APPROVE, on_step={"devil": persist})
+        out = tick([state("IDLE", allowed=True)], run=run)
+        assert out["outcome"] == ("failed: reviews: StepRefused: the main checkout changed while "
+                                  f"the reviews ran: venv ({Path('Lib/site-packages/evil.pth')})")
+        assert "gates" not in out
 
     def test_a_runner_commit_that_moves_another_ref_fails(self, isolated):
         run = FakeRun(verdicts=APPROVE, refs_after_commit="refs/heads/feat x2")
@@ -392,7 +497,7 @@ class TestEngineering:
 
         def rewrite_old_branch(_clone):
             run.refs = "refs/heads/queue/q-old x2"
-        run.on_fixer = rewrite_old_branch
+        run.on_step["fixer"] = rewrite_old_branch
         out = tick([state("IDLE", allowed=True)], run=run)
         assert out["outcome"].endswith("the fixer ran: refs")
 
@@ -459,3 +564,19 @@ class TestTrees:
         os.chmod(obj / "cd", 0o444)
         assert runner.remove_tree(tmp_path / "t") == "t: removed"
         assert runner.remove_tree(tmp_path / "t") == "t: absent"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows only")
+    def test_remove_tree_does_not_follow_a_junction_out_of_the_clone(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        precious = outside / "precious.py"
+        precious.write_text("keep")
+        os.chmod(precious, 0o444)
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(clone / "escape"), str(outside)],
+                              capture_output=True, text=True)
+        assert made.returncode == 0, made.stdout + made.stderr
+        assert runner.remove_tree(clone) == "clone: removed"
+        assert precious.read_text() == "keep"
+        assert not os.access(precious, os.W_OK)

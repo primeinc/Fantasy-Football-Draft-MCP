@@ -5,7 +5,7 @@ set script-interpreter := ['sh', '-euc', 'v="$(just --evaluate venv)"; if [ -z "
 
 # One governor tick (ffdraft.runner); $flags: --dry-run (default), --supervised, or empty for unattended
 tick $flags='--dry-run':
-    "{{ justfile_directory() }}/.venv/Scripts/python.exe" -m ffdraft.runner tick $flags
+    "{{ justfile_directory() }}/.venv/Scripts/python.exe" -B -m ffdraft.runner tick $flags
 
 # Record that the user accepts unattended fixer and verifier runs executing fixer-written code unsandboxed; $quote is the user's words
 [script]
@@ -28,17 +28,26 @@ accept-unsandboxed $quote $confirm='':
                              encoding="utf-8")
     print(f"recorded {runner.POLICY}")
 
-# The Task Scheduler command for the tick every $minutes; runs schtasks only when $confirm is 'install'
+# The Task Scheduler definition for the tick every $minutes (parallel instances, 3 h limit); registers it only when $confirm is 'install'
 [script]
 install $minutes='30' $confirm='':
     import os
     import subprocess
     import sys
 
-    repo = os.getcwd().replace("\\", "/")
-    python = f"{repo}/.venv/Scripts/python.exe"
-    cmd = ["schtasks", "/Create", "/TN", "ffdraft-governor", "/SC", "MINUTE", "/MO",
-           os.environ["minutes"], "/TR", f'"{python}" -m ffdraft.runner tick', "/F"]
+    import pandas as pd
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    from ffdraft import runner
+
+    repo = os.getcwd()
+    xml = runner.task_xml(int(os.environ["minutes"]), os.path.join(repo, ".venv", "Scripts", "python.exe"),
+                          repo, pd.Timestamp.now().floor("min").strftime("%Y-%m-%dT%H:%M:%S"))
+    path = runner.STATE_DIR / "runner-task.xml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(xml, encoding="utf-16")
+    cmd = ["schtasks", "/Create", "/TN", runner.TASK_NAME, "/XML", str(path), "/F"]
+    print(xml)
     print(" ".join(cmd))
     if os.environ["confirm"] != "install":
         sys.exit("not installed: pass confirm=install once the user has said yes")

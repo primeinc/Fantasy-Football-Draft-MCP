@@ -1,7 +1,7 @@
 """Run one command and kill everything it started when it exits.
 
-`python -m ffdraft.contain -- CMD...` exits with CMD's code. A process CMD
-starts, detached or not, does not outlive it.
+`python -B -m ffdraft.contain -- CMD...` exits with CMD's code. A process CMD
+or its descendants start directly, detached or not, does not outlive it.
 
   Windows  this process joins a new job object with
            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE before starting CMD, so CMD and
@@ -10,13 +10,15 @@ starts, detached or not, does not outlive it.
            never closed explicitly: when this process exits, or is killed on a
            timeout, the last handle closes and Windows terminates every process
            still in the job (Microsoft Learn: JOBOBJECT_BASIC_LIMIT_INFORMATION,
-           AssignProcessToJobObject).
+           AssignProcessToJobObject). A process a service creates on the job's
+           behalf (Task Scheduler through schtasks, WMI Win32_Process.Create,
+           the service control manager) is never in the job and survives.
   POSIX    CMD leads a new session; after it exits its process group is killed.
            A descendant that calls setsid itself leaves the group and survives.
 
 The runner starts every agent and every `just check` through this, so code the
-fixer wrote cannot leave a process that writes after the runner's last
-fingerprint.
+fixer wrote cannot leave a directly started process that writes after the
+runner's last fingerprint.
 """
 from __future__ import annotations
 

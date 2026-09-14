@@ -47,6 +47,25 @@ def test_a_detached_grandchild_dies_with_the_command():
     assert _grandchild_outlives(contained=True) is False
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the job object is Windows only")
+def test_a_timeout_kill_takes_the_grandchild_with_it():
+    # subprocess.run on a timeout kills its direct child, here the venv's python.exe
+    # launcher, then reads the pipes to the end. Those reach EOF only when the
+    # grandchild holding them is gone, so a survivor would hang the runner.
+    waits = CHILD + "\nimport threading\nthreading.Event().wait(120)\n"
+    proc = subprocess.Popen([sys.executable, "-B", "-m", "ffdraft.contain", "--",
+                             sys.executable, "-c", waits], stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    pid = int(proc.stdout.readline())
+    proc.kill()
+    try:
+        proc.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+        proc.communicate(timeout=30)
+        pytest.fail(f"grandchild {pid} outlived the killed contain")
+
+
 def test_the_exit_code_is_the_commands():
     cmd = [sys.executable, "-m", "ffdraft.contain", "--", sys.executable, "-c", "raise SystemExit(7)"]
     assert subprocess.run(cmd, timeout=30).returncode == 7

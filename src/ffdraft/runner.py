@@ -11,41 +11,50 @@ The tick is Python; a model starts only where judgment is needed.
   IDLE, DEEP_IDLE one queue item is leased (the lease is the engineering lock).
                   Each agent works in a throwaway `git clone --no-hardlinks` of
                   the repo under TREES, with its origin remote removed and its own
-                  virtualenv built by `just setup` with `UV_LINK_MODE=copy`, so
-                  nothing in it shares a file with the main checkout, its `.git`,
-                  its `.venv` or the uv cache. The fixer, then the verifier,
-                  angel and devil each run as `claude -p --restricted` (file tools
-                  confined to the clone, user/project/local settings ignored) on
-                  claude-opus-5 at medium effort, with the agent definition read
-                  from the main checkout, and the init event is checked for the
-                  model and permission mode. The runner reads the fixer's files
-                  into the main repository through its own git dir with a
-                  temporary index and hooks off, and creates `queue/<id>` only if
-                  it does not exist; git never runs inside the fixer's `.git`
-                  after the fixer has. The verifier and the runner's `just check`
-                  run in a clone at that commit; the angel and devil read a diff
-                  the runner produced, in a clone no tests ran in. The class
-                  comes from the actual diff, the promotion verdict is recorded,
-                  and nothing is merged.
+                  virtualenv built by `just setup` with `UV_LINK_MODE=copy`, so no
+                  file in it is shared with the main checkout, its `.git`, its
+                  `.venv` or the uv cache. Every venv, the main one included, runs
+                  the same uv-managed base interpreter. The fixer, then the
+                  verifier, angel and devil each run as `claude -p --restricted`
+                  (file tools confined to the clone, user/project/local settings
+                  ignored) on claude-opus-5 at medium effort, with the agent
+                  definition read from the main checkout, and the init event is
+                  checked for the model and permission mode. The runner reads the
+                  fixer's files into the main repository through its own git dir
+                  with a temporary index, gitattributes read from the base commit,
+                  and `queue/<id>` created only if it does not exist; a change to
+                  `.gitattributes` or `.gitmodules` is refused. Git never runs
+                  inside the fixer's `.git` after the fixer has. The verifier and
+                  the runner's `just check` run in a clone at that commit; the
+                  angel and devil read a diff the runner produced, in a clone no
+                  tests ran in. A class C change is parked before any of that.
+                  The class comes from the actual diff, the promotion verdict is
+                  recorded, and nothing is merged.
 
-Every agent, venv build and `just check` runs under `ffdraft.contain`, which
-kills every process it started when it exits. Fixer and verifier run `just
-check`, which executes code the fixer wrote as the user, outside any sandbox; no
-Claude Code flag contains that. An unattended tick therefore takes engineering
-work only when `POLICY` records that the user accepted it; `--supervised` is a
-run the user is watching.
+Every git call the runner makes points `core.hooksPath` at a new empty directory
+and turns `core.fsmonitor` off. Every agent, venv build and `just check` runs
+under `ffdraft.contain`, which kills every process it or its descendants start
+directly when it exits; a process a service starts on its behalf (Task
+Scheduler, WMI) is not covered. Fixer and verifier run `just check`, which
+executes code the fixer wrote as the user, outside any sandbox; no Claude Code
+flag contains that. An unattended tick therefore takes engineering work only when
+`POLICY` records that the user accepted it; `--supervised` is a run the user is
+watching.
 
 One fingerprint of what that code could reach, taken before the fixer, is
-compared after the fixer, after the commit and after the tests: git status,
-`git diff HEAD`, every ref except this item's branch, the content of the
-gitignored files that matter (`.git/config` and hooks, settings, `.mcp.json`,
-the policy), and the name, size and mtime of every file in the main `.venv`
-outside `__pycache__`, with top-level site-packages files hashed by content. It
-is a tripwire, not a boundary: a write elsewhere in the user profile
-(`~/.claude.json`, the uv cache, a startup folder) is not covered, and the user's
-acceptance is the control for that.
+compared after the fixer, after the commit, after the tests and after the
+reviews. Files are compared first, before any git command runs: the content of
+the git, Claude and MCP configuration (`.git/config`, `.git/info`, hooks,
+system and global gitconfig and attributes, settings, `.mcp.json`, the policy),
+of every file in the main `.venv` and the base interpreter, and of the bytecode
+under `src` and `tests`. Then git status, `git diff HEAD` and every ref except
+this item's branch. The runner writes no bytecode itself, so a changed `.pyc`
+means something else wrote it. It is a tripwire, not a boundary: `~/.claude.json`,
+the uv cache, `STATE_DIR` and scheduled tasks are not covered, and the user's
+acceptance is the control for that. A Python process outside the runner that
+writes bytecode during a tick (the MCP server importing a module) fails the tick.
 
-Every tick writes `STATE_DIR/runner/<stamp>.json`. `python -m ffdraft.runner
+Every tick writes `STATE_DIR/runner/<stamp>.json`. `python -B -m ffdraft.runner
 tick [--dry-run] [--supervised]` loads the fantasy-draft env from `.mcp.json`.
 """
 from __future__ import annotations
@@ -61,6 +70,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import pandas as pd
 
@@ -71,6 +81,7 @@ from .governor import when
 REPO = improve.REPO
 GIT_DIR = REPO / ".git"
 MAIN_VENV = REPO / ".venv"
+BYTECODE_ROOTS = (REPO / "src", REPO / "tests")
 # Not under %TEMP%: a clone there fails `just check` at ty with 161 unresolved
 # imports on an unchanged commit (2026-09-14), where `justfile_directory()` reads
 # C:\WINDOWS\TEMP and uv's editable .pth reads C:\Windows\Temp. The same commit
@@ -81,13 +92,15 @@ FANTASY_LOCK = STATE_DIR / "runner-fantasy.lock"
 FANTASY_LAST = STATE_DIR / "runner-fantasy-last.json"
 POLICY = STATE_DIR / "runner-policy.json"
 RUN_DIR = STATE_DIR / "runner"
-NO_HOOKS = STATE_DIR / "runner-no-hooks"
+TASK_NAME = "ffdraft-governor"
+TASK_TIME_LIMIT = "PT3H"
 LOCK_STALE_MINUTES = 30
 LEAGUE_ENV = "ESPN_LEAGUE_ID"
 MODEL = "claude-opus-5"
 EFFORT = "medium"
 SAFE_ID = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
 MAX_REVIEW_DIFF = 60_000
+REFUSED_PATHS = (".gitattributes", ".gitmodules")
 # Spend caps per `claude -p`: $0.085 for a trivial --restricted call (2026-09-14),
 # $0.28-0.40 unrestricted.
 BUDGET_USD = {"fantasy": 3.0, "fixer": 8.0, "verifier": 3.0, "angel": 3.0, "devil": 3.0}
@@ -105,13 +118,17 @@ ROLE_TOOLS: dict[str, tuple[str, ...]] = {
 }
 AGENT_FILE = {"fixer": "fixer.md", "verifier": "verifier.md", "angel": "angel-oracle.md",
               "devil": "devil-oracle.md"}
+_GIT_EXE = shutil.which("git")
+_GIT_ETC = Path(_GIT_EXE).resolve().parent.parent / "etc" if _GIT_EXE else None
 # Outside every clone; changed during a run only by something the fixer's code ran.
 SENSITIVE = (REPO / ".mcp.json", REPO / ".claude" / "settings.json",
-             REPO / ".claude" / "settings.local.json", MAIN_VENV / "pyvenv.cfg",
+             REPO / ".claude" / "settings.local.json",
              Path.home() / ".claude" / "settings.json",
              Path.home() / ".claude" / "settings.local.json", Path.home() / ".gitconfig",
-             Path.home() / ".config" / "git" / "config", POLICY,
-             STATE_DIR / "decision_points.json")
+             Path.home() / ".config" / "git" / "config",
+             Path.home() / ".config" / "git" / "attributes", POLICY,
+             STATE_DIR / "decision_points.json",
+             *((_GIT_ETC / "gitconfig", _GIT_ETC / "gitattributes") if _GIT_ETC else ()))
 
 FANTASY_PROMPT = """Unattended fantasy tick for ESPN league {league_id}, week {week}. No human is \
 present: never ask questions. You can read; you cannot change the lineup or submit a claim.
@@ -150,8 +167,8 @@ class StepRefused(RuntimeError):
 
 
 def contained(cmd: list[str]) -> list[str]:
-    """`cmd` under `ffdraft.contain`: nothing it starts outlives it."""
-    return [sys.executable, "-m", "ffdraft.contain", "--", *cmd]
+    """`cmd` under `ffdraft.contain`, which writes no bytecode: nothing it starts outlives it."""
+    return [sys.executable, "-B", "-m", "ffdraft.contain", "--", *cmd]
 
 
 def agent_system(role: str, root: Path | None = None) -> str | None:
@@ -179,6 +196,49 @@ def claude_cmd(prompt: str, role: str, claude: str | None = None,
     if system:
         cmd += ["--append-system-prompt", system]
     return cmd
+
+
+def task_xml(minutes: int, python: str, repo: str, start: str) -> str:
+    """The Task Scheduler definition for the tick every `minutes`, starting `start`
+    (local ISO time). Parallel instances: an engineering tick of up to two hours
+    must not stop the fantasy ticks behind it, and IgnoreNew is the schema default.
+    Each instance is stopped after TASK_TIME_LIMIT."""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>ffdraft governor tick (just runner install)</Description>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>{TASK_TIME_LIMIT}</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>{escape(start)}</StartBoundary>
+      <Repetition>
+        <Interval>PT{int(minutes)}M</Interval>
+      </Repetition>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(python)}</Command>
+      <Arguments>-B -m ffdraft.runner tick</Arguments>
+      <WorkingDirectory>{escape(repo)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
 
 
 def _events(stdout: str) -> list[dict]:
@@ -295,9 +355,19 @@ def release_lock(path: Path | None = None) -> None:
     (path or FANTASY_LOCK).unlink(missing_ok=True)
 
 
+def git(run: Runner, *args: str, **kw) -> subprocess.CompletedProcess:
+    """git with hooks read from a new empty directory and no fsmonitor: nothing a
+    hooks directory or a config the fixer's code reached can run in this call."""
+    hooks = tempfile.mkdtemp(prefix="ffdraft-no-hooks-")
+    try:
+        return run(["git", "-c", f"core.hooksPath={hooks}", "-c", "core.fsmonitor=false", *args],
+                   **({"capture_output": True, "text": True, "check": True} | kw))
+    finally:
+        shutil.rmtree(hooks, ignore_errors=True)
+
+
 def _git(run: Runner, *args: str) -> str:
-    return run(["git", "-C", str(REPO), *args], capture_output=True, text=True,
-               check=True).stdout
+    return git(run, "-C", str(REPO), *args).stdout
 
 
 def _digest(path: Path) -> str | None:
@@ -307,51 +377,97 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-def _venv_listing(root: Path) -> str:
-    """Name, size and mtime of every file under `root` outside `__pycache__`, hashed."""
-    h = hashlib.sha256()
+def _tree_digests(root: Path, suffix: str = "") -> dict[str, str]:
+    """The content hash of every file under `root` whose name ends with `suffix`,
+    by path relative to `root`."""
+    out: dict[str, str] = {}
+    if not root.is_dir():
+        return out
     for top, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d != "__pycache__")
-        for name in sorted(files):
-            full = os.path.join(top, name)
-            try:
-                st = os.stat(full)
-            except OSError:
-                continue
-            h.update(f"{os.path.relpath(full, root)}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
-    return h.hexdigest()
+        dirs.sort()
+        for name in files:
+            if name.endswith(suffix):
+                full = Path(top) / name
+                out[str(full.relative_to(root))] = _digest(full) or "unreadable"
+    return out
 
 
-def fingerprint(run: Runner, branch: str) -> dict:
-    """What the fixer's and verifier's code could change outside their clones;
-    only `branch` is allowed to move."""
+def base_python(venv: Path | None = None) -> Path | None:
+    """The base interpreter directory `venv` was created from (`home` in pyvenv.cfg)."""
+    try:
+        text = ((venv or MAIN_VENV) / "pyvenv.cfg").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "home" and value.strip():
+            return Path(value.strip())
+    return None
+
+
+def _file_fingerprint() -> dict:
+    """Every file the fixer's and verifier's code could change outside their clones,
+    by content. Read without running git."""
+    info = GIT_DIR / "info"
+    hooks = GIT_DIR / "hooks"
+    files = (*SENSITIVE, MAIN_VENV / "pyvenv.cfg", GIT_DIR / "config",
+             *(sorted(info.iterdir()) if info.is_dir() else ()),
+             *(sorted(hooks.iterdir()) if hooks.is_dir() else ()))
+    out: dict = {str(p): _digest(p) for p in files}
+    out["venv"] = _tree_digests(MAIN_VENV)
+    base = base_python()
+    out["base_python"] = _tree_digests(base) if base else {}
+    out["bytecode"] = {f"{root.name}/{rel}": d for root in BYTECODE_ROOTS
+                       for rel, d in _tree_digests(root, ".pyc").items()}
+    return out
+
+
+def _git_fingerprint(run: Runner, branch: str) -> dict:
+    """The main repository through git; only `branch` is allowed to move."""
     refs = "\n".join(line for line in _git(run, "for-each-ref",
                                            "--format=%(refname) %(objectname)").splitlines()
                      if line.split(" ", 1)[0] != f"refs/heads/{branch}")
-    site = MAIN_VENV / "Lib" / "site-packages"
-    top = sorted(p for p in site.glob("*") if p.is_file()) if site.is_dir() else []
-    hooks = sorted((GIT_DIR / "hooks").glob("*")) if (GIT_DIR / "hooks").is_dir() else []
-    files = {str(p): _digest(p) for p in (*SENSITIVE, GIT_DIR / "config", *hooks, *top)}
     return {"status": _git(run, "status", "--porcelain"),
             "diff": hashlib.sha256(_git(run, "diff", "HEAD").encode()).hexdigest(),
-            "refs": hashlib.sha256(refs.encode()).hexdigest(),
-            "venv": _venv_listing(MAIN_VENV), **files}
+            "refs": hashlib.sha256(refs.encode()).hexdigest()}
+
+
+def fingerprint(run: Runner, branch: str) -> dict:
+    return _file_fingerprint() | _git_fingerprint(run, branch)
+
+
+def _moved(before: dict, after: dict) -> list[str]:
+    moved = []
+    for key in sorted(set(before) | set(after)):
+        old, new = before.get(key), after.get(key)
+        if old == new:
+            continue
+        if isinstance(old, dict) and isinstance(new, dict):
+            paths = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+            more = f" and {len(paths) - 5} more" if len(paths) > 5 else ""
+            moved.append(f"{key} ({', '.join(paths[:5])}{more})")
+        else:
+            moved.append(key)
+    return moved
 
 
 def check_unchanged(run: Runner, before: dict, branch: str, during: str) -> None:
-    after = fingerprint(run, branch)
-    moved = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    """Files first: a changed git config or hook is refused before git runs again."""
+    files = _file_fingerprint()
+    moved = _moved({k: before.get(k) for k in files}, files)
+    if not moved:
+        after = _git_fingerprint(run, branch)
+        moved = _moved({k: before.get(k) for k in after}, after)
     if moved:
-        raise StepRefused(f"the main checkout changed while {during}: {', '.join(moved)}")
+        raise StepRefused(f"the main checkout changed while {during}: {'; '.join(moved)}")
 
 
 def clone(run: Runner, root: Path, name: str, commit: str) -> Path:
     """A throwaway clone of REPO detached at `commit`, sharing no file with it."""
     path = root / name
     _git(run, "clone", "--quiet", "--no-hardlinks", "--no-checkout", str(REPO), str(path))
-    for args in (("remote", "remove", "origin"),
-                 ("-c", f"core.hooksPath={NO_HOOKS}", "checkout", "--quiet", "--detach", commit)):
-        run(["git", "-C", str(path), *args], capture_output=True, text=True, check=True)
+    git(run, "-C", str(path), "remote", "remove", "origin")
+    git(run, "-C", str(path), "checkout", "--quiet", "--detach", commit)
     return path
 
 
@@ -368,35 +484,55 @@ def record_tree(run: Runner, tree: Path, base: str, branch: str, message: str) -
     own git dir with a temporary index; None when the tree equals `base`.
 
     The clone's `.git` is not consulted: its config, hooks and HEAD are whatever the
-    fixer's code left. `update-ref` with an empty old value refuses a branch that
-    already exists."""
-    NO_HOOKS.mkdir(parents=True, exist_ok=True)
+    fixer's code left. Attributes come from `base`, so a `.gitattributes` the fixer
+    wrote cannot put a filter (git-lfs is configured on this machine) between the
+    files and the stored blobs, and a tree that changes one is refused before any
+    ref exists. `update-ref` with an empty old value refuses a branch that already
+    exists."""
     env = os.environ | {"GIT_INDEX_FILE": str(tree.parent / f"{tree.name}.index")}
 
-    def git(*args: str) -> str:
-        return run(["git", "-c", f"core.hooksPath={NO_HOOKS}", "-c", "core.fsmonitor=false",
-                    f"--git-dir={GIT_DIR}", f"--work-tree={tree}", *args],
-                   capture_output=True, text=True, check=True, env=env).stdout.strip()
-    git("read-tree", base)
-    git("add", "-A")
-    new_tree = git("write-tree")
-    if new_tree == git("rev-parse", f"{base}^{{tree}}"):
+    def g(*args: str) -> str:
+        return git(run, f"--attr-source={base}", f"--git-dir={GIT_DIR}", f"--work-tree={tree}",
+                   *args, env=env).stdout.strip()
+    g("read-tree", base)
+    g("add", "-A")
+    new_tree = g("write-tree")
+    if new_tree == g("rev-parse", f"{base}^{{tree}}"):
         return None
-    commit = git("commit-tree", new_tree, "-p", base, "-m", message)
-    git("update-ref", f"refs/heads/{branch}", commit, "")
+    touched = [p for p in g("diff-tree", "-r", "--name-only", base, new_tree).splitlines()
+               if p.rsplit("/", 1)[-1] in REFUSED_PATHS]
+    if touched:
+        raise StepRefused(f"the fixer changed {', '.join(touched)}; the runner does not record "
+                          f"attribute or submodule changes")
+    commit = g("commit-tree", new_tree, "-p", base, "-m", message)
+    g("update-ref", f"refs/heads/{branch}", commit, "")
     return commit
 
 
+def _is_link(path: str) -> bool:
+    """A symlink or a junction: removing it must not reach what it points at."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or bool(
+        getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def remove_tree(path: Path) -> str:
-    """Delete a clone; git's read-only object files are made writable first."""
+    """Delete a clone; git's read-only object files are made writable first, without
+    following a link or junction out of the clone."""
     if not path.exists():
         return f"{path.name}: absent"
-    for top, _dirs, files in os.walk(path):
+    for top, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if not _is_link(os.path.join(top, d))]
         for name in files:
-            try:
-                os.chmod(os.path.join(top, name), stat.S_IWRITE | stat.S_IREAD)
-            except OSError:
-                pass
+            full = os.path.join(top, name)
+            if not _is_link(full):
+                try:
+                    os.chmod(full, stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
     shutil.rmtree(path, ignore_errors=True)
     return f"{path.name}: {'left behind' if path.exists() else 'removed'}"
 
@@ -547,6 +683,13 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
             changed = _git(run, "diff", "--name-only", f"{base}...{commit}").split()
             record["changed"] = changed
             record["candidate_risk"] = improve.effective_risk({**item, "scope": changed})
+        if commit is not None and record["candidate_risk"] == "C":
+            # Never promoted without a human, and its review venv would run the
+            # fixer's own justfile and pyproject.
+            record["promotion"] = {"promote": False,
+                                   "why": "class C: no venv, tests or reviews run on it"}
+            outcome = f"parked: {branch} at {commit} is class C; a human reviews it"
+        elif commit is not None:
             review = clone(run, root, "review", commit)
             trees.append(review)
             current = "verifier venv"
@@ -576,6 +719,8 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
                     id=item_id, branch=branch, commit=commit, base=base, diff=diff,
                     item=item_json), clean)
             drop(clean)
+            current = "reviews"
+            check_unchanged(run, before, branch, "the reviews ran")
             if _git(run, "rev-parse", branch).strip() != commit:
                 raise StepRefused(f"{branch} moved after it was verified")
             angel = str((reviews["angel"]["verdict"] or {}).get("verdict") or "")
@@ -619,8 +764,13 @@ def write_record(record: dict, root: Path | None = None) -> Path:
 
 
 def main(argv: list[str]) -> int:
+    # The fingerprint treats a changed .pyc as foreign; the runner and everything
+    # it starts write none.
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     if not argv or argv[0] != "tick":
-        print("usage: python -m ffdraft.runner tick [--dry-run] [--supervised]", file=sys.stderr)
+        print("usage: python -B -m ffdraft.runner tick [--dry-run] [--supervised]",
+              file=sys.stderr)
         return 2
     env = json.loads((REPO / ".mcp.json").read_text(encoding="utf-8"))
     os.environ.update(env["mcpServers"]["fantasy-draft"]["env"])

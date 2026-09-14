@@ -782,16 +782,20 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   `git clone --no-hardlinks` under `~/.ffdraft/state/runner-trees`, with its origin
   remote removed and its own `.venv` built by `just setup` with
   `UV_LINK_MODE=copy`; no file in it is shared with the main checkout, its
-  `.git`, its `.venv` or the uv cache. The runner runs:
+  `.git`, its `.venv` or the uv cache. Every venv, the main one included, runs
+  the same uv-managed base interpreter. The runner runs:
   1. the fixer, in a clone at `HEAD`;
   2. the runner's own record of that work: the clone's files are read into the
-     main repository through the main `.git` with a temporary index, hooks off
-     and `core.fsmonitor=false`, and `queue/<id>` is created with `update-ref`
-     only if it does not exist. Git never runs in the fixer's `.git` after the
-     fixer has. The commit SHA is recorded;
-  3. the verifier, in a clone at that commit;
-  4. `just check` there, whose exit code is the `full_suite` gate;
-  5. the angel and devil reviews of a diff the runner produced, in a clone no
+     main repository through the main `.git` with a temporary index and
+     gitattributes read from the base commit (`--attr-source`), so a
+     `.gitattributes` the fixer wrote cannot route a file through git-lfs. A
+     change to `.gitattributes` or `.gitmodules` is refused, and `queue/<id>` is
+     created with `update-ref` only if it does not exist. Git never runs in the
+     fixer's `.git` after the fixer has. The commit SHA is recorded;
+  3. for a class C diff, nothing more: the branch is parked for a human;
+  4. the verifier, in a clone at that commit;
+  5. `just check` there, whose exit code is the `full_suite` gate;
+  6. the angel and devil reviews of a diff the runner produced, in a clone no
      tests ran in. They must return APPROVE and NO-EXPLOIT or OVERCAUTIOUS.
 
   Every agent runs with `--restricted` (file tools confined to its clone; user,
@@ -799,19 +803,26 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   and in `dontAsk` mode. Its definition comes from the main checkout's
   `.claude/agents`. Queue text and the diff are fenced as data. A run whose init
   event shows another model or mode fails the step. Every agent, venv build and
-  `just check` runs under `python -m ffdraft.contain`, which puts it in a
-  Windows job object with kill-on-close: no process it starts, detached or not,
-  outlives it.
+  `just check` runs under `python -B -m ffdraft.contain`, which puts it in a
+  Windows job object with kill-on-close: no process it or its descendants start
+  directly outlives it, on exit or on a timeout kill. A process a service starts
+  on its behalf (a scheduled task, WMI) is not in the job. Every git call the
+  runner makes points `core.hooksPath` at a new empty directory and sets
+  `core.fsmonitor=false`.
 
   One fingerprint is taken before the fixer and compared after the fixer, after
-  the commit and after the tests. It covers git status, `git diff HEAD`, every
-  ref except this item's branch, the content of `.mcp.json`, the Claude
-  settings, `~/.gitconfig`, `.git/config` and hooks, the policy file and the
-  top-level files of the main `.venv`'s site-packages, and the name, size and
-  mtime of every other file in the main `.venv` outside `__pycache__`. A detected
-  change fails the run, names the keys that moved, and reverts nothing. It is a
-  tripwire: writes elsewhere in the user profile (`~/.claude.json`, the uv cache)
-  are not covered, and the user's acceptance below is the control.
+  the commit, after the tests and after the reviews. Files are compared first,
+  before git runs: the content of `.mcp.json`, the Claude settings, the system
+  and global gitconfig and gitattributes, `.git/config`, `.git/info` and hooks,
+  the policy file, every file in the main `.venv` and in the base interpreter,
+  and every `.pyc` under `src` and `tests`. Then git status, `git diff HEAD` and
+  every ref except this item's branch. The runner runs with `-B` and sets
+  `PYTHONDONTWRITEBYTECODE` for everything it starts, so a changed `.pyc` is
+  foreign. A detected change fails the run, names what moved, and reverts
+  nothing. It is a tripwire: `~/.claude.json`, the uv cache, `.git/lfs`,
+  `~/.ffdraft/state` and scheduled tasks are not covered, and the user's
+  acceptance below is the control. Another Python process writing bytecode
+  during a tick (the MCP server importing a module) fails that tick.
 
   The risk class and the promotion verdict come from the branch's actual diff.
   `targeted_tests` is the verifier model's report, so no promotion may merge on
@@ -823,9 +834,12 @@ unattended tick takes engineering work only after the user's own words are
 recorded with `just runner accept-unsandboxed "<quote>" accept`.
 
 Every tick writes `~/.ffdraft/state/runner/<stamp>.json`. `just runner install`
-prints the Task Scheduler command and creates the task only with
-`confirm=install`. Running `claude -p` from Task Scheduler is not covered by
-Claude Code's documentation, so the first scheduled run is the verification.
+prints the task XML and the `schtasks /Create /XML` command, and registers the
+task only with `confirm=install`. The task runs instances in parallel
+(`MultipleInstancesPolicy` defaults to IgnoreNew, which would let a two-hour
+engineering tick stop every fantasy tick behind it) and stops each after three
+hours. Running `claude -p` from Task Scheduler is not covered by Claude Code's
+documentation, so the first scheduled run is the verification.
 
 ### `player_week`
 

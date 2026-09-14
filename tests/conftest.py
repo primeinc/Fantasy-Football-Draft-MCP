@@ -83,7 +83,7 @@ def _isolated_state_and_data(tmp_path_factory):
         (runner, "FANTASY_LOCK", state / "runner-fantasy.lock"),
         (runner, "POLICY", state / "runner-policy.json"), (runner, "RUN_DIR", state / "runner"),
         (runner, "FANTASY_LAST", state / "runner-fantasy-last.json"),
-        (runner, "NO_HOOKS", state / "runner-no-hooks"), (runner, "TREES", root / "trees"),
+        (runner, "TREES", root / "trees"),
     ]
     before = [(m, n, getattr(m, n)) for m, n, _ in patched]
     for m, n, v in patched:
