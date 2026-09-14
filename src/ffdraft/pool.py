@@ -53,6 +53,22 @@ def fetch_pool(league_id: str, season: int = CURRENT_SEASON, week: int | None = 
     return resp.json().get("players") or []
 
 
+def next_waiver_clear(league_id: str, season: int = CURRENT_SEASON, swid: str | None = None,
+                      espn_s2: str | None = None) -> int | None:
+    """The earliest `waiverProcessDate` (epoch ms) among up to 25 WAIVERS entries,
+    None when nobody is on waivers. A small pull: the full pool is 4 MB."""
+    flt = {"players": {**POOL_FILTER["players"], "filterStatus": {"value": ["WAIVERS"]},
+                       "limit": 25}}
+    resp = requests.get(espn_league_url(league_id, season), params={"view": "kona_player_info"},
+                        cookies=espn_cookies(swid, espn_s2), timeout=30,
+                        headers={"User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona",
+                                 "X-Fantasy-Filter": json.dumps(flt)})
+    resp.raise_for_status()
+    dates = [int(e["waiverProcessDate"]) for e in resp.json().get("players") or []
+             if e.get("status") == "WAIVERS" and e.get("waiverProcessDate")]
+    return min(dates) if dates else None
+
+
 def week_total(player: dict, season: int, week: int, source: int) -> float | None:
     """ESPN's applied fantasy total for one scoring period, or None when ESPN
     carries no row for it. None is "no row", never zero: a player with no game

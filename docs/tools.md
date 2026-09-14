@@ -730,6 +730,32 @@ mirror ESPN's records of claims this league processed in `mTransactions2`
 (ADD fromTeamId 0 slot -1 -> 20, DROP the reverse). No claim request has been
 observed, so `contract_basis` marks the body unverified and nothing is sent.
 
+### `controller_state` / `just decision-point <at> <what> [teams]`
+
+Whether a tick belongs to fantasy operations or engineering:
+`controller_state(league_id)`. Read it before anything else in a heartbeat.
+
+| mode | when | engineering |
+|---|---|---|
+| `DEGRADED` | the ESPN scoreboard or league document could not be read | no |
+| `HOT` | a started player of mine is OUT, INJURY_RESERVE, DOUBTFUL, SUSPENSION or NA before his lock, or a deadline is within 30 min | no |
+| `WATCH` | a game in progress with a player of mine, of my opponent, or of a team a pending decision point names | no |
+| `DEEP_IDLE` | 180+ minutes of idle budget, or nothing scheduled | up to 120 min, risk class up to B |
+| `IDLE` | otherwise | up to the budget if at least 15 min, risk class A |
+
+`next_required_attention` is the earliest of: inactives (kickoff minus 90
+minutes) for a game with an unlocked player of mine, ESPN's
+`waiverProcessDate` (a 25-row WAIVERS pull), the next decision point, and a
+15-minute recheck while observing. The recheck does not make a tick HOT.
+`idle_budget_minutes` is attention minus now minus 15. `engineering.lease_expires`
+is when engineering work stops. The scoring period is the ESPN scoreboard's
+week. The state is written to `~/.ffdraft/state/controller-state.json`.
+
+Decision points live in `~/.ffdraft/state/decision_points.json` as
+`{at, what, teams}`; `just decision-point 2026-09-15T21:13:00-04:00 "final claim
+order" MIN,SEA` adds one. Their teams become relevant for WATCH until the point
+passes.
+
 ### `player_week`
 
 One week for named players, every part with its basis: `player_week(league_id,

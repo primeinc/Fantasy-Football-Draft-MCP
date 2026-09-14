@@ -2671,6 +2671,67 @@ def waiver_candidates(league_id: str, week: int, limit: int = 3,
 
 
 @mcp.tool(structured_output=False)
+def controller_state(league_id: str, season: int = CURRENT_SEASON) -> str:
+    """Whether this tick belongs to fantasy operations or engineering. Read it first.
+
+    `mode`: DEGRADED (the scoreboard or league could not be read), HOT (a started
+    player of mine is OUT-class before his lock, or attention is due within 30
+    minutes), WATCH (a game in progress with my players, my opponent's, or a
+    team a decision point names), DEEP_IDLE (180+ idle minutes or nothing
+    scheduled), IDLE. `next_required_attention` is the earliest of: inactives
+    (kickoff minus 90 minutes) for a game with an unlocked player of mine, the
+    waiver clear time, the next decision point, a 15-minute recheck while
+    observing. `idle_budget_minutes` is that minus now minus a 15-minute margin.
+    `engineering` says whether engineering may run, for how long, and at which
+    risk class. The scoring period is the ESPN scoreboard's week. Written to
+    the state directory as controller-state.json. Decision points are read
+    from decision_points.json there (`just decision-point`).
+    """
+    from . import governor, live, pool, rosters
+
+    now = pd.Timestamp.now(tz="UTC").isoformat()
+    unread: dict[str, str] = {}
+    games: list[dict] = []
+    week = None
+    try:
+        scoreboard = live.fetch_scoreboard()
+        games = live.games(scoreboard)
+        week = (scoreboard.get("week") or {}).get("number")
+    except Exception as exc:
+        unread["scoreboard"] = f"{type(exc).__name__}: {exc}"
+    mine: list[dict] = []
+    theirs: list[dict] = []
+    if week is not None:
+        try:
+            payload = live.fetch_league_live(league_id, season, int(week))
+            team_id = rosters.my_team_id(payload.get("teams") or [])
+            if team_id is None:
+                raise RuntimeError("no team in this league is owned by ESPN_SWID")
+            mine = governor.roster(payload, team_id)
+            opponent = governor.opponent_id(payload, int(week), team_id)
+            theirs = [] if opponent is None else governor.roster(payload, opponent)
+        except Exception as exc:
+            unread["league"] = f"{type(exc).__name__}: {exc}"
+    elif "scoreboard" not in unread:
+        unread["league"] = "ESPN's scoreboard carried no week number"
+    clears = None
+    try:
+        clears = pool.next_waiver_clear(league_id, season)
+    except Exception as exc:
+        unread["waivers"] = f"{type(exc).__name__}: {exc}"
+    points, err = governor.load_decision_points()
+    if err:
+        unread["decision_points"] = err
+    state = governor.controller_state(now, games, mine, theirs, clears, points, unread)
+    state = {"week": week, "season": season, **state}
+    try:
+        governor.write_state(state)
+    except OSError as exc:
+        state["state_file_unwritten"] = f"{type(exc).__name__}: {exc}"
+    return _emit(state, indent=2)
+
+
+@mcp.tool(structured_output=False)
 def player_week(league_id: str, week: int, names: str, season: int = CURRENT_SEASON) -> str:
     """One week for each named player, every part with its basis.
 
@@ -3747,7 +3808,8 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "injuries", "live")
+                "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "injuries", "live",
+                "governor")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

@@ -1124,6 +1124,19 @@ waivers $week $league_id='' $limit='3':
     for k, v in out["unread"].items():
         print(f"unread {k}: {v}")
 
+# Add a decision point controller_state treats as attention; $at is ISO 8601 with offset, $teams comma-separated
+[script]
+decision-point $at $what $teams='':
+    import json
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    from ffdraft import governor
+
+    teams = [t.strip() for t in os.environ["teams"].split(",") if t.strip()]
+    print(json.dumps(governor.add_decision_point(os.environ["at"], os.environ["what"], teams)))
+
 # Fields that differ between the current pulls and the $week period pulls in one dump_draft(period=$week) directory
 [script]
 period-diff $dump $week:
