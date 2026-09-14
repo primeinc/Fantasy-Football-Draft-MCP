@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ffdraft import espn_live
+from ffdraft import board, espn_live
 from ffdraft.espn_live import Reader, decode_init, picks_from_init
 
 FIXTURE = Path(__file__).parent / "fixtures" / "espn_draft_init.b64"
@@ -195,17 +195,35 @@ class TestSecurityToken:
             seen["kwargs"] = kwargs
             return FakeResponse()
 
-        monkeypatch.setattr(espn_live.requests, "get", fake_get)
+        monkeypatch.setattr(board.requests, "get", fake_get)
         token = espn_live.draft_security_token("1734659820", 2026, 3, "{SW-ID}", "s2")
 
         assert token == "1:1734659820:3:{SW-ID}:abc123"
         assert seen["raised"] is True
-        assert seen["url"].endswith(
-            "/apis/v3/games/ffl/seasons/2026/segments/0/leagues/1734659820/teams/3/draftSecurity"
-        )
+        assert seen["url"] == board.espn_league_url("1734659820", 2026) + "/teams/3/draftSecurity"
         assert seen["kwargs"]["cookies"] == {"SWID": "{SW-ID}", "espn_s2": "s2"}
-        assert seen["kwargs"]["headers"]["X-Fantasy-Source"] == "kona"
+        assert seen["kwargs"]["headers"] == {"User-Agent": "ffdraft-mcp/1.0",
+                                             "Accept": "application/json",
+                                             "X-Fantasy-Source": "kona"}
         assert seen["kwargs"]["timeout"] == 20
+
+    def test_a_bare_swid_is_brace_wrapped_in_the_cookie(self, monkeypatch):
+        # ESPN rejects a bare SWID; the token read had its own unwrapped jar (angel).
+        seen = {}
+
+        class FakeResponse:
+            text = "t"
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get(url, **kwargs):
+            seen.update(kwargs)
+            return FakeResponse()
+
+        monkeypatch.setattr(board.requests, "get", fake_get)
+        espn_live.draft_security_token("1", 2026, 3, "SW-ID", "s2")
+        assert seen["cookies"] == {"SWID": "{SW-ID}", "espn_s2": "s2"}
 
 
 class FakeSocket:

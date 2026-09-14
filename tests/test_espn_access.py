@@ -23,19 +23,27 @@ LEAGUE_GETTERS = {("board.py", "espn_league_get"), ("espn_dump.py", "_get")}
 
 def _league_gets() -> set[tuple[str, str]]:
     """(file, enclosing function) of every `requests.get` call in a function that
-    also names the league document: `espn_league_url`, or a `url` parameter the
-    dump fills with it."""
+    also names the league document: a call to `espn_league_url`, the name
+    `READS_HOST`, or a string piece holding "/leagues/"; or the dump's `_get`,
+    whose callers pass it the URL. It sees `requests.get` by that spelling only:
+    `requests.request("GET", ...)`, a Session's `.get` or `from requests import
+    get` would pass unseen, and none is used in src."""
     out = set()
     for p in sorted(SRC.glob("*.py")):
         tree = ast.parse(p.read_text(encoding="utf-8"))
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+            nodes = list(ast.walk(fn))
+            calls = [n for n in nodes if isinstance(n, ast.Call)]
             gets = [c for c in calls if isinstance(c.func, ast.Attribute) and c.func.attr == "get"
                     and isinstance(c.func.value, ast.Name) and c.func.value.id == "requests"]
-            league = any(isinstance(c.func, ast.Name) and c.func.id == "espn_league_url"
-                         for c in calls) or (p.name == "espn_dump.py" and fn.name == "_get")
+            league = (any(isinstance(c.func, ast.Name) and c.func.id == "espn_league_url"
+                          for c in calls)
+                      or any(isinstance(n, ast.Name) and n.id == "READS_HOST" for n in nodes)
+                      or any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                             and "/leagues/" in n.value for n in nodes)
+                      or (p.name == "espn_dump.py" and fn.name == "_get"))
             if gets and league:
                 out.add((p.name, fn.name))
     return out
@@ -68,6 +76,18 @@ def test_the_getter_sends_cookies_agent_and_a_filter_only_when_given(monkeypatch
     assert kona["timeout"] == 20 and kona["headers"] == {
         "User-Agent": "ffdraft-mcp/1.0", "X-Fantasy-Source": "kona",
         "X-Fantasy-Filter": json.dumps({"players": {"limit": 1}})}
+
+
+def test_a_read_that_splits_the_league_path_across_strings_is_found(tmp_path, monkeypatch):
+    # The control for the widened scan: espn_live's draftSecurity read built its URL
+    # from READS_HOST and a "/leagues/" piece, calling no espn_league_url (angel).
+    (tmp_path / "split.py").write_text(
+        "import requests\nREADS_HOST = 'x'\n"
+        "def token(league_id, season):\n"
+        "    url = f'{READS_HOST}/seasons/{season}/segments/0' f'/leagues/{league_id}/teams'\n"
+        "    return requests.get(url)\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path)
+    assert _league_gets() == {("split.py", "token")}
 
 
 def _count(needle: str) -> dict[str, int]:

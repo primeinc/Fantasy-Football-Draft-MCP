@@ -675,19 +675,21 @@ def espn_league_url(league_id: str, season: int) -> str:
             f"/segments/0/leagues/{league_id}")
 
 
-def espn_league_get(league_id: str, season: int, params, swid: str | None = None,
+def espn_league_get(league_id: str, season: int, params=None, swid: str | None = None,
                     espn_s2: str | None = None, player_filter: dict | None = None,
-                    timeout: float = 30) -> requests.Response:
-    """Every read of the league document: `params` (views, scoringPeriodId) on
-    `espn_league_url`, with `espn_cookies` and the User-Agent. `player_filter`
-    goes out as `X-Fantasy-Filter` with `X-Fantasy-Source: kona`; without a
-    filter kona_player_info answers a default slice. The response is returned
-    unchecked: each caller decides what a non-200 means."""
-    headers = {"User-Agent": "ffdraft-mcp/1.0"}
+                    timeout: float = 30, path: str = "",
+                    headers: dict[str, str] | None = None) -> requests.Response:
+    """Every read under the league document: `params` (views, scoringPeriodId) on
+    `espn_league_url` plus `path` (a sub-resource such as a team's
+    draftSecurity), with `espn_cookies` and the User-Agent. `player_filter` goes
+    out as `X-Fantasy-Filter` with `X-Fantasy-Source: kona`; without a filter
+    kona_player_info answers a default slice. `headers` adds to those. The
+    response is returned unchecked: each caller decides what a non-200 means."""
+    sent = {"User-Agent": "ffdraft-mcp/1.0"} | (headers or {})
     if player_filter is not None:
-        headers |= {"X-Fantasy-Source": "kona", "X-Fantasy-Filter": json.dumps(player_filter)}
-    return requests.get(espn_league_url(league_id, season), params=params,
-                        cookies=espn_cookies(swid, espn_s2), timeout=timeout, headers=headers)
+        sent |= {"X-Fantasy-Source": "kona", "X-Fantasy-Filter": json.dumps(player_filter)}
+    return requests.get(espn_league_url(league_id, season) + path, params=params,
+                        cookies=espn_cookies(swid, espn_s2), timeout=timeout, headers=sent)
 
 
 def with_stand_ins(rows: pd.DataFrame, board: pd.DataFrame,

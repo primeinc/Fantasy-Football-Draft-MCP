@@ -2608,24 +2608,30 @@ def waiver_candidates(league_id: str, week: int, limit: int = 3,
             period = live.fetch_league_status(league_id, season).get("scoringPeriodId")
         except Exception:
             return None
-        return period if isinstance(period, int) else None
+        return period if type(period) is int else None
 
-    def holds(players: list[dict], period: int) -> bool:
-        return any(s.get("seasonId") == season and s.get("scoringPeriodId") == period
-                   for e in players for s in (e.get("player") or {}).get("stats") or [])
+    def only_period(players: list[dict]) -> int | None:
+        """The one scoring period the pull's single-period stat rows name for
+        this season, None when they name none or several: a pull carries such
+        rows for its own period only (captures 2026-09-13 and 2026-09-14)."""
+        named = {s.get("scoringPeriodId") for e in players
+                 for s in (e.get("player") or {}).get("stats") or []
+                 if s.get("seasonId") == season
+                 and s.get("statSplitTypeId") == pool.SINGLE_PERIOD_SPLIT}
+        return next(iter(named)) if len(named) == 1 else None
 
     try:
         payload = rosters.fetch_roster_payload(league_id, season, week)
         # ESPN's pull for the current period is its pull with no period (paired
         # capture 2026-09-14, pool.py), so it stands in for the claim or played
         # week's pull when mStatus names that week both before and after it and the
-        # pull carries stat rows for that week; a rollover between the two reads,
-        # a pool already past the week mStatus names, or an unreadable mStatus
-        # pulls the week.
+        # pull's own single-period stat rows name that week and no other; a
+        # rollover between the reads, a pool on another week than mStatus (stale
+        # cache, replica lag), or an unreadable mStatus pulls the week.
         before = status_period()
         current = pool.fetch_pool(league_id, season)
         reuse = (before if before in (week, played) and status_period() == before
-                 and holds(current, before) else None)
+                 and only_period(current) == before else None)
         claim_players = (current if reuse == week
                          else pool.fetch_pool(league_id, season, week))
         settings = claims.fetch_settings(league_id, season)

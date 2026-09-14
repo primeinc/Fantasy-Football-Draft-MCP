@@ -18,9 +18,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
-import requests
-
-READS_HOST = "https://lm-api-reads.fantasy.espn.com"
 DRAFT_HOST = "wss://fantasydraft.espn.com"
 
 # ESPN's fantasyGameId for football.
@@ -737,21 +734,13 @@ def draft_security_token(
     swid: str,
     espn_s2: str,
 ) -> str:
-    """Fetch the per-team draft security token and build the socket's `5=` parameter."""
-    url = (
-        f"{READS_HOST}/apis/v3/games/ffl/seasons/{season}/segments/0"
-        f"/leagues/{league_id}/teams/{team_id}/draftSecurity"
-    )
-    resp = requests.get(
-        url,
-        cookies={"SWID": swid, "espn_s2": espn_s2},
-        headers={
-            "Accept": "application/json",
-            "X-Fantasy-Source": "kona",
-            "User-Agent": "ffdraft-mcp/1.0",
-        },
-        timeout=20,
-    )
+    """Fetch the per-team draft security token and build the socket's `5=` parameter.
+    Read through `board.espn_league_get`, whose cookie jar brace-wraps the SWID."""
+    from .board import espn_league_get
+
+    resp = espn_league_get(league_id, season, None, swid, espn_s2, timeout=20,
+                           path=f"/teams/{team_id}/draftSecurity",
+                           headers={"Accept": "application/json", "X-Fantasy-Source": "kona"})
     resp.raise_for_status()
     return f"{FANTASY_GAME_ID}:{league_id}:{team_id}:{swid}:{resp.text.strip()}"
 

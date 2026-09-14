@@ -331,6 +331,16 @@ class TestTool:
         assert self.run(monkeypatch, espn_period=2, statuses=(None, None), pulls=every) == out
         assert any(d["last_week_points"] is not None for d in out["drop_options"])
 
+    def test_a_status_ahead_of_the_pool_pulls_every_week(self, monkeypatch):
+        # mStatus says 2 on both reads while the pool is still on 1 (devil, case B):
+        # reusing it as the claim week's pull would blank every claim projection.
+        ahead, every = [], []
+        out = self.run(monkeypatch, espn_period=1, statuses=(2, 2), pulls=ahead)
+        assert ahead == [None, 2, 1]
+        assert self.run(monkeypatch, espn_period=1, statuses=(None, None), pulls=every) == out
+        assert [(c["add"], c["drop"]) for c in out["claims"]] == [
+            ("Jacoby Brissett", "Jerry Jeudy"), ("Carson Wentz", "Jerry Jeudy")]
+
     def test_an_unreadable_status_pulls_every_week(self, monkeypatch):
         pulls = []
         self.run(monkeypatch, statuses=(None,), pulls=pulls)

@@ -717,7 +717,8 @@ loss leaves his position short are in `not_droppable` with the reason.
 `upgrades` are optional adds projected above the cheapest drop at their own
 position. It submits nothing. It pulls the pool with no period, and a pool for
 the claim and played weeks, except a week mStatus names as current both before
-and after the no-period pull when that pull carries stat rows for the week:
+and after the no-period pull when that pull's single-period stat rows name that
+week and no other:
 ESPN's pull for the current period is that pull (paired capture 2026-09-14, 1041
 entries equal).
 
