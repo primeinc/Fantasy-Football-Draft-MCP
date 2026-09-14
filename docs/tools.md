@@ -787,8 +787,9 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   1. the fixer, in a clone at `HEAD`;
   2. the runner's own record of that work: the clone's files are read into the
      main repository through the main `.git` with a temporary index and
-     gitattributes read from the base commit (`--attr-source`), so a
-     `.gitattributes` the fixer wrote cannot route a file through git-lfs. A
+     gitattributes read from the base commit (`--attr-source`) and the git-lfs
+     filter driver emptied, so no attribute, in the tree or in
+     `.git/info/attributes`, routes a file through git-lfs. A
      change to `.gitattributes` or `.gitmodules` is refused, and `queue/<id>` is
      created with `update-ref` only if it does not exist. Git never runs in the
      fixer's `.git` after the fixer has. The commit SHA is recorded;
@@ -819,8 +820,10 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   `%ProgramData%\Git\config` (standard users can create folders under
   `C:\ProgramData`) and the XDG and system gitattributes whether or not they
   exist yet; `.git/info` and hooks; `.mcp.json`, the Claude settings, the policy
-  file and decision points; every file in the main `.venv` and in the base
-  interpreter; and every file under `src` and `tests`, gitignored ones included.
+  file and decision points; every file in the main `.venv`; every file in the
+  base interpreter outside `__pycache__` (every uv venv on the machine writes that
+  bytecode, so a planted `.pyc` there is not detected); and every file under `src`
+  and `tests`, gitignored ones included.
   A link or junction is recorded as its target and not followed. Then git status,
   `git diff HEAD` and every ref except this item's branch. The runner runs with
   `-B` and sets `PYTHONDONTWRITEBYTECODE` for everything it starts, so a changed

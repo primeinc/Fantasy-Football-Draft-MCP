@@ -79,6 +79,26 @@ def test_a_fixer_gitattributes_is_neither_applied_nor_recorded(repo, tmp_path):
     assert not (main / ".git" / "lfs").exists()
 
 
+def test_an_lfs_filter_from_info_attributes_stores_the_real_bytes(repo, tmp_path):
+    # --attr-source replaces only the tree's .gitattributes; .git/info/attributes
+    # still applies, so the runner empties the lfs driver itself.
+    main, clone, base = repo
+    (main / ".git" / "info").mkdir(exist_ok=True)
+    (main / ".git" / "info" / "attributes").write_text("* filter=lfs diff=lfs merge=lfs -text\n")
+    (clone / "payload.py").write_bytes(b"import os\n")
+    control = subprocess.run(["git", f"--attr-source={base}", f"--git-dir={main / '.git'}",
+                              f"--work-tree={clone}", "add", "-A"], capture_output=True, text=True,
+                             env=os.environ | {"GIT_INDEX_FILE": str(tmp_path / "control.index")})
+    if not (main / ".git" / "lfs" / "objects").exists():
+        pytest.skip(f"git-lfs did not run for the control add: {control.stderr.strip()}")
+    shutil.rmtree(main / ".git" / "lfs")
+    commit = runner.record_tree(subprocess.run, clone, base, "queue/t", "m")
+    blob = subprocess.run(["git", "cat-file", "blob", f"{commit}:payload.py"], cwd=main,
+                          capture_output=True, check=True).stdout
+    assert blob == b"import os\n"
+    assert not (main / ".git" / "lfs").exists()
+
+
 def test_a_nested_gitmodules_is_refused(repo):
     _main, clone, base = repo
     (clone / "sub").mkdir()

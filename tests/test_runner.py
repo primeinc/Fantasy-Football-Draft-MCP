@@ -491,6 +491,19 @@ class TestEngineering:
         out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=poison))
         assert "base_python (" in out["outcome"] and "sitecustomize.py" in out["outcome"]
 
+    def test_bytecode_another_venv_writes_into_the_base_interpreter_does_not_fail(self, isolated):
+        base = isolated / "uv-python"
+        (base / "Lib" / "__pycache__").mkdir(parents=True)
+        (base / "Lib" / "os.py").write_text("x")
+        runner.MAIN_VENV.mkdir()
+        (runner.MAIN_VENV / "pyvenv.cfg").write_text(f"home = {base}\n")
+
+        def cold_import(_clone):
+            (base / "Lib" / "__pycache__" / "os.cpython-312.pyc").write_bytes(b"\x00")
+        out = tick([state("IDLE", allowed=True)], run=FakeRun(verdicts=APPROVE,
+                                                               on_fixer=cold_import))
+        assert out["outcome"].startswith("parked")
+
     def test_a_changed_git_config_is_refused_before_git_runs_again(self, isolated):
         config = runner.GIT_DIR / "config"
         config.parent.mkdir(parents=True)

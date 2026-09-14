@@ -22,7 +22,8 @@ The tick is Python; a model starts only where judgment is needed.
                   checked for the model and permission mode. The runner reads the
                   fixer's files into the main repository through its own git dir
                   with a temporary index, gitattributes read from the base commit,
-                  and `queue/<id>` created only if it does not exist; a change to
+                  the git-lfs filter emptied, and `queue/<id>` created only if it
+                  does not exist; a change to
                   `.gitattributes` or `.gitmodules` is refused. Git never runs
                   inside the fixer's `.git` after the fixer has. The verifier and
                   the runner's `just check` run in a clone at that commit; the
@@ -50,9 +51,11 @@ program: the content of every config file `git config --list --show-origin
 --includes` reads, plus `%ProgramData%/Git/config` and the XDG and system
 attributes files whether or not they exist yet, `.git/info`, hooks, the Claude
 settings, `.mcp.json`, the policy and decision points, every file in the main
-`.venv` and the base interpreter, and every file under `src` and `tests`
-(gitignored ones included). A link or junction is recorded as its target, not
-followed. Then git status, `git diff HEAD` and every ref except this item's
+`.venv`, every file in the base interpreter outside `__pycache__`, and every file
+under `src` and `tests` (gitignored ones included). A link or junction is
+recorded as its target, not followed. The base interpreter's bytecode is left out
+because every uv venv on the machine writes it; a planted `.pyc` there is not
+detected. Then git status, `git diff HEAD` and every ref except this item's
 branch. The runner writes no bytecode itself, so a changed `.pyc` means something
 else wrote it. It is a tripwire, not a boundary: writes elsewhere in the user
 profile or on disk are not covered, for example `~/.claude.json`, the uv cache,
@@ -141,6 +144,12 @@ SENSITIVE = (REPO / ".mcp.json", REPO / ".claude" / "settings.json",
              STATE_DIR / "decision_points.json",
              *((_GIT_ETC / "gitconfig", _GIT_ETC / "gitattributes") if _GIT_ETC else ()))
 DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
+# git-lfs is the only filter driver configured here (system and global gitconfig).
+# Emptied, a `filter=lfs` attribute from any source (.git/info/attributes, which
+# --attr-source does not replace, included) stores the file's own bytes: probed
+# 2026-09-14, the control stored an lfs pointer and wrote .git/lfs.
+NO_LFS = ("-c", "filter.lfs.clean=", "-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=",
+          "-c", "filter.lfs.required=false")
 
 FANTASY_PROMPT = """Unattended fantasy tick for ESPN league {league_id}, week {week}. No human is \
 present: never ask questions. You can read; you cannot change the lineup or submit a claim.
@@ -391,10 +400,11 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-def _tree_digests(root: Path) -> dict[str, str]:
-    """The content hash of every file under `root`, by path relative to `root`. A
-    link or junction is recorded as its target and not followed, so planting one
-    is a change and cannot send the walk across the drive."""
+def _tree_digests(root: Path, bytecode: bool = True) -> dict[str, str]:
+    """The content hash of every file under `root`, by path relative to `root`,
+    `__pycache__` directories left out when `bytecode` is false. A link or junction
+    is recorded as its target and not followed, so planting one is a change and
+    cannot send the walk across the drive."""
     out: dict[str, str] = {}
     if not root.is_dir():
         return out
@@ -406,7 +416,8 @@ def _tree_digests(root: Path) -> dict[str, str]:
                     out[os.path.relpath(full, root)] = f"link -> {os.readlink(full)}"
                 except OSError as exc:
                     out[os.path.relpath(full, root)] = f"link -> unreadable: {exc}"
-        dirs[:] = sorted(d for d in dirs if not _is_link(os.path.join(top, d)))
+        dirs[:] = sorted(d for d in dirs if not _is_link(os.path.join(top, d))
+                         and (bytecode or d != "__pycache__"))
         for name in files:
             full = os.path.join(top, name)
             if not _is_link(full):
@@ -453,7 +464,9 @@ def _file_fingerprint(run: Runner) -> dict:
     out["git_config"] = {str(p): _digest(p) or "unreadable" for p in config_files(run)}
     out["venv"] = _tree_digests(MAIN_VENV)
     base = base_python()
-    out["base_python"] = _tree_digests(base) if base else {}
+    # Without its bytecode: every uv venv on the machine runs this interpreter and
+    # writes its __pycache__ on a cold import, which would fail ticks nobody attacked.
+    out["base_python"] = _tree_digests(base, bytecode=False) if base else {}
     out["source"] = {f"{root.name}/{rel}": d for root in SOURCE_ROOTS
                      for rel, d in _tree_digests(root).items()}
     return out
@@ -529,8 +542,8 @@ def record_tree(run: Runner, tree: Path, base: str, branch: str, message: str) -
     env = os.environ | {"GIT_INDEX_FILE": str(tree.parent / f"{tree.name}.index")}
 
     def g(*args: str) -> str:
-        return git(run, f"--attr-source={base}", f"--git-dir={GIT_DIR}", f"--work-tree={tree}",
-                   *args, env=env).stdout.strip()
+        return git(run, *NO_LFS, f"--attr-source={base}", f"--git-dir={GIT_DIR}",
+                   f"--work-tree={tree}", *args, env=env).stdout.strip()
     g("read-tree", base)
     g("add", "-A")
     new_tree = g("write-tree")
