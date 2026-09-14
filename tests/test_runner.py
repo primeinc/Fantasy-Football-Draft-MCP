@@ -108,7 +108,7 @@ class FakeRun:
             return self.refs_after_commit if self.committed and self.refs_after_commit else self.refs
         elif args[:1] == ["diff"] and "--name-only" in args:
             return self.changed
-        elif args == ["diff", "HEAD"]:
+        elif args[:1] == ["diff"] and args[-1] == "HEAD":
             return self.diffs.pop(0) if len(self.diffs) > 1 else self.diffs[0]
         elif args[:1] == ["diff"]:
             return self.review_diff
@@ -137,7 +137,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "GIT_DIR", tmp_path / "gitdir")
     monkeypatch.setattr(runner, "TREES", tmp_path / "trees")
     monkeypatch.setattr(runner, "MAIN_VENV", tmp_path / "venv")
-    monkeypatch.setattr(runner, "BYTECODE_ROOTS", ())
+    monkeypatch.setattr(runner, "SOURCE_ROOTS", ())
     monkeypatch.setattr(runner, "SENSITIVE", ())
     monkeypatch.setattr(improve, "LEASE", tmp_path / "lease.json")
     monkeypatch.setattr(improve, "RUNS", tmp_path / "runs.jsonl")
@@ -346,11 +346,16 @@ class TestEngineering:
         run = FakeRun(verdicts=APPROVE)
         tick([state("IDLE", allowed=True)], run=run)
         gits = [git_args(c)[3] for c in run.calls if c[0] == "git"]
-        assert gits and all("core.fsmonitor=false" in config for config in gits)
+        assert gits and all({"core.fsmonitor=false", "commit.gpgSign=false", "core.pager=cat",
+                             "gc.auto=0"} <= set(config) for config in gits)
         hooks = [s.split("=", 1)[1] for config in gits for s in config
                  if s.startswith("core.hooksPath=")]
         assert len(hooks) == len(gits) == len(set(hooks))
         assert not any(Path(h).exists() for h in hooks)
+        diffs = [c for c in run.calls if c[0] == "git" and git_args(c)[0][:1] == ["diff"]]
+        assert diffs and all({"--no-ext-diff", "--no-textconv"} <= set(c) for c in diffs)
+        (commit_tree,) = run.git("commit-tree")
+        assert "--no-gpg-sign" in commit_tree
 
     def test_the_fixer_tree_is_recorded_through_the_main_git_dir_never_the_clones(self, isolated):
         def poison(clone):
@@ -425,16 +430,45 @@ class TestEngineering:
         rel = str(Path("Lib/site-packages/pandas/core/frame.py"))
         assert out["outcome"].endswith(f"the fixer ran: venv ({rel})")
 
+    def test_a_gitignored_conftest_under_tests_aborts(self, isolated, monkeypatch):
+        # .gitignore ignores data/ at any depth, so git status never shows this file,
+        # and pytest in the main checkout would import it.
+        tests = isolated / "tests"
+        tests.mkdir()
+        monkeypatch.setattr(runner, "SOURCE_ROOTS", (tests,))
+
+        def plant(_clone):
+            (tests / "data").mkdir()
+            (tests / "data" / "conftest.py").write_text("import os")
+        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=plant))
+        assert out["outcome"].endswith(f"the fixer ran: source (tests/{Path('data/conftest.py')})")
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows only")
+    def test_a_junction_in_the_venv_is_recorded_not_walked(self, isolated):
+        outside = isolated / "outside"
+        outside.mkdir()
+        (outside / "far.txt").write_text("x")
+        runner.MAIN_VENV.mkdir()
+
+        def plant(_clone):
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(runner.MAIN_VENV / "j"),
+                                   str(outside)], capture_output=True, text=True)
+            assert made.returncode == 0, made.stdout + made.stderr
+        out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=plant))
+        assert out["outcome"].endswith("the fixer ran: venv (j)")
+        digests = runner._tree_digests(runner.MAIN_VENV)
+        assert digests["j"].startswith("link -> ") and not any("far.txt" in k for k in digests)
+
     def test_planted_bytecode_in_the_venv_or_under_src_aborts(self, isolated, monkeypatch):
         src = isolated / "src"
         cache = src / "ffdraft" / "__pycache__"
         cache.mkdir(parents=True)
-        monkeypatch.setattr(runner, "BYTECODE_ROOTS", (src,))
+        monkeypatch.setattr(runner, "SOURCE_ROOTS", (src,))
 
         def plant(_clone):
             (cache / "runner.cpython-312.pyc").write_bytes(b"\x00evil")
         out = tick([state("IDLE", allowed=True)], run=FakeRun(on_fixer=plant))
-        assert "bytecode (src/" in out["outcome"] and "runner.cpython-312.pyc" in out["outcome"]
+        assert "source (src/" in out["outcome"] and "runner.cpython-312.pyc" in out["outcome"]
 
         venv_cache = runner.MAIN_VENV / "Lib" / "site-packages" / "mcp" / "__pycache__"
         venv_cache.mkdir(parents=True)
@@ -471,7 +505,9 @@ class TestEngineering:
         assert out["outcome"].endswith(f"the fixer ran: {runner.GIT_DIR / 'info' / 'attributes'}")
         fixer_at = next(i for i, c in enumerate(run.calls)
                         if c[0] != "git" and c[1:] not in (["setup"], ["check"]))
-        assert not [c for c in run.calls[fixer_at:] if c[0] == "git"]
+        # Only the config listing, which runs nothing a config names.
+        assert [git_args(c)[0][:2] for c in run.calls[fixer_at:] if c[0] == "git"] == [
+            ["config", "--list"]]
 
     def test_a_change_during_the_reviews_fails_before_the_gates(self, isolated):
         site = runner.MAIN_VENV / "Lib" / "site-packages"

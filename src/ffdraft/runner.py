@@ -31,8 +31,10 @@ The tick is Python; a model starts only where judgment is needed.
                   The class comes from the actual diff, the promotion verdict is
                   recorded, and nothing is merged.
 
-Every git call the runner makes points `core.hooksPath` at a new empty directory
-and turns `core.fsmonitor` off. Every agent, venv build and `just check` runs
+Every git call the runner makes points `core.hooksPath` at a new empty directory,
+turns off `core.fsmonitor`, commit signing, the pager and auto gc, and every diff
+it reads runs with `--no-ext-diff --no-textconv`: no program a git config names
+runs in a runner git call. Every agent, venv build and `just check` runs
 under `ffdraft.contain`, which kills every process it or its descendants start
 directly when it exits; a process a service starts on its behalf (Task
 Scheduler, WMI) is not covered. Fixer and verifier run `just check`, which
@@ -43,16 +45,21 @@ watching.
 
 One fingerprint of what that code could reach, taken before the fixer, is
 compared after the fixer, after the commit, after the tests and after the
-reviews. Files are compared first, before any git command runs: the content of
-the git, Claude and MCP configuration (`.git/config`, `.git/info`, hooks,
-system and global gitconfig and attributes, settings, `.mcp.json`, the policy),
-of every file in the main `.venv` and the base interpreter, and of the bytecode
-under `src` and `tests`. Then git status, `git diff HEAD` and every ref except
-this item's branch. The runner writes no bytecode itself, so a changed `.pyc`
-means something else wrote it. It is a tripwire, not a boundary: `~/.claude.json`,
-the uv cache, `STATE_DIR` and scheduled tasks are not covered, and the user's
-acceptance is the control for that. A Python process outside the runner that
-writes bytecode during a tick (the MCP server importing a module) fails the tick.
+reviews. Files are compared first, before any git command that could run a
+program: the content of every config file `git config --list --show-origin
+--includes` reads, plus `%ProgramData%/Git/config` and the XDG and system
+attributes files whether or not they exist yet, `.git/info`, hooks, the Claude
+settings, `.mcp.json`, the policy and decision points, every file in the main
+`.venv` and the base interpreter, and every file under `src` and `tests`
+(gitignored ones included). A link or junction is recorded as its target, not
+followed. Then git status, `git diff HEAD` and every ref except this item's
+branch. The runner writes no bytecode itself, so a changed `.pyc` means something
+else wrote it. It is a tripwire, not a boundary: writes elsewhere in the user
+profile or on disk are not covered, for example `~/.claude.json`, the uv cache,
+the rest of `STATE_DIR`, a plugin or hooks checkout Claude Code loads, and
+scheduled tasks; the user's acceptance is the control for that. A Python process
+outside the runner that writes bytecode under `src`, `tests` or a venv during a
+tick (the MCP server importing a module) fails the tick.
 
 Every tick writes `STATE_DIR/runner/<stamp>.json`. `python -B -m ffdraft.runner
 tick [--dry-run] [--supervised]` loads the fantasy-draft env from `.mcp.json`.
@@ -81,7 +88,7 @@ from .governor import when
 REPO = improve.REPO
 GIT_DIR = REPO / ".git"
 MAIN_VENV = REPO / ".venv"
-BYTECODE_ROOTS = (REPO / "src", REPO / "tests")
+SOURCE_ROOTS = (REPO / "src", REPO / "tests")
 # Not under %TEMP%: a clone there fails `just check` at ty with 161 unresolved
 # imports on an unchanged commit (2026-09-14), where `justfile_directory()` reads
 # C:\WINDOWS\TEMP and uv's editable .pth reads C:\Windows\Temp. The same commit
@@ -121,14 +128,19 @@ AGENT_FILE = {"fixer": "fixer.md", "verifier": "verifier.md", "angel": "angel-or
 _GIT_EXE = shutil.which("git")
 _GIT_ETC = Path(_GIT_EXE).resolve().parent.parent / "etc" if _GIT_EXE else None
 # Outside every clone; changed during a run only by something the fixer's code ran.
+# Git config files that do not exist yet are listed here because `git config
+# --list` names only the ones that do; standard users can create folders under
+# C:\ProgramData (icacls, 2026-09-14).
 SENSITIVE = (REPO / ".mcp.json", REPO / ".claude" / "settings.json",
              REPO / ".claude" / "settings.local.json",
              Path.home() / ".claude" / "settings.json",
              Path.home() / ".claude" / "settings.local.json", Path.home() / ".gitconfig",
              Path.home() / ".config" / "git" / "config",
-             Path.home() / ".config" / "git" / "attributes", POLICY,
+             Path.home() / ".config" / "git" / "attributes",
+             Path(os.environ.get("ProgramData") or "C:/ProgramData") / "Git" / "config", POLICY,
              STATE_DIR / "decision_points.json",
              *((_GIT_ETC / "gitconfig", _GIT_ETC / "gitattributes") if _GIT_ETC else ()))
+DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
 
 FANTASY_PROMPT = """Unattended fantasy tick for ESPN league {league_id}, week {week}. No human is \
 present: never ask questions. You can read; you cannot change the lineup or submit a claim.
@@ -356,12 +368,14 @@ def release_lock(path: Path | None = None) -> None:
 
 
 def git(run: Runner, *args: str, **kw) -> subprocess.CompletedProcess:
-    """git with hooks read from a new empty directory and no fsmonitor: nothing a
-    hooks directory or a config the fixer's code reached can run in this call."""
+    """git with hooks read from a new empty directory and every other config-named
+    program this runner's commands could start turned off: fsmonitor, commit
+    signing (gpg.program), the pager and auto gc. Diffs add DIFF_SAFE at the call."""
     hooks = tempfile.mkdtemp(prefix="ffdraft-no-hooks-")
     try:
-        return run(["git", "-c", f"core.hooksPath={hooks}", "-c", "core.fsmonitor=false", *args],
-                   **({"capture_output": True, "text": True, "check": True} | kw))
+        return run(["git", "-c", f"core.hooksPath={hooks}", "-c", "core.fsmonitor=false",
+                    "-c", "commit.gpgSign=false", "-c", "core.pager=cat", "-c", "gc.auto=0",
+                    *args], **({"capture_output": True, "text": True, "check": True} | kw))
     finally:
         shutil.rmtree(hooks, ignore_errors=True)
 
@@ -377,19 +391,41 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-def _tree_digests(root: Path, suffix: str = "") -> dict[str, str]:
-    """The content hash of every file under `root` whose name ends with `suffix`,
-    by path relative to `root`."""
+def _tree_digests(root: Path) -> dict[str, str]:
+    """The content hash of every file under `root`, by path relative to `root`. A
+    link or junction is recorded as its target and not followed, so planting one
+    is a change and cannot send the walk across the drive."""
     out: dict[str, str] = {}
     if not root.is_dir():
         return out
     for top, dirs, files in os.walk(root):
-        dirs.sort()
+        for name in [*dirs, *files]:
+            full = os.path.join(top, name)
+            if _is_link(full):
+                try:
+                    out[os.path.relpath(full, root)] = f"link -> {os.readlink(full)}"
+                except OSError as exc:
+                    out[os.path.relpath(full, root)] = f"link -> unreadable: {exc}"
+        dirs[:] = sorted(d for d in dirs if not _is_link(os.path.join(top, d)))
         for name in files:
-            if name.endswith(suffix):
-                full = Path(top) / name
-                out[str(full.relative_to(root))] = _digest(full) or "unreadable"
+            full = os.path.join(top, name)
+            if not _is_link(full):
+                out[os.path.relpath(full, root)] = _digest(Path(full)) or "unreadable"
     return out
+
+
+def config_files(run: Runner) -> list[Path]:
+    """Every file git reads configuration from for REPO, includes followed, as git
+    reports them. Listing runs no config-named program."""
+    listed = git(run, "-C", str(REPO), "config", "--list", "--show-origin", "--includes",
+                 "--name-only").stdout
+    out = []
+    for line in listed.splitlines():
+        origin = line.split("\t", 1)[0]
+        if origin.startswith("file:"):
+            path = Path(origin[len("file:"):])
+            out.append(path if path.is_absolute() else REPO / path)
+    return sorted(set(out))
 
 
 def base_python(venv: Path | None = None) -> Path | None:
@@ -405,20 +441,21 @@ def base_python(venv: Path | None = None) -> Path | None:
     return None
 
 
-def _file_fingerprint() -> dict:
+def _file_fingerprint(run: Runner) -> dict:
     """Every file the fixer's and verifier's code could change outside their clones,
-    by content. Read without running git."""
+    by content. The only git call lists config files and runs nothing they name."""
     info = GIT_DIR / "info"
     hooks = GIT_DIR / "hooks"
     files = (*SENSITIVE, MAIN_VENV / "pyvenv.cfg", GIT_DIR / "config",
              *(sorted(info.iterdir()) if info.is_dir() else ()),
              *(sorted(hooks.iterdir()) if hooks.is_dir() else ()))
     out: dict = {str(p): _digest(p) for p in files}
+    out["git_config"] = {str(p): _digest(p) or "unreadable" for p in config_files(run)}
     out["venv"] = _tree_digests(MAIN_VENV)
     base = base_python()
     out["base_python"] = _tree_digests(base) if base else {}
-    out["bytecode"] = {f"{root.name}/{rel}": d for root in BYTECODE_ROOTS
-                       for rel, d in _tree_digests(root, ".pyc").items()}
+    out["source"] = {f"{root.name}/{rel}": d for root in SOURCE_ROOTS
+                     for rel, d in _tree_digests(root).items()}
     return out
 
 
@@ -428,12 +465,12 @@ def _git_fingerprint(run: Runner, branch: str) -> dict:
                                            "--format=%(refname) %(objectname)").splitlines()
                      if line.split(" ", 1)[0] != f"refs/heads/{branch}")
     return {"status": _git(run, "status", "--porcelain"),
-            "diff": hashlib.sha256(_git(run, "diff", "HEAD").encode()).hexdigest(),
+            "diff": hashlib.sha256(_git(run, "diff", *DIFF_SAFE, "HEAD").encode()).hexdigest(),
             "refs": hashlib.sha256(refs.encode()).hexdigest()}
 
 
 def fingerprint(run: Runner, branch: str) -> dict:
-    return _file_fingerprint() | _git_fingerprint(run, branch)
+    return _file_fingerprint(run) | _git_fingerprint(run, branch)
 
 
 def _moved(before: dict, after: dict) -> list[str]:
@@ -453,7 +490,7 @@ def _moved(before: dict, after: dict) -> list[str]:
 
 def check_unchanged(run: Runner, before: dict, branch: str, during: str) -> None:
     """Files first: a changed git config or hook is refused before git runs again."""
-    files = _file_fingerprint()
+    files = _file_fingerprint(run)
     moved = _moved({k: before.get(k) for k in files}, files)
     if not moved:
         after = _git_fingerprint(run, branch)
@@ -504,7 +541,7 @@ def record_tree(run: Runner, tree: Path, base: str, branch: str, message: str) -
     if touched:
         raise StepRefused(f"the fixer changed {', '.join(touched)}; the runner does not record "
                           f"attribute or submodule changes")
-    commit = g("commit-tree", new_tree, "-p", base, "-m", message)
+    commit = g("commit-tree", "--no-gpg-sign", new_tree, "-p", base, "-m", message)
     g("update-ref", f"refs/heads/{branch}", commit, "")
     return commit
 
@@ -680,7 +717,7 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
             outcome = "parked: the fixer changed nothing"
         else:
             record["commit"] = commit
-            changed = _git(run, "diff", "--name-only", f"{base}...{commit}").split()
+            changed = _git(run, "diff", *DIFF_SAFE, "--name-only", f"{base}...{commit}").split()
             record["changed"] = changed
             record["candidate_risk"] = improve.effective_risk({**item, "scope": changed})
         if commit is not None and record["candidate_risk"] == "C":
@@ -706,7 +743,7 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
             check_unchanged(run, before, branch, "the verifier or its tests ran")
             drop(review)
             current = "review diff"
-            diff = _git(run, "diff", f"{base}...{commit}")
+            diff = _git(run, "diff", *DIFF_SAFE, f"{base}...{commit}")
             if len(diff) > MAX_REVIEW_DIFF:
                 raise StepRefused(f"the diff is {len(diff)} characters, over the "
                                   f"{MAX_REVIEW_DIFF} a review prompt carries")

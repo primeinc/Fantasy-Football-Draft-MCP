@@ -1,4 +1,6 @@
 """`runner.record_tree` against real git: what the fixer's clone may and may not decide."""
+import os
+import shutil
 import subprocess
 
 import pytest
@@ -58,12 +60,19 @@ def test_an_existing_branch_is_never_moved(repo):
     assert git("rev-parse", "queue/t", cwd=main) == base
 
 
-def test_a_fixer_gitattributes_is_neither_applied_nor_recorded(repo):
+def test_a_fixer_gitattributes_is_neither_applied_nor_recorded(repo, tmp_path):
     # git-lfs is configured as a required filter on this machine: applied, it would
     # store a pointer and put the real bytes in .git/lfs, where no review looks.
     main, clone, base = repo
     (clone / ".gitattributes").write_text("* filter=lfs diff=lfs merge=lfs -text\n")
     (clone / "payload.py").write_text("import os\n")
+    # The control: the same add without --attr-source does route through lfs.
+    control = subprocess.run(["git", f"--git-dir={main / '.git'}", f"--work-tree={clone}", "add",
+                              "-A"], capture_output=True, text=True,
+                             env=os.environ | {"GIT_INDEX_FILE": str(tmp_path / "control.index")})
+    if not (main / ".git" / "lfs" / "objects").exists():
+        pytest.skip(f"git-lfs did not run for the control add: {control.stderr.strip()}")
+    shutil.rmtree(main / ".git" / "lfs")
     with pytest.raises(runner.StepRefused, match=r"\.gitattributes"):
         runner.record_tree(subprocess.run, clone, base, "queue/t", "m")
     assert "queue/t" not in git("branch", "--list", cwd=main)
@@ -76,6 +85,54 @@ def test_a_nested_gitmodules_is_refused(repo):
     (clone / "sub" / ".gitmodules").write_text("[submodule]\n")
     with pytest.raises(runner.StepRefused, match="sub/.gitmodules"):
         runner.record_tree(subprocess.run, clone, base, "queue/t", "m")
+
+
+def marker_script(tmp_path, name):
+    marker = tmp_path / f"{name}-ran"
+    script = tmp_path / f"{name}.sh"
+    script.write_text(f"#!/bin/sh\necho ran >> '{marker.as_posix()}'\nexit 1\n")
+    script.chmod(0o755)
+    return script, marker
+
+
+def test_a_configured_external_diff_does_not_run_in_the_fingerprint(repo, tmp_path, monkeypatch):
+    main, _clone, _base = repo
+    script, marker = marker_script(tmp_path, "diff-external")
+    git("config", "diff.external", script.as_posix(), cwd=main)
+    (main / "README").write_text("changed\n")
+    # The control: an ordinary diff in this repository runs it.
+    subprocess.run(["git", "diff", "HEAD"], cwd=main, capture_output=True)
+    assert marker.exists()
+    marker.unlink()
+    monkeypatch.setattr(runner, "REPO", main)
+    assert runner._git_fingerprint(subprocess.run, "queue/t")["diff"]
+    assert not marker.exists()
+
+
+def test_a_configured_signing_program_does_not_run_on_record(repo, tmp_path):
+    main, clone, base = repo
+    script, marker = marker_script(tmp_path, "gpg")
+    git("config", "commit.gpgSign", "true", cwd=main)
+    git("config", "gpg.program", script.as_posix(), cwd=main)
+    # The control: an ordinary commit in this repository runs it. (commit-tree
+    # alone does not read commit.gpgSign; --no-gpg-sign is kept for a config that
+    # ever makes it.)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "m"], cwd=main, capture_output=True)
+    assert marker.exists()
+    marker.unlink()
+    (clone / "new.py").write_text("x")
+    assert runner.record_tree(subprocess.run, clone, base, "queue/t", "m")
+    assert not marker.exists()
+
+
+def test_config_files_follow_includes(repo, tmp_path, monkeypatch):
+    main, _clone, _base = repo
+    extra = tmp_path / "included.gitconfig"
+    extra.write_text("[core]\n\tbare = false\n")
+    git("config", "include.path", extra.as_posix(), cwd=main)
+    monkeypatch.setattr(runner, "REPO", main)
+    files = runner.config_files(subprocess.run)
+    assert extra in files and main / ".git" / "config" in files
 
 
 def test_a_planted_hooks_directory_does_not_run(repo, tmp_path):

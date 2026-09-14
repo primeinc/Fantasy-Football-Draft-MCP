@@ -807,22 +807,30 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   Windows job object with kill-on-close: no process it or its descendants start
   directly outlives it, on exit or on a timeout kill. A process a service starts
   on its behalf (a scheduled task, WMI) is not in the job. Every git call the
-  runner makes points `core.hooksPath` at a new empty directory and sets
-  `core.fsmonitor=false`.
+  runner makes points `core.hooksPath` at a new empty directory and turns off
+  `core.fsmonitor`, commit signing, the pager and auto gc; every diff it reads
+  runs with `--no-ext-diff --no-textconv`, and `commit-tree` with
+  `--no-gpg-sign`. No program a git config names runs in a runner git call.
 
   One fingerprint is taken before the fixer and compared after the fixer, after
   the commit, after the tests and after the reviews. Files are compared first,
-  before git runs: the content of `.mcp.json`, the Claude settings, the system
-  and global gitconfig and gitattributes, `.git/config`, `.git/info` and hooks,
-  the policy file, every file in the main `.venv` and in the base interpreter,
-  and every `.pyc` under `src` and `tests`. Then git status, `git diff HEAD` and
-  every ref except this item's branch. The runner runs with `-B` and sets
-  `PYTHONDONTWRITEBYTECODE` for everything it starts, so a changed `.pyc` is
-  foreign. A detected change fails the run, names what moved, and reverts
-  nothing. It is a tripwire: `~/.claude.json`, the uv cache, `.git/lfs`,
-  `~/.ffdraft/state` and scheduled tasks are not covered, and the user's
-  acceptance below is the control. Another Python process writing bytecode
-  during a tick (the MCP server importing a module) fails that tick.
+  before any git command that could run a program: the content of every config
+  file `git config --list --show-origin --includes` reads, plus
+  `%ProgramData%\Git\config` (standard users can create folders under
+  `C:\ProgramData`) and the XDG and system gitattributes whether or not they
+  exist yet; `.git/info` and hooks; `.mcp.json`, the Claude settings, the policy
+  file and decision points; every file in the main `.venv` and in the base
+  interpreter; and every file under `src` and `tests`, gitignored ones included.
+  A link or junction is recorded as its target and not followed. Then git status,
+  `git diff HEAD` and every ref except this item's branch. The runner runs with
+  `-B` and sets `PYTHONDONTWRITEBYTECODE` for everything it starts, so a changed
+  `.pyc` is foreign. A detected change fails the run, names what moved, and
+  reverts nothing. It is a tripwire: writes elsewhere in the user profile or on
+  disk are not covered, for example `~/.claude.json`, the uv cache, `.git/lfs`,
+  the rest of `~/.ffdraft/state`, a plugin or hooks checkout Claude Code loads,
+  and scheduled tasks; the user's acceptance below is the control. Another
+  Python process writing bytecode under `src`, `tests` or a venv during a tick
+  (the MCP server importing a module) fails that tick.
 
   The risk class and the promotion verdict come from the branch's actual diff.
   `targeted_tests` is the verifier model's report, so no promotion may merge on
