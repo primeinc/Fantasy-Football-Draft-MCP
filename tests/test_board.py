@@ -1003,7 +1003,7 @@ class TestJsonPayloads:
 
 
 class TestSyncEspnLive:
-    def test_in_progress_draft_uses_socket_snapshot(self, monkeypatch):
+    def _in_progress(self, monkeypatch, **creds):
         import sys
         import types
 
@@ -1046,14 +1046,26 @@ class TestSyncEspnLive:
         monkeypatch.setitem(sys.modules, "ffdraft.espn_live", fake)
         monkeypatch.setattr(ffdraft, "espn_live", fake, raising=False)
 
-        picks = board.sync_espn("1", 2026, swid="{ABC}", espn_s2="s2")
-        assert calls["team_id"] == 3
-        assert picks == [
-            {"overall": 1, "slot": 1, "name": "Jahmyr Gibbs", "position": "RB", "player_id": None},
-            {"overall": 2, "slot": 4, "name": "Ja'Marr Chase", "position": "WR", "player_id": None},
-            {"overall": 3, "slot": 4, "name": "Atlanta Falcons D/ST", "position": "DST",
-             "player_id": None},
-        ]
+        return board.sync_espn("1", 2026, **creds), calls
+
+    SOCKET_PICKS = [
+        {"overall": 1, "slot": 1, "name": "Jahmyr Gibbs", "position": "RB", "player_id": None},
+        {"overall": 2, "slot": 4, "name": "Ja'Marr Chase", "position": "WR", "player_id": None},
+        {"overall": 3, "slot": 4, "name": "Atlanta Falcons D/ST", "position": "DST",
+         "player_id": None},
+    ]
+
+    def test_in_progress_draft_uses_socket_snapshot(self, monkeypatch):
+        picks, calls = self._in_progress(monkeypatch, swid="{ABC}", espn_s2="s2")
+        assert calls["team_id"] == 3 and picks == self.SOCKET_PICKS
+
+    def test_credentials_from_the_environment_reach_the_socket_snapshot(self, monkeypatch):
+        # Every production caller passes no credentials (server's sync, adp); the
+        # live branch must still see ESPN_SWID and ESPN_S2 (devil on cf44407).
+        monkeypatch.setenv("ESPN_SWID", "{ABC}")
+        monkeypatch.setenv("ESPN_S2", "s2")
+        picks, calls = self._in_progress(monkeypatch)
+        assert calls["team_id"] == 3 and picks == self.SOCKET_PICKS
 
     def test_completed_draft_keeps_read_api_path(self, monkeypatch):
         league_json = {"draftDetail": {"drafted": True, "inProgress": False,

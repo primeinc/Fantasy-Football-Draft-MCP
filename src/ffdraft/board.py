@@ -1039,6 +1039,10 @@ def sync_espn(league_id: str, season: int = CURRENT_SEASON,
     espn_s2 cookies from a logged-in browser session, passed here or set as the
     ESPN_SWID / ESPN_S2 environment variables.
     """
+    # Resolved here, not only in the cookie jar: the live-draft branch below needs
+    # both, and every production caller passes neither.
+    swid = swid or os.environ.get("ESPN_SWID")
+    espn_s2 = espn_s2 or os.environ.get("ESPN_S2")
     resp = espn_league_get(league_id, season,
                            {"view": ["mDraftDetail", "mTeam", "kona_player_info"]},
                            swid, espn_s2, timeout=20)
