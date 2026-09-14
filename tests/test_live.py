@@ -108,6 +108,34 @@ class TestTheTool:
         assert out["matchups"][0]["mine"] is True and out["matchups"][0]["matchup_id"] == 5
         assert out["next_kickoff"] == "Thu, September 10th at 8:35 PM EDT"
 
+    def test_my_finished_game_is_kept_and_other_finals_are_one_line(self, monkeypatch):
+        # 2026-09-13: the week's scoreboard carried 14 finals and the cap cut the
+        # answer to 3 games of 15 by length, not by whose players were in them.
+        def final(eid, away, away_id, home, home_id, score):
+            return {"id": eid, "shortName": f"{away} @ {home}", "date": "2026-09-13T17:00Z",
+                    "status": {"type": {"state": "post", "detail": "Final"}},
+                    "competitions": [{"competitors": [
+                        {"homeAway": "home", "team": {"id": home_id}, "score": score[1]},
+                        {"homeAway": "away", "team": {"id": away_id}, "score": score[0]}]}]}
+        board = {"events": [final("501", "BUF", 2, "HOU", 34, ("36", "31")),
+                            SCOREBOARD["events"][0],
+                            final("502", "TB", 27, "CIN", 4, ("27", "33"))]}
+        self.wire(monkeypatch, scoreboard=board)
+        out = json.loads(server.live_scores("1", 1))
+        assert [g["game"] for g in out["games"]] == ["NE @ SEA", "TB @ CIN"]
+        assert out["other_finals"] == ["BUF @ HOU 36-31 Final"]
+        assert "truncated" not in out
+
+    def test_a_finished_game_lists_only_my_team_and_my_opponent(self, monkeypatch):
+        # Kyle C (team 7) has Maye and Doubs in NE @ SEA; my opponent is Tina (9).
+        finished = dict(SCOREBOARD["events"][0])
+        finished["status"] = {"type": {"state": "post", "detail": "Final"}}
+        self.wire(monkeypatch, scoreboard={"events": [finished]})
+        out = json.loads(server.live_scores("1", 1))
+        game = out["games"][0]
+        assert game["state"] == "post"
+        assert list(game["players_by_fantasy_team"]) == ["adverse possession"]
+
     def test_no_game_on_is_said_not_inferred(self, monkeypatch):
         pre = {"events": [dict(SCOREBOARD["events"][2])]}
         self.wire(monkeypatch, scoreboard=pre)

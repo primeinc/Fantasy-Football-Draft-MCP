@@ -111,6 +111,29 @@ class TestDumpDraft:
         assert logged == [{"ms": m["taken_at_ms"], "line": "SELECTED 3 4362628 4"}]
         assert len(api) == len(espn_dump.READ_VIEWS) + 2
 
+    def test_a_finished_draft_does_not_try_to_join_the_room(self, api, tmp_path, monkeypatch):
+        # 2026-09-13: in season the socket join raised after every read file was
+        # written, and the tool reported a bare error for a dump that worked.
+        api.draft_detail = {"draftDetail": {"drafted": True, "inProgress": False, "picks": []}}
+
+        def no_join(*_a, **_k):
+            raise AssertionError("joined the room of a finished draft")
+        monkeypatch.setattr(espn_live, "fetch_init_b64", no_join)
+        m = espn_dump.dump_draft("1734659820", tmp_path, 2026, swid="{A}", espn_s2="s",
+                                 team_id=3)
+        assert m["live_source"] == "none: the draft is complete, so there is no room to join"
+        assert (Path(m["root"]) / "manifest.json").exists()
+
+    def test_a_failed_socket_is_a_manifest_error_not_a_raise(self, api, tmp_path, monkeypatch):
+        def broken(*_a, **_k):
+            raise RuntimeError("ESPN draft socket sent no INIT frame before the timeout")
+        monkeypatch.setattr(espn_live, "fetch_init_b64", broken)
+        m = espn_dump.dump_draft("1734659820", tmp_path, 2026, swid="{A}", espn_s2="s",
+                                 team_id=3)
+        assert m["live_source"] == "none: the draft socket could not be read"
+        assert any(e.startswith("draft socket: RuntimeError") for e in m["errors"])
+        assert (Path(m["root"]) / "read_api" / "mSettings.json").exists()
+
     def test_no_live_section_without_watch_or_team(self, api, tmp_path):
         m = espn_dump.dump_draft("1734659820", tmp_path, 2026, swid="{A}", espn_s2="s")
         assert m["live_source"].startswith("none")

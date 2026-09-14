@@ -117,11 +117,21 @@ def dump_draft(league_id: str, out_dir: str | os.PathLike, season: int = CURRENT
     if entry["status"] != 200:
         manifest["errors"].append(f"leagueHistory: HTTP {entry['status']}")
 
-    if init_b64 is None and team_id is not None:
-        init_b64, socket_lines = espn_live.fetch_init_b64(league_id, season, team_id, swid,
-                                                          espn_s2)
-        lines = [(manifest["taken_at_ms"], ln) for ln in socket_lines]
-        manifest["live_source"] = "fresh socket snapshot"
+    finished = _draft_finished(read_dir)
+    if init_b64 is None and team_id is not None and finished:
+        # A completed draft has no room to join; the socket attempt raised out
+        # of this function after every read file was written, and the tool
+        # reported a bare error for a dump that had succeeded (2026-09-13).
+        manifest["live_source"] = "none: the draft is complete, so there is no room to join"
+    elif init_b64 is None and team_id is not None:
+        try:
+            init_b64, socket_lines = espn_live.fetch_init_b64(league_id, season, team_id,
+                                                              swid, espn_s2)
+            lines = [(manifest["taken_at_ms"], ln) for ln in socket_lines]
+            manifest["live_source"] = "fresh socket snapshot"
+        except Exception as exc:
+            manifest["live_source"] = "none: the draft socket could not be read"
+            manifest["errors"].append(f"draft socket: {type(exc).__name__}: {exc}")
     elif init_b64 is not None:
         manifest["live_source"] = "running watch"
     else:
@@ -146,6 +156,17 @@ def dump_draft(league_id: str, out_dir: str | os.PathLike, season: int = CURRENT
 
     (root / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     return manifest
+
+
+def _draft_finished(read_dir: Path) -> bool:
+    """True when the dump's own mDraftDetail says drafted and not in progress."""
+    try:
+        data = json.loads((read_dir / "mDraftDetail.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    detail = data.get("draftDetail") if isinstance(data, dict) else None
+    return (isinstance(detail, dict) and bool(detail.get("drafted"))
+            and not detail.get("inProgress"))
 
 
 def _write_live(live_dir: Path, manifest: dict, init_b64: str,

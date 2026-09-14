@@ -2518,6 +2518,64 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
 
 
 @mcp.tool(structured_output=False)
+def preview_waiver_claim(league_id: str, week: int, add: str, drop: str = "",
+                         season: int = CURRENT_SEASON) -> str:
+    """The ESPN transaction a waiver claim would send, checked against the league.
+    Sends nothing: there is no send path.
+
+    `add` and `drop` are player names, matched in ESPN's current pool (exact,
+    else a unique substring; ambiguity is a refusal). `refusals` lists every
+    rule the claim breaks as the league states it: the add is not FREEAGENT or
+    WAIVERS with no team, the roster is full and no drop is named, the drop is
+    not on your roster, is undroppable, or is not in ESPN's BENCH slot.
+    `transaction` is the body with `memberId` redacted, WAIVER or FREEAGENT by
+    the add's status; `waiver_clears` is when ESPN processes it.
+    `contract_basis` says why the body is unverified: ESPN's record of a
+    processed claim was observed, the request that makes one was not.
+    """
+    import os
+
+    from . import claim_write, claims, pool, rosters
+
+    try:
+        payload = rosters.fetch_roster_payload(league_id, season, week)
+        current = pool.fetch_pool(league_id, season)
+        settings = claims.fetch_settings(league_id, season)
+    except Exception as exc:
+        return _emit({"error": f"could not read the roster, pool or settings: "
+                               f"{type(exc).__name__}: {exc}", "week": week, "season": season})
+    teams = payload.get("teams") or []
+    my_id = rosters.my_team_id(teams)
+    if my_id is None:
+        return _emit({"error": "no team in this league is owned by ESPN_SWID", "week": week})
+    my_team = next(t for t in teams if t.get("id") == my_id)
+    entries = (my_team.get("roster") or {}).get("entries") or []
+    rows = pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, week)
+    add_row, add_refusal = claim_write.resolve(rows, add)
+    drop_row, drop_refusal = (None, None) if not drop.strip() else claim_write.resolve(rows, drop)
+    refusals = [r for r in (add_refusal, drop_refusal) if r]
+    refusals += claim_write.check(add_row, drop_row, my_id,
+                                  {e.get("playerId"): e.get("lineupSlotId") for e in entries},
+                                  len(entries), claim_write.roster_capacity(settings))
+    transaction = None
+    if add_row is not None:
+        transaction = {**claim_write.claim_transaction(my_id, os.environ.get("ESPN_SWID") or "",
+                                                       week, add_row, drop_row),
+                       "memberId": "redacted"}
+    warnings = []
+    if add_row is not None and add_row["injury_status"] not in (None, "ACTIVE"):
+        warnings.append(f"{add_row['player']} is {add_row['injury_status']}")
+    return _emit({
+        "week": week, "season": season, "sends": "nothing",
+        "add": add_row, "drop": drop_row,
+        "waiver_clears": None if add_row is None else add_row["waiver_clears"],
+        "refusals": refusals, "warnings": warnings,
+        "transaction": transaction,
+        "contract_basis": claim_write.CONTRACT_BASIS,
+    })
+
+
+@mcp.tool(structured_output=False)
 def waiver_candidates(league_id: str, week: int, limit: int = 3,
                       season: int = CURRENT_SEASON) -> str:
     """Waiver claims for `week` as replacement pairs, ADD x -> DROP y, with evidence.
@@ -3028,10 +3086,11 @@ def live_scores(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     """The games being played right now, and what they are doing to every
     team in the league.
 
-    For each game in progress (or finished today): score and clock, then every
-    rostered player in it grouped by fantasy team -- started or benched, points
-    applied so far, ESPN's projection -- and for your own players the box-score
-    line behind the number. Then the matchup board: every pairing's live and
+    For each game in progress: score and clock, then every rostered player in
+    it grouped by fantasy team -- started or benched, points applied so far,
+    ESPN's projection -- and for your own players the box-score line behind
+    the number. A finished game with one of your players lists only your team
+    and your opponent's; every other final is one line in `other_finals`. Then the matchup board: every pairing's live and
     projected totals, yours marked. `no_game_in_progress` is said when nothing
     is on; nothing is inferred from a game that has not started.
 
@@ -3055,7 +3114,28 @@ def live_scores(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         return _emit({"error": f"could not read the scoreboard: {type(exc).__name__}: {exc}",
                       "week": week, "season": season})
 
-    on = [g for g in all_games if g["state"] in ("in", "post")]
+    def has_mine(g: dict) -> bool:
+        return any(p["fantasy_team_id"] == my_team and p["pro_team"] in g["teams"] for p in players)
+
+    # Detail for what is being played now and for any game with one of my
+    # players; every other finished game is one score line. The week's
+    # scoreboard carries every final since Wednesday, and giving each the full
+    # table cut the answer to 3 games of 15 on 2026-09-13 -- by length, not by
+    # relevance -- so mine go first and the cap never reaches them first.
+    on = sorted((g for g in all_games if g["state"] == "in"
+                 or (g["state"] == "post" and has_mine(g))),
+                key=lambda g: (not has_mine(g), g["state"] != "in"))
+    finals = [f"{g['name']} {g['away']['score']}-{g['home']['score']} {g['detail']}"
+              for g in all_games if g["state"] == "post" and not has_mine(g)
+              and g.get("away") and g.get("home")]
+    # A finished game lists only my players and my opponent's: with every
+    # fantasy team in all ten of my finished games the cap still cut the answer
+    # to 5 of 10 and dropped a game of mine (2026-09-13). A game in progress
+    # keeps every team, because what it is doing to the league is the read.
+    my_matchup = next((m for m in board_rows
+                       if my_team in (m["home"]["team_id"], m["away"]["team_id"])), None)
+    finished_teams = (None if my_matchup is None
+                      else {str(my_matchup["home"]["team"]), str(my_matchup["away"]["team"])})
     out_games = []
     for g in on:
         lines: dict = {}
@@ -3074,6 +3154,8 @@ def live_scores(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
             if p["fantasy_team_id"] == my_team and p["player"] in lines:
                 row["box"] = lines[p["player"]]
             by_team.setdefault(str(p["fantasy_team"]), []).append(row)
+        if g["state"] == "post" and finished_teams is not None:
+            by_team = {k: v for k, v in by_team.items() if k in finished_teams}
         for rows in by_team.values():
             rows.sort(key=lambda r: -(r["live"] or 0.0))
         out_games.append({"game": g["name"], "state": g["state"], "detail": g["detail"],
@@ -3097,6 +3179,7 @@ def live_scores(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     return _emit(_jsonable({
         "week": week, "season": season,
         "games": out_games,
+        "other_finals": finals,
         "no_game_in_progress": not any(g["state"] == "in" for g in all_games),
         "next_kickoff": upcoming[0]["detail"] if upcoming else None,
         "matchups": board,
@@ -3789,7 +3872,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "pool", "transactions", "playerweek", "claims", "watchstore", "lineup_write", "injuries", "live")
+                "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "injuries", "live")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

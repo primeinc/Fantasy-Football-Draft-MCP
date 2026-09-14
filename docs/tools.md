@@ -708,6 +708,21 @@ and a player whose loss leaves his position short are in `not_droppable` with
 the reason. `upgrades` are optional adds projected above the cheapest drop. It
 submits nothing.
 
+### `preview_waiver_claim`
+
+The ESPN transaction a claim would send, checked against the league, with no
+send path: `preview_waiver_claim(league_id, week, add, drop="")`. Names resolve
+in ESPN's current pool (exact, else a unique substring; ambiguity is a refusal).
+`refusals` names every rule broken: the add is not FREEAGENT or WAIVERS with no
+team, the roster is full (mSettings slot counts, IR excluded) with no drop, the
+drop is not on the roster, is undroppable, or is not in ESPN's BENCH slot.
+`transaction` is `{isLeagueManager, teamId, type, memberId: "redacted",
+scoringPeriodId, executionType, items}`, `type` WAIVER or FREEAGENT by the add's
+status. The envelope is `lineup_write`'s, read from ESPN's web client; the items
+mirror ESPN's records of claims this league processed in `mTransactions2`
+(ADD fromTeamId 0 slot -1 -> 20, DROP the reverse). No claim request has been
+observed, so `contract_basis` marks the body unverified and nothing is sent.
+
 ### `player_week`
 
 One week for named players, every part with its basis: `player_week(league_id,
