@@ -1,6 +1,9 @@
 set minimum-version := '1.55.0'
 set default-list
 
+# Governor-owned: the improvement queue and its lease (`just runner queue`)
+mod runner
+
 # The virtualenv the recipes run from: this checkout's own `.venv`, else the main
 # checkout's, reached through `--git-common-dir` (whose parent is the main
 # checkout). A git worktree never has one -- `.venv` is untracked and
