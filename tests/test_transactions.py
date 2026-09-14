@@ -9,7 +9,7 @@ import json
 
 from ffdraft import board, pool, server, transactions
 
-SWID = "{D7B05DE8-D939-4D8F-9B31-D122B2CFDD5A}"
+SWID = "{AAAAAAAA-0000-0000-0000-00000000000A}"
 
 
 def _item(kind, pid, from_team=0, to_team=0):
@@ -29,7 +29,7 @@ def _payload():
         {"type": "WAIVER", "status": "EXECUTED", "teamId": 8, "bidAmount": 0,
          "executionType": "PROCESS", "memberId": "NightlyLeagueUpdateTaskProcessor",
          "processDate": 1789025361004, "proposedDate": 1789025360983,
-         "relatedTransactionId": "1650bb58-d178-4e5c-bccf-7015c60a072f",
+         "relatedTransactionId": "00000000-0000-0000-0000-00000000000b",
          "items": [_item("ADD", 4243331, 0, 8), _item("DROP", 4682648, 8, 0)]},
         {"type": "FREEAGENT", "status": "EXECUTED", "teamId": 8, "bidAmount": 0,
          "executionType": "EXECUTE", "memberId": SWID, "proposedDate": 1789051020796,
@@ -48,7 +48,7 @@ class _Resp:
         return self.body
 
 
-TEAMS = {8: "Andrea's Closing Team", 12: "Post Closing King"}
+TEAMS = {8: "Waiver Wire Team", 12: "Draft Night Team"}
 PLAYERS = {4243331: "Waiver Back", 4682648: "Cut Receiver", 4429086: "Free Agent End"}
 # What the tool's name pull can answer: the lineup and draft movers too, so a wrong
 # include flag leaves them as ids and the rows differ.
@@ -64,9 +64,9 @@ class TestRows:
 
     def test_moves_name_player_and_teams_with_none_for_free_agency(self):
         waiver = transactions.transaction_rows(_payload(), TEAMS, PLAYERS)[1]
-        assert waiver["team"] == "Andrea's Closing Team"
-        assert waiver["moves"] == [["ADD", "Waiver Back", None, "Andrea's Closing Team"],
-                                   ["DROP", "Cut Receiver", "Andrea's Closing Team", None]]
+        assert waiver["team"] == "Waiver Wire Team"
+        assert waiver["moves"] == [["ADD", "Waiver Back", None, "Waiver Wire Team"],
+                                   ["DROP", "Cut Receiver", "Waiver Wire Team", None]]
 
     def test_lineup_only_and_draft_are_hidden_unless_asked(self):
         rows = transactions.transaction_rows(_payload(), TEAMS, PLAYERS,
@@ -85,7 +85,7 @@ class TestRows:
 
     def test_the_swid_is_never_in_a_row(self):
         rows = transactions.transaction_rows(_payload(), TEAMS, PLAYERS, True, True)
-        assert "D7B05DE8" not in json.dumps(rows)
+        assert "AAAAAAAA" not in json.dumps(rows)
 
     def test_player_ids_follow_what_is_shown(self):
         assert transactions.player_ids(_payload()) == [4243331, 4429086, 4682648]
@@ -180,7 +180,7 @@ class TestTool:
         assert out["unread"] == {} and out["shape"] == transactions.TXN_SHAPE
 
     def test_team_narrows(self, monkeypatch):
-        out, _ = self.run(monkeypatch, team="post closing", include_draft=True)
+        out, _ = self.run(monkeypatch, team="draft night", include_draft=True)
         assert [t["type"] for t in out["transactions"]] == ["DRAFT"]
 
     def test_a_failed_name_lookup_is_named_and_ids_stand_in(self, monkeypatch):

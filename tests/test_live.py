@@ -44,10 +44,10 @@ LEAGUE = {
         {"id": 3, "name": "adverse possession", "owners": ["{ME}"],
          "roster": {"entries": [_player("Rhamondre Stevenson", 4569173, 17, 2, 3.3, 14.0),
                                 _player("Ja'Marr Chase", 4362628, 4, 4, 0.0, 19.9)]}},
-        {"id": 7, "name": "Kyle C's Star Team", "owners": ["{K}"],
+        {"id": 7, "name": "Seven's Star Team", "owners": ["{K}"],
          "roster": {"entries": [_player("Drake Maye", 4431452, 17, 0, 10.2, 16.3),
                                 _player("Romeo Doubs", 4569000, 17, 20, 0.0, 8.2)]}},
-        {"id": 9, "name": "Tina's Top Team", "owners": ["{T}"], "roster": {"entries": []}},
+        {"id": 9, "name": "Nine's Top Team", "owners": ["{T}"], "roster": {"entries": []}},
     ],
     "schedule": [
         {"id": 5, "matchupPeriodId": 1,
@@ -76,7 +76,7 @@ class TestTheReads:
         ps = live.league_players(LEAGUE, 1)
         maye = next(p for p in ps if p["player"] == "Drake Maye")
         assert (maye["fantasy_team"], maye["pro_team"], maye["started"], maye["live"]) == (
-            "Kyle C's Star Team", "NE", True, 10.2)
+            "Seven's Star Team", "NE", True, 10.2)
         doubs = next(p for p in ps if p["player"] == "Romeo Doubs")
         assert doubs["started"] is False
         ms = live.matchups(LEAGUE, 1)
@@ -102,7 +102,7 @@ class TestTheTool:
         assert mine[0]["box"]["rushing"]["YDS"] == "18"
         # Chase is not in this game.
         assert all(p["player"] != "Ja'Marr Chase" for p in mine)
-        kyle = g["players_by_fantasy_team"]["Kyle C's Star Team"]
+        kyle = g["players_by_fantasy_team"]["Seven's Star Team"]
         assert [p["player"] for p in kyle] == ["Drake Maye", "Romeo Doubs"]
         assert "box" not in kyle[0]
         assert out["matchups"][0]["mine"] is True and out["matchups"][0]["matchup_id"] == 5
@@ -127,7 +127,7 @@ class TestTheTool:
         assert "truncated" not in out
 
     def test_a_finished_game_lists_only_my_team_and_my_opponent(self, monkeypatch):
-        # Kyle C (team 7) has Maye and Doubs in NE @ SEA; my opponent is Tina (9).
+        # Team 7 has Maye and Doubs in NE @ SEA; my opponent is team 9.
         finished = dict(SCOREBOARD["events"][0])
         finished["status"] = {"type": {"state": "post", "detail": "Final"}}
         self.wire(monkeypatch, scoreboard={"events": [finished]})

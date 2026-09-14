@@ -25,7 +25,7 @@ def _entry(pid, name, pos_id, slot, pro_team=None, status="ACTIVE"):
 def _payload():
     return {
         "teams": [
-            {"id": 1, "name": "Minion Mayhem (work)", "owners": ["{BBBB-2222}"],
+            {"id": 1, "name": "Office Pool Team", "owners": ["{BBBB-2222}"],
              "roster": {"entries": [
                  _entry(4429160, "De'Von Achane", 2, 2, pro_team=15),
                  _entry(3054850, "Alvin Kamara", 2, 20, pro_team=18, status="OUT")]}},
@@ -39,7 +39,7 @@ def _payload():
         ],
         "members": [
             {"id": "{AAAA-1111}", "firstName": "Will", "lastName": "Peters"},
-            {"id": "{BBBB-2222}", "firstName": "Grace", "lastName": "Guibord"},
+            {"id": "{BBBB-2222}", "firstName": "Pat", "lastName": "Example"},
             {"id": "{CCCC-3333}"},
         ],
     }
@@ -77,7 +77,7 @@ class TestLeagueTable:
 
     def test_owners_are_named_and_never_by_swid(self, monkeypatch):
         table = _table(monkeypatch)
-        assert next(t for t in table if t["team_id"] == 1)["owners"] == ["Grace Guibord"]
+        assert next(t for t in table if t["team_id"] == 1)["owners"] == ["Pat Example"]
         assert next(t for t in table if t["team_id"] == 2)["owners"] == [UNKNOWN_OWNER]
         text = json.dumps(table)
         assert "CCCC" not in text and "AAAA" not in text
@@ -106,7 +106,7 @@ class TestTool:
         out, captured = self._run(monkeypatch)
         assert out["columns"] == ["player", "position", "pro_team", "slot", "status"]
         assert [t["team"] for t in out["teams"]] == [
-            "adverse possession", "Minion Mayhem (work)", "Empty Team"]
+            "adverse possession", "Office Pool Team", "Empty Team"]
         assert out["empty_rosters"] == ["Empty Team"]
         assert out["no_team_matches"] is None
         assert out["basis"]
@@ -117,7 +117,7 @@ class TestTool:
         assert captured["week"] == 2 and out["week"] == 2
 
     def test_team_narrows_by_owner_name_or_id(self, monkeypatch):
-        by_owner, _ = self._run(monkeypatch, team="grace")
+        by_owner, _ = self._run(monkeypatch, team="pat ex")
         assert [t["team_id"] for t in by_owner["teams"]] == [1]
         by_id, _ = self._run(monkeypatch, team="3")
         assert [t["team_id"] for t in by_id["teams"]] == [3]

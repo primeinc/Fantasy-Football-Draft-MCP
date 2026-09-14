@@ -342,7 +342,7 @@ class TestPickEvent:
     def test_selected_carries_the_team_player_and_lineup_slot(self):
         # SELECTED <teamId> <playerId> <lineupSlotId> <ownerSwid>, off the wire.
         assert espn_live.pick_event(
-            "SELECTED 15 3929645 6 {185BDDE2-2340-457E-88F8-D130768ECF53}") == {
+            "SELECTED 15 3929645 6 {CCCCCCCC-0000-0000-0000-000000000003}") == {
             "event": "selected", "team_id": 15, "player_id": 3929645, "slot_id": 6}
 
     def test_a_team_defence_keeps_its_negative_player_id(self):

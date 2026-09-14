@@ -238,8 +238,8 @@ def test_session_pings_on_a_timer_despite_constant_inbound_traffic(tmp_path, mon
 def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
     w, _events = _watch(tmp_path, monkeypatch)
     w.directory = {3: {"name": "adverse possession", "owners": ["Will Peters"]},
-                   9: {"name": "The Spreadsheet Squad", "owners": ["Cool Breeze"]},
-                   15: {"name": "Sydney Sideline Stars", "owners": ["Sydney Tiller"]}}
+                   9: {"name": "The Nine Squad", "owners": ["Cool Breeze"]},
+                   15: {"name": "Fifteen Sideline Stars", "owners": ["Sam Example"]}}
     asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
     online_from_init = {r["team_id"] for r in w.room()["online"]}
     assert 3 in online_from_init
@@ -249,14 +249,14 @@ def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
     asyncio.run(w.handle_line("CHAT 15 {DEF} 1788469125122 Kate+Pick+your+player+man"))
     room = w.room()
     online = {r["team_id"]: r["team"] for r in room["online"]}
-    assert online[9] == "The Spreadsheet Squad (Cool Breeze)"
+    assert online[9] == "The Nine Squad (Cool Breeze)"
     assert 15 not in online
     assert room["chat"][-1]["text"] == "Kate Pick your player man"
-    assert room["chat"][-1]["team"] == "Sydney Sideline Stars (Sydney Tiller)"
+    assert room["chat"][-1]["team"] == "Fifteen Sideline Stars (Sam Example)"
     assert room["on_the_clock"] == 115
     assert [(r["team"], r["event"]) for r in room["recent"]] == [
-        ("The Spreadsheet Squad (Cool Breeze)", "joined"),
-        ("Sydney Sideline Stars (Sydney Tiller)", "left"),
+        ("The Nine Squad (Cool Breeze)", "joined"),
+        ("Fifteen Sideline Stars (Sam Example)", "left"),
     ]
     assert all(r["at_ms"] > 0 for r in room["recent"])
 
