@@ -71,7 +71,11 @@ from .governor import when
 REPO = improve.REPO
 GIT_DIR = REPO / ".git"
 MAIN_VENV = REPO / ".venv"
-TREES = Path(tempfile.gettempdir()) / "ffdraft-runner"
+# Not under %TEMP%: a clone there fails `just check` at ty with 161 unresolved
+# imports on an unchanged commit (2026-09-14), where `justfile_directory()` reads
+# C:\WINDOWS\TEMP and uv's editable .pth reads C:\Windows\Temp. The same commit
+# under the profile passes all 989 tests.
+TREES = STATE_DIR / "runner-trees"
 AGENTS = REPO / ".claude" / "agents"
 FANTASY_LOCK = STATE_DIR / "runner-fantasy.lock"
 FANTASY_LAST = STATE_DIR / "runner-fantasy-last.json"
@@ -509,7 +513,8 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
         return entry
 
     TREES.mkdir(parents=True, exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix=f"{item_id}-", dir=TREES))
+    # realpath: the on-disk casing, the spelling uv writes into the editable .pth.
+    root = Path(os.path.realpath(tempfile.mkdtemp(prefix=f"{item_id}-", dir=TREES)))
     record["trees"] = str(root)
     trees: list[Path] = []
     record["cleanup"] = []

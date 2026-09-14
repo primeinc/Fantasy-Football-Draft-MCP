@@ -779,7 +779,7 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
 - IDLE or DEEP_IDLE: the first open item in `.agent/improvement-queue.jsonl`
   that fits the budget and risk class and has no run record is leased. The
   lease is the engineering lock. Each agent works in a throwaway
-  `git clone --no-hardlinks` under `%TEMP%/ffdraft-runner`, with its origin
+  `git clone --no-hardlinks` under `~/.ffdraft/state/runner-trees`, with its origin
   remote removed and its own `.venv` built by `just setup` with
   `UV_LINK_MODE=copy`; no file in it is shared with the main checkout, its
   `.git`, its `.venv` or the uv cache. The runner runs:
