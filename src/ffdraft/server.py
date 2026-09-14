@@ -3056,7 +3056,6 @@ def live_scores(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     basis names the three surfaces they come from."""
     from . import live
 
-    my_team = None
     try:
         payload = live.fetch_league_live(league_id, season, week)
         players = live.league_players(payload, week)
@@ -3573,7 +3572,6 @@ def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
     is the reason the default is small rather than the whole of it."""
     from . import stream
 
-    league, _ = _settings()
     state = _state()
     b = _mark_drafted(_build_board(), state)
     try:
