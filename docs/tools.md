@@ -693,20 +693,26 @@ Waiver claims as replacement pairs, derived rather than sourced:
 `waiver_candidates(league_id, week, limit=3)`, where `week` is the scoring
 period claimed for and the week before it supplies what happened. `needs` are
 starting positions (mSettings `lineupSlotCounts`) the roster cannot fill that
-week because a starter is OUT, IR, DOUBTFUL, suspended or on bye with nobody
-behind him. `claims` lists each need's best acquirable players in entry order,
-each naming the same drop, so the second is the fallback for the first;
-`claim_order_note` states that ESPN's handling of a later claim whose drop an
-earlier one used is unverified. `at_risk` names positions with nobody behind a
-QUESTIONABLE or DAY_TO_DAY starter, and `insurance` gives them the same ordered
-claims, conditional on the starter missing the game, each on a drop the needs
-did not take. Candidates are ordered by ESPN's claim-week
-projection, then last week's ESPN points. `drop_options` are ESPN BENCH-slot
-players only, cheapest claim-week projection first; a bench player whose
-played-week game is not final on ESPN's scoreboard is held; undroppable players
-and a player whose loss leaves his position short are in `not_droppable` with
-the reason. `upgrades` are optional adds projected above the cheapest drop. It
-submits nothing.
+week because a starter is OUT, INJURY_RESERVE, DOUBTFUL, SUSPENSION, NA or on
+bye with nobody behind him. `claims` lists each need's best acquirable players
+in entry order, each naming the same drop, with `fallback_for` the claim before
+it; `claim_order_note` states that ESPN's handling of a later claim whose drop
+an earlier one used is unverified. A player on the injured starter's own NFL
+team is always listed, marked `same_team_as`, because ESPN's claim-week
+projection for him assumes the starter plays. `at_risk` names positions with
+nobody behind a QUESTIONABLE or DAY_TO_DAY starter, and `insurance` gives them
+the same ordered claims, conditional on the starter missing the game, each on a
+drop the needs did not take. Candidates are ordered by ESPN's claim-week
+projection, then last week's ESPN points; no backtest covers that ordering.
+`drop_options` are ESPN BENCH-slot players only, cheapest claim-week projection
+first, a player with no projection after those with one. A bench player whose
+played-week game is not final on ESPN's scoreboard is held, and every bench
+player is held when the scoreboard shows an earlier week or cannot be read; a
+claim whose drop a held player could undercut carries `drop_provisional`, and
+the tool is re-run after those games end. Undroppable players and a player whose
+loss leaves his position short are in `not_droppable` with the reason.
+`upgrades` are optional adds projected above the cheapest drop at their own
+position. It submits nothing.
 
 ### `preview_waiver_claim`
 

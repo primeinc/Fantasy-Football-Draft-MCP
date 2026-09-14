@@ -109,7 +109,17 @@ class TestTool:
         assert wentz["espn_line"]["pass_tds"] == 3.0
         assert wentz["nflverse"] is None
         assert out["not_found"] == ["Nobody"] and out["nflverse_weeks"] == [1]
-        assert out["unread"] == {}
+        assert out["unread"] == {} and out["matches_dropped"] == {}
+
+    def test_matches_past_three_are_named_not_dropped_silently(self, monkeypatch):
+        out = self.run(monkeypatch, names="Carson Wentz")
+        assert len(out["players"]) == 1
+        many = [{**_wentz(), "player": {**_wentz()["player"], "fullName": f"Carson Wentz {i}"}}
+                for i in range(5)]
+        monkeypatch.setattr(pool, "fetch_pool", lambda *a, **k: many)
+        out = json.loads(server.player_week("123", 1, "wentz"))
+        assert len(out["players"]) == 3
+        assert out["matches_dropped"] == {"wentz": ["Carson Wentz 3", "Carson Wentz 4"]}
 
     def test_an_unpublished_nflverse_season_is_named(self, monkeypatch):
         out = self.run(monkeypatch, weekly_raises=True, names="Carson Wentz")

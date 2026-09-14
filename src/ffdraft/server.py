@@ -2580,16 +2580,21 @@ def waiver_candidates(league_id: str, week: int, limit: int = 3,
     for what actually happened. `needs` are starting positions the roster cannot
     fill that week (a starter OUT or on bye with nobody behind him). `claims`
     lists, per need, the best acquirable players in the order to enter them,
-    each naming the same drop so a later one is the fallback for an earlier one;
+    each naming the same drop, `fallback_for` the claim before it;
     `claim_order_note` says what about ESPN's processing of that is unverified.
-    `at_risk` are positions with nobody behind a QUESTIONABLE or DAY_TO_DAY
-    starter, and `insurance` the same claim list for them, conditional on the
-    starter missing the game; each insurance claim takes a drop the needs did
-    not. `drop_options` are ESPN bench players only, cheapest first; a bench player
-    whose played-week game is not final is held, never offered first.
-    `upgrades` are optional adds projected above the cheapest drop. Every row
-    carries ESPN's projection for the claim week and last week's ESPN points;
-    `basis` names each rule. A source that cannot be read is named in `unread`.
+    A player on the injured starter's own NFL team is always listed, marked
+    `same_team_as`: ESPN's claim-week projection for him assumes the starter
+    plays. `at_risk` are positions with nobody behind a QUESTIONABLE or
+    DAY_TO_DAY starter, and `insurance` the same claim list for them,
+    conditional on the starter missing the game; each insurance claim takes a
+    drop the needs did not. `drop_options` are ESPN bench players only, cheapest
+    first; a bench player whose played-week game is not final is held (all of
+    them when the scoreboard cannot say), and a claim whose drop a held player
+    could undercut carries `drop_provisional`. `upgrades` are optional adds
+    projected above the cheapest drop at their position. The orderings are
+    unmeasured. Every row carries ESPN's projection for the claim week and last
+    week's ESPN points; `basis` names each rule. A source that cannot be read is
+    named in `unread`.
 
     A derived view: `league_free_agents`, `league_rosters`, `player_week` and
     `injury_report` are the evidence it is built on. It submits nothing.
@@ -2630,17 +2635,18 @@ def waiver_candidates(league_id: str, week: int, limit: int = 3,
         bye_teams = claims.byes(sources.schedules(), season, week)
     except Exception as exc:
         unread["schedule"] = f"{type(exc).__name__}: {exc}"
-    pending = None
+    pending: set[str] | None = set()
     if played >= 1:
+        pending = None
         try:
             scoreboard = live.fetch_scoreboard()
             shown = (scoreboard.get("week") or {}).get("number")
             pending = claims.pending_teams(live.games(scoreboard), shown, played)
             if pending is None:
                 unread["scoreboard"] = (f"ESPN's scoreboard shows week {shown}, not week {played}; "
-                                        f"no bench player is held for an unfinished game")
+                                        f"every bench player is held")
         except Exception as exc:
-            unread["scoreboard"] = f"{type(exc).__name__}: {exc}"
+            unread["scoreboard"] = f"{type(exc).__name__}: {exc}; every bench player is held"
     required = claims.required_starters(settings)
     need_rows = claims.needs(mine, required, bye_teams)
     risk_rows = claims.at_risk(mine, required, bye_teams)
@@ -2708,18 +2714,23 @@ def player_week(league_id: str, week: int, names: str, season: int = CURRENT_SEA
         unread["nflverse_snaps"] = f"{type(exc).__name__}: {exc}"
     rows: list[dict] = []
     not_found: list[str] = []
+    matches_dropped: dict[str, list[str]] = {}
     for name in wanted:
         key = bd.norm_name(name)
         hits = [e for e in players
                 if key in bd.norm_name((e.get("player") or {}).get("fullName") or "")]
         if not hits:
             not_found.append(name)
+        if len(hits) > 3:
+            matches_dropped[name] = [str((e.get("player") or {}).get("fullName"))
+                                     for e in hits[3:]]
         rows += [playerweek.player_week_row(e, season, week, bd._ESPN_POSITION_NAMES,
                                             schedule, weekly, snaps,
                                             period.get(e.get("id")) or {})
                  for e in hits[:3]]
     return _emit({
         "week": week, "season": season, "players": rows, "not_found": not_found,
+        "matches_dropped": matches_dropped,
         "nflverse_weeks": None if weekly is None else playerweek.published_weeks(weekly, season),
         "unread": unread,
         "basis": ("ESPN kona_player_info for status, points and the applied stat row; "
