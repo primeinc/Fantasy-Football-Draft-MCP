@@ -198,21 +198,25 @@ class TestPlan:
             ("Devaughn Vele", "Jerry Jeudy", 4.0)]
 
 
-def _entry(row, week=None):
-    """A pool entry that `pool.pool_rows` reads back into `row`. A period pull
-    (`week` set) reports a different status, injury and waiver date, as ESPN's
-    later-period pull did on 2026-09-13, so a reader taking status from it fails."""
+def _entry(row, week=None, espn_period=1):
+    """A pool entry that `pool.pool_rows` reads back into `row`, as ESPN pulls it
+    while `espn_period` is the league's current period. A pull carries stat rows
+    for the period it asks for only, the pull with no period those of
+    `espn_period`, and a pull for `espn_period` is the pull with no period
+    (capture 2026-09-14). A pull for another period reports a different status,
+    injury and waiver date, so a reader taking status from it fails."""
+    asked = espn_period if week is None else week
     stats = []
-    if row["claim_week_proj"] is not None:
+    if row["claim_week_proj"] is not None and asked == 2:
         stats.append({"seasonId": 2026, "scoringPeriodId": 2, "statSourceId": 1,
                       "statSplitTypeId": 1, "appliedTotal": row["claim_week_proj"]})
-    if row["last_week_points"] is not None:
+    if row["last_week_points"] is not None and asked == 1:
         stats.append({"seasonId": 2026, "scoringPeriodId": 1, "statSourceId": 0,
                       "statSplitTypeId": 1, "appliedTotal": row["last_week_points"]})
     team_ids = {"MIN": 16, "GB": 9, "CLE": 5, "NYG": 19, "NYJ": 20, "NE": 17, "ARI": 22,
                 "ATL": 1, "NO": 18, "KC": 12}
     positions = {"QB": 1, "RB": 2, "WR": 3}
-    period = week is not None
+    period = asked != espn_period
     status = "FREEAGENT" if period and row["status"] == "WAIVERS" else row["status"]
     return {"id": row["espn_id"], "status": status, "onTeamId": row["on_team_id"],
             "waiverProcessDate": 1789542000000 if status == "WAIVERS" else 0,
@@ -233,16 +237,31 @@ def _event(away, home, state):
 
 
 class TestTool:
-    def run(self, monkeypatch, scoreboard_week=1, pool_rows=None, scoreboard_error=False):
+    def run(self, monkeypatch, scoreboard_week=1, pool_rows=None, scoreboard_error=False,
+            espn_period=1, statuses=(1, 1), pulls=None):
+        """`statuses` are successive mStatus scoringPeriodIds, None for an
+        unreadable one; `pulls` collects each pool pull's period."""
         rows = _pool() if pool_rows is None else pool_rows
+        pulls = [] if pulls is None else pulls
+        answers = list(statuses)
         monkeypatch.setenv("ESPN_SWID", SWID)
         payload = {"teams": [{"id": 3, "name": "adverse possession", "owners": ["{AAAA-1111}"],
                               "waiverRank": 12, "roster": {"entries": [
                                   {"playerId": pid, "lineupSlotId": slot}
                                   for pid, slot in SLOTS.items()]}}]}
         monkeypatch.setattr(rosters, "fetch_roster_payload", lambda *a, **k: payload)
-        monkeypatch.setattr(pool, "fetch_pool",
-                            lambda league_id, season, week=None: [_entry(r, week) for r in rows])
+
+        def fetch_pool(league_id, season, week=None):
+            pulls.append(week)
+            return [_entry(r, week, espn_period) for r in rows]
+        monkeypatch.setattr(pool, "fetch_pool", fetch_pool)
+
+        def league_status(*a, **k):
+            answer = answers.pop(0) if answers else None
+            if answer is None:
+                raise RuntimeError("503")
+            return {"scoringPeriodId": answer}
+        monkeypatch.setattr(live, "fetch_league_status", league_status)
         monkeypatch.setattr(claims, "fetch_settings", lambda *a, **k: {
             "rosterSettings": {"lineupSlotCounts": {"0": 1, "2": 2, "4": 1, "20": 6}}})
         teams = ["MIN", "GB", "CLE", "NYG", "NYJ", "NE", "ARI", "ATL", "NO", "KC"]
@@ -277,6 +296,36 @@ class TestTool:
         assert out["needs"] == [] and out["at_risk"][0]["position"] == "QB"
         assert [(c["add"], c["drop"]) for c in out["insurance"]] == [
             ("Jacoby Brissett", "Jerry Jeudy"), ("Carson Wentz", "Jerry Jeudy")]
+
+    def test_the_current_pull_stands_in_for_the_played_week_pull(self, monkeypatch):
+        reused, every = [], []
+        out = self.run(monkeypatch, pulls=reused)
+        assert reused == [None, 2]
+        assert self.run(monkeypatch, statuses=(None, None), pulls=every) == out
+        assert every == [None, 2, 1]
+        assert any(d["last_week_points"] is not None for d in out["drop_options"])
+
+    def test_the_current_pull_stands_in_for_the_claim_week_pull(self, monkeypatch):
+        reused, every = [], []
+        out = self.run(monkeypatch, espn_period=2, statuses=(2, 2), pulls=reused)
+        assert reused == [None, 1]
+        assert self.run(monkeypatch, espn_period=2, statuses=(None, None), pulls=every) == out
+        assert every == [None, 2, 1]
+        assert out["claims"][0]["add_evidence"]["status"] == "WAIVERS"
+
+    def test_a_rollover_between_the_status_reads_pulls_every_week(self, monkeypatch):
+        # mStatus said 1, the pool pull came after ESPN moved to 2: the current pull
+        # carries no week 1 rows, so reusing it would blank last week's points.
+        rolled, every = [], []
+        out = self.run(monkeypatch, espn_period=2, statuses=(1, 2), pulls=rolled)
+        assert rolled == [None, 2, 1]
+        assert self.run(monkeypatch, espn_period=2, statuses=(None, None), pulls=every) == out
+        assert any(d["last_week_points"] is not None for d in out["drop_options"])
+
+    def test_an_unreadable_status_pulls_every_week(self, monkeypatch):
+        pulls = []
+        self.run(monkeypatch, statuses=(None,), pulls=pulls)
+        assert pulls == [None, 2, 1]
 
     def test_a_scoreboard_past_the_played_week_holds_nobody(self, monkeypatch):
         out = self.run(monkeypatch, scoreboard_week=2)

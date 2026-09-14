@@ -715,7 +715,10 @@ claim whose drop a held player could undercut carries `drop_provisional`, and
 the tool is re-run after those games end. Undroppable players and a player whose
 loss leaves his position short are in `not_droppable` with the reason.
 `upgrades` are optional adds projected above the cheapest drop at their own
-position. It submits nothing.
+position. It submits nothing. It pulls the pool with no period, and a pool for
+the claim and played weeks, except a week mStatus names as current both before
+and after the no-period pull: ESPN's pull for the current period is that pull
+(paired capture 2026-09-14, 1041 entries equal).
 
 ### `preview_waiver_claim`
 

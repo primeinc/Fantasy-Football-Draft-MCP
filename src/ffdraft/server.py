@@ -2602,10 +2602,26 @@ def waiver_candidates(league_id: str, week: int, limit: int = 3,
     from . import claims, live, pool, rosters
 
     played = week - 1
+
+    def status_period() -> int | None:
+        try:
+            period = live.fetch_league_status(league_id, season).get("scoringPeriodId")
+        except Exception:
+            return None
+        return period if isinstance(period, int) else None
+
     try:
         payload = rosters.fetch_roster_payload(league_id, season, week)
+        # ESPN's pull for the current period is its pull with no period (paired
+        # capture 2026-09-14, pool.py), so it stands in for the claim or played
+        # week's pull when mStatus names that week both before and after it; a
+        # rollover between the two reads, or an unreadable mStatus, pulls the week.
+        before = status_period()
         current = pool.fetch_pool(league_id, season)
-        claim_players = pool.fetch_pool(league_id, season, week)
+        reuse = (before if before in (week, played) and status_period() == before
+                 else None)
+        claim_players = (current if reuse == week
+                         else pool.fetch_pool(league_id, season, week))
         settings = claims.fetch_settings(league_id, season)
     except Exception as exc:
         return _emit({"error": f"could not read the roster, pool or settings: "
@@ -2619,8 +2635,9 @@ def waiver_candidates(league_id: str, week: int, limit: int = 3,
     played_rows: list[dict] = []
     if played >= 1:
         try:
-            played_rows = pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, played,
-                                         stats=pool.fetch_pool(league_id, season, played))
+            played_rows = pool.pool_rows(
+                current, bd._ESPN_POSITION_NAMES, season, played,
+                stats=current if reuse == played else pool.fetch_pool(league_id, season, played))
         except Exception as exc:
             unread["played_week_pool"] = f"{type(exc).__name__}: {exc}"
     merged = claims.merge_weeks(
