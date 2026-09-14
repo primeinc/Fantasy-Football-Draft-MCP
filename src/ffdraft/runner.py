@@ -22,7 +22,7 @@ The tick is Python; a model starts only where judgment is needed.
                   checked for the model and permission mode. The runner reads the
                   fixer's files into the main repository through its own git dir
                   with a temporary index, gitattributes read from the base commit,
-                  the git-lfs filter emptied, and `queue/<id>` created only if it
+                  every configured filter driver emptied, and `queue/<id>` created only if it
                   does not exist; a change to
                   `.gitattributes` or `.gitmodules` is refused. Git never runs
                   inside the fixer's `.git` after the fixer has. The verifier and
@@ -144,12 +144,7 @@ SENSITIVE = (REPO / ".mcp.json", REPO / ".claude" / "settings.json",
              STATE_DIR / "decision_points.json",
              *((_GIT_ETC / "gitconfig", _GIT_ETC / "gitattributes") if _GIT_ETC else ()))
 DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
-# git-lfs is the only filter driver configured here (system and global gitconfig).
-# Emptied, a `filter=lfs` attribute from any source (.git/info/attributes, which
-# --attr-source does not replace, included) stores the file's own bytes: probed
-# 2026-09-14, the control stored an lfs pointer and wrote .git/lfs.
-NO_LFS = ("-c", "filter.lfs.clean=", "-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=",
-          "-c", "filter.lfs.required=false")
+FILTER_KEYS = ("clean", "smudge", "process")
 
 FANTASY_PROMPT = """Unattended fantasy tick for ESPN league {league_id}, week {week}. No human is \
 present: never ask questions. You can read; you cannot change the lineup or submit a claim.
@@ -425,6 +420,27 @@ def _tree_digests(root: Path, bytecode: bool = True) -> dict[str, str]:
     return out
 
 
+def no_filters(run: Runner) -> dict[str, str]:
+    """Environment that empties every filter driver git config defines for GIT_DIR
+    (git-lfs, in the system and global config here). Emptied, a `filter=` attribute
+    from any source, `.git/info/attributes` included, which --attr-source does not
+    replace, stores the file's own bytes: probed 2026-09-14, the control stored an
+    lfs pointer and wrote .git/lfs. Passed as GIT_CONFIG_KEY_n/VALUE_n, not `-c`:
+    a driver name may contain `=`, which `-c name=value` would split on."""
+    names = git(run, f"--git-dir={GIT_DIR}", "config", "--list", "--includes",
+                "--name-only").stdout
+    # A driver name may hold dots (`[filter "x.y"]` lists as filter.x.y.clean): the
+    # section ends at the first dot and the variable starts after the last.
+    drivers = sorted({key[len("filter."):key.rindex(".")] for key in names.splitlines()
+                      if key.startswith("filter.") and key.count(".") >= 2})
+    pairs = [(f"filter.{d}.{k}", "") for d in drivers for k in FILTER_KEYS]
+    pairs += [(f"filter.{d}.required", "false") for d in drivers]
+    env = {"GIT_CONFIG_COUNT": str(len(pairs))}
+    for i, (key, value) in enumerate(pairs):
+        env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    return env
+
+
 def config_files(run: Runner) -> list[Path]:
     """Every file git reads configuration from for REPO, includes followed, as git
     reports them. Listing runs no config-named program."""
@@ -521,11 +537,20 @@ def clone(run: Runner, root: Path, name: str, commit: str) -> Path:
     return path
 
 
+def engineering_env() -> dict[str, str]:
+    """The environment for engineering steps: the runner's own, without the ESPN
+    credentials main() loads for the fantasy path. No engineering step calls ESPN,
+    and the run record keeps each step's output, where a test that prints its
+    environment would otherwise write the cookies."""
+    return {k: v for k, v in os.environ.items()
+            if not k.upper().startswith("ESPN_") and k.upper() != "VIRTUAL_ENV"}
+
+
 def build_venv(run: Runner, tree: Path, timeout: float) -> None:
     """The clone's own `.venv`, by `just setup`, copied out of the uv cache rather than
     hard-linked to it, so a write into it cannot reach the cache or another venv."""
-    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"} | {"UV_LINK_MODE": "copy"}
-    run(contained([shutil.which("just") or "just", "setup"]), cwd=str(tree), env=env,
+    run(contained([shutil.which("just") or "just", "setup"]), cwd=str(tree),
+        env=engineering_env() | {"UV_LINK_MODE": "copy"},
         capture_output=True, text=True, check=True, timeout=timeout)
 
 
@@ -539,10 +564,11 @@ def record_tree(run: Runner, tree: Path, base: str, branch: str, message: str) -
     files and the stored blobs, and a tree that changes one is refused before any
     ref exists. `update-ref` with an empty old value refuses a branch that already
     exists."""
-    env = os.environ | {"GIT_INDEX_FILE": str(tree.parent / f"{tree.name}.index")}
+    env = (os.environ | {"GIT_INDEX_FILE": str(tree.parent / f"{tree.name}.index")}
+           | no_filters(run))
 
     def g(*args: str) -> str:
-        return git(run, *NO_LFS, f"--attr-source={base}", f"--git-dir={GIT_DIR}",
+        return git(run, f"--attr-source={base}", f"--git-dir={GIT_DIR}",
                    f"--work-tree={tree}", *args, env=env).stdout.strip()
     g("read-tree", base)
     g("add", "-A")
@@ -689,7 +715,8 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
 
     def step(role: str, prompt: str, cwd: Path) -> dict:
         proc = run(contained(claude_cmd(prompt, role, system=agent_system(role))),
-                   capture_output=True, text=True, cwd=str(cwd), timeout=remaining())
+                   capture_output=True, text=True, cwd=str(cwd), env=engineering_env(),
+                   timeout=remaining())
         text = result_text(proc)
         entry = {"role": role, "rc": proc.returncode, "init_problem": init_problem(proc),
                  "result": text, "stderr": proc.stderr, "verdict": last_json_line(text)}
@@ -750,7 +777,7 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
             # The full-suite gate is the runner's own exit code, not a model's report.
             current = "just check"
             suite = run(contained([shutil.which("just") or "just", "check"]), capture_output=True,
-                        text=True, cwd=str(review), timeout=remaining())
+                        text=True, cwd=str(review), env=engineering_env(), timeout=remaining())
             record["just_check"] = {"rc": suite.returncode, "stdout": suite.stdout,
                                     "stderr": suite.stderr}
             check_unchanged(run, before, branch, "the verifier or its tests ran")

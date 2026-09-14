@@ -7,7 +7,7 @@ set script-interpreter := ['sh', '-euc', 'v="$(just --evaluate venv)"; if [ -z "
 tick $flags='--dry-run':
     "{{ justfile_directory() }}/.venv/Scripts/python.exe" -B -m ffdraft.runner tick $flags
 
-# Record that the user accepts unattended fixer and verifier runs executing fixer-written code unsandboxed; $quote is the user's words
+# Record that the user accepts unattended fixer and verifier runs executing fixer-written code unsandboxed, as the user: it can persist into anything the user can write, including the interpreter the governor runs, and run again on later ticks; $quote is the user's words
 [script]
 accept-unsandboxed $quote $confirm='':
     import json

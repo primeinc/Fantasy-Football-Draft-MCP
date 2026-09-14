@@ -342,6 +342,20 @@ class TestEngineering:
         assert improve.attempted(isolated / "runs.jsonl") == {"q-a"}
         assert tick([state("IDLE", allowed=True)])["outcome"] == "idle: nothing to take"
 
+    def test_espn_credentials_reach_only_the_fantasy_model(self, isolated, monkeypatch):
+        monkeypatch.setenv("ESPN_S2", "cookie")
+        monkeypatch.setenv("ESPN_SWID", "{swid}")
+        run = FakeRun(verdicts=APPROVE)
+        assert tick([state("IDLE", allowed=True)], run=run)["outcome"].startswith("parked")
+        engineering = [env for env, cmd in zip(run.envs, run.calls) if cmd[0] != "git"]
+        assert len(engineering) == 7  # two venvs, four agents, just check
+        assert all(env is not None and not any(k.upper().startswith("ESPN_") for k in env)
+                   for env in engineering)
+        fantasy = FakeRun()
+        tick([state("HOT", actionable=["x"])], run=fantasy)
+        (env,) = fantasy.envs
+        assert env is None and os.environ["ESPN_S2"] == "cookie"  # inherits the runner's
+
     def test_every_git_call_has_a_fresh_empty_hooks_directory_and_no_fsmonitor(self, isolated):
         run = FakeRun(verdicts=APPROVE)
         tick([state("IDLE", allowed=True)], run=run)
@@ -368,7 +382,11 @@ class TestEngineering:
         fix = str(Path(out["trees"]) / "fix")
         later = [git_args(c) for c in run.calls[fixer_at:] if c[0] == "git"]
         assert not any(where == fix for _args, where, _gd, _cfg in later)
-        recorded = [c for c in run.calls[fixer_at:] if c[0] == "git" and git_args(c)[2]]
+        through_main = [c for c in run.calls[fixer_at:] if c[0] == "git" and git_args(c)[2]]
+        # The filter-driver listing reads config only; every other call records the tree.
+        assert [git_args(c)[0][:2] for c in through_main
+                if git_args(c)[0][0] == "config"] == [["config", "--list"]]
+        recorded = [c for c in through_main if git_args(c)[0][0] != "config"]
         assert {git_args(c)[0][0] for c in recorded} >= {"read-tree", "add", "write-tree",
                                                          "diff-tree", "commit-tree", "update-ref"}
         assert all(git_args(c)[2] == str(runner.GIT_DIR) and "--attr-source=base123" in c

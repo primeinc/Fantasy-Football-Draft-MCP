@@ -787,9 +787,9 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   1. the fixer, in a clone at `HEAD`;
   2. the runner's own record of that work: the clone's files are read into the
      main repository through the main `.git` with a temporary index and
-     gitattributes read from the base commit (`--attr-source`) and the git-lfs
-     filter driver emptied, so no attribute, in the tree or in
-     `.git/info/attributes`, routes a file through git-lfs. A
+     gitattributes read from the base commit (`--attr-source`) and every filter
+     driver git config defines emptied (git-lfs here), so no attribute, in the
+     tree or in `.git/info/attributes`, routes a file through a filter. A
      change to `.gitattributes` or `.gitmodules` is refused, and `queue/<id>` is
      created with `update-ref` only if it does not exist. Git never runs in the
      fixer's `.git` after the fixer has. The commit SHA is recorded;
@@ -840,9 +840,14 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   it. Nothing is merged.
 
 The fixer's and the verifier's `just check` executes code the fixer wrote, as
-the user, outside any sandbox. No Claude Code flag contains that, so an
-unattended tick takes engineering work only after the user's own words are
-recorded with `just runner accept-unsandboxed "<quote>" accept`.
+the user, outside any sandbox. No Claude Code flag contains that: the code can
+read anything the user can, `.mcp.json` included, and persist into anything the
+user can write, including the base interpreter the governor itself runs, so it
+can run again on later ticks with the governor's environment. An unattended tick
+therefore takes engineering work only after the user's own words are recorded
+with `just runner accept-unsandboxed "<quote>" accept`. Engineering steps get the
+runner's environment without the `ESPN_*` credentials, so a test that prints its
+environment does not write them into the run record.
 
 Every tick writes `~/.ffdraft/state/runner/<stamp>.json`. `just runner install`
 prints the task XML and the `schtasks /Create /XML` command, and registers the

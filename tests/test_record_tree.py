@@ -99,6 +99,31 @@ def test_an_lfs_filter_from_info_attributes_stores_the_real_bytes(repo, tmp_path
     assert not (main / ".git" / "lfs").exists()
 
 
+@pytest.mark.parametrize("driver", ["custom", "x.y", "a=b"])
+def test_any_configured_filter_driver_is_emptied(repo, tmp_path, driver):
+    main, clone, base = repo
+    script, marker = marker_script(tmp_path, "filter")
+    git("config", f"filter.{driver}.clean", script.as_posix(), cwd=main)
+    (main / ".git" / "info").mkdir(exist_ok=True)
+    (main / ".git" / "info" / "attributes").write_text(f"*.py filter={driver}\n")
+    (clone / "payload.py").write_bytes(b"import os\n")
+    # The control: an ordinary add in this repository runs the clean filter.
+    subprocess.run(["git", f"--git-dir={main / '.git'}", f"--work-tree={clone}", "add", "-A"],
+                   capture_output=True, env=os.environ | {"GIT_INDEX_FILE": str(tmp_path / "c.index")})
+    if not marker.exists():
+        pytest.skip(f"gitattributes cannot name a driver {driver!r}: the control did not run it")
+    marker.unlink()
+    env = runner.no_filters(subprocess.run)
+    keys = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+            for i in range(int(env["GIT_CONFIG_COUNT"]))}
+    assert keys[f"filter.{driver}.clean"] == "" and keys[f"filter.{driver}.required"] == "false"
+    commit = runner.record_tree(subprocess.run, clone, base, "queue/t", "m")
+    assert not marker.exists()
+    blob = subprocess.run(["git", "cat-file", "blob", f"{commit}:payload.py"], cwd=main,
+                          capture_output=True, check=True).stdout
+    assert blob == b"import os\n"
+
+
 def test_a_nested_gitmodules_is_refused(repo):
     _main, clone, base = repo
     (clone / "sub").mkdir()
