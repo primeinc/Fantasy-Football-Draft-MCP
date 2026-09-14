@@ -3181,8 +3181,11 @@ def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
     except Exception as exc:
         unread["schedule"] = f"{type(exc).__name__}: {exc}"
 
-    return _emit(_jsonable({
+    from . import ticks
+
+    cur = _jsonable({
         "week": week, "season": season,
+        "read_at": pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M ET"),
         "versus_espn": versus,
         "projected_points": round(float(starters[lineup.WEEK_VALUE].sum()), 1)
         if not starters.empty else 0.0,
@@ -3200,7 +3203,16 @@ def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         "next_lock": next_lock,
         "next_lock_basis": "nfldata schedule, Eastern time; players not already locked",
         "unread": unread,
-    }), indent=2)
+    })
+    state_path = ticks.path_for(league_id, week)
+    prev = ticks.load(state_path)
+    cur["changes_since_last_tick"] = ticks.delta(prev, cur)
+    cur["last_tick_read_at"] = None if prev is None else prev.get("read_at")
+    try:
+        ticks.save({k: v for k, v in cur.items() if k != "changes_since_last_tick"}, state_path)
+    except OSError as exc:
+        cur["tick_state_unwritten"] = f"{type(exc).__name__}: {exc}"
+    return _emit(cur, indent=2)
 
 
 @mcp.tool(structured_output=False)
@@ -3809,7 +3821,7 @@ RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
                 "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "injuries", "live",
-                "governor", "improve")
+                "governor", "improve", "ticks", "runner")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

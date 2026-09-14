@@ -3,6 +3,39 @@
 
 set script-interpreter := ['sh', '-euc', 'v="$(just --evaluate venv)"; if [ -z "$v" ] || [ ! -x "$v/Scripts/python.exe" ]; then echo "just: no virtualenv python for this checkout. Run: just setup" >&2; exit 1; fi; exec "$v/Scripts/python.exe" "$0" "$@"']
 
+# One unattended governor tick (ffdraft.runner); $dry '--dry-run' leases nothing and starts no model
+tick $dry='--dry-run':
+    "{{ justfile_directory() }}/.venv/Scripts/python.exe" -m ffdraft.runner tick $dry
+
+# The Task Scheduler command for the tick every $minutes; runs schtasks only when $confirm is 'install'
+[script]
+install $minutes='30' $confirm='':
+    import os
+    import subprocess
+    import sys
+
+    repo = os.getcwd().replace("\\", "/")
+    python = f"{repo}/.venv/Scripts/python.exe"
+    cmd = ["schtasks", "/Create", "/TN", "ffdraft-governor", "/SC", "MINUTE", "/MO",
+           os.environ["minutes"], "/TR", f'"{python}" -m ffdraft.runner tick', "/F"]
+    print(" ".join(cmd))
+    if os.environ["confirm"] != "install":
+        sys.exit("not installed: pass confirm=install once the user has said yes")
+    subprocess.run(cmd, check=True)
+
+# Remove the scheduled tick; runs schtasks only when $confirm is 'uninstall'
+[script]
+uninstall $confirm='':
+    import os
+    import subprocess
+    import sys
+
+    cmd = ["schtasks", "/Delete", "/TN", "ffdraft-governor", "/F"]
+    print(" ".join(cmd))
+    if os.environ["confirm"] != "uninstall":
+        sys.exit("not removed: pass confirm=uninstall")
+    subprocess.run(cmd, check=True)
+
 # The queue in priority order with each item's effective risk class
 [script]
 queue:

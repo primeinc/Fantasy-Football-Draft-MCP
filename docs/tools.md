@@ -756,6 +756,31 @@ Decision points live in `~/.ffdraft/state/decision_points.json` as
 order" MIN,SEA` adds one. Their teams become relevant for WATCH until the point
 passes.
 
+### Unattended ticks: `just runner tick|queue|pick|lease|release|candidate-risk|install`
+
+`python -m ffdraft.runner tick` is one tick without a session; `just runner
+tick` runs it as a dry run (`just runner tick ""` for real). The tick runs
+`controller_state` itself:
+
+- DEGRADED: logged, no model.
+- HOT or WATCH: `game_tick` runs, and it now carries `changes_since_last_tick`
+  (from `~/.ffdraft/state/ticks/`). A `claude -p` with only the fantasy tools
+  starts when that or `fantasy_actionable` is non-empty; it may bench an OUT
+  starter for an ACTIVE one and never submits waiver claims.
+- IDLE or DEEP_IDLE: the first open item in `.agent/improvement-queue.jsonl`
+  that fits the budget and risk class, and has no run record, is leased.
+  Fixer, verifier and oracle-static then each run as `claude -p --worktree` with
+  `--permission-mode dontAsk`, their own tool allowlist and no MCP server. A
+  change to the main checkout's `git status` during the fixer aborts the run.
+  The lease is released with the outcome and the branch is parked; the
+  promotion verdict (`improve.promotion`) is recorded, never performed.
+
+Every tick writes `~/.ffdraft/state/runner/<stamp>.json`, and a lock stops
+overlapping ticks. `just runner install` prints the Task Scheduler command and
+creates the task only with `confirm=install`. Running `claude -p` from Task
+Scheduler is not covered by Claude Code's documentation, so the first scheduled
+run is the verification.
+
 ### `player_week`
 
 One week for named players, every part with its basis: `player_week(league_id,

@@ -39,7 +39,8 @@ FIELDS = ("id", "title", "evidence", "scope", "defect", "estimated_minutes", "ri
           "acceptance_test", "dependencies", "discovered_by", "last_attempt", "status")
 STATUSES = ("open", "leased", "done", "parked", "blocked")
 RISK_RANK = {"A": 0, "B": 1, "C": 2}
-PROTECTED = ("src/ffdraft/governor.py", "src/ffdraft/improve.py", "src/ffdraft/lineup_write.py",
+PROTECTED = ("src/ffdraft/governor.py", "src/ffdraft/improve.py", "src/ffdraft/runner.py",
+             "src/ffdraft/ticks.py", "src/ffdraft/lineup_write.py",
              "src/ffdraft/claim_write.py", "runner.just", ".agent/", ".claude/", "CLAUDE.md",
              ".mcp.json", "pyproject.toml", "uv.lock", ".venv/")
 PROMOTION_GATES = ("targeted_tests", "full_suite", "oracle_review", "still_idle")
@@ -95,15 +96,32 @@ def effective_risk(item: dict) -> str:
     return declared
 
 
-def pick(items: list[dict], max_minutes: int, max_risk: str | None) -> dict | None:
-    """The first open item whose dependencies are done, that fits the minutes,
-    and whose effective class is within `max_risk` and is not C."""
+def attempted(runs: Path | None = None) -> set[str]:
+    """Item ids with a run record: parked or failed items wait for a human."""
+    runs = runs or RUNS
+    if not runs.exists():
+        return set()
+    out = set()
+    for line in runs.read_text(encoding="utf-8").splitlines():
+        try:
+            out.add(str(json.loads(line)["item_id"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return out
+
+
+def pick(items: list[dict], max_minutes: int, max_risk: str | None,
+         exclude: set[str] | None = None) -> dict | None:
+    """The first open item not in `exclude` whose dependencies are done, that
+    fits the minutes, and whose effective class is within `max_risk` and is not C."""
     if max_risk not in ("A", "B") or max_minutes <= 0:
         return None
     done = {i["id"] for i in items if i["status"] == "done"}
+    skip = exclude or set()
     for item in items:
         risk = effective_risk(item)
-        if (item["status"] == "open" and set(item.get("dependencies") or []) <= done
+        if (item["status"] == "open" and item["id"] not in skip
+                and set(item.get("dependencies") or []) <= done
                 and risk != "C" and RISK_RANK[risk] <= RISK_RANK[max_risk]
                 and int(item["estimated_minutes"]) <= max_minutes):
             return item

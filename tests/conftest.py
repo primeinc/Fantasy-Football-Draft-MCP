@@ -60,7 +60,7 @@ def _isolated_state_and_data(tmp_path_factory):
     """
     import os
 
-    from ffdraft import board, config, server, watch
+    from ffdraft import board, config, governor, improve, runner, server, ticks, watch
 
     root = tmp_path_factory.mktemp("ffdraft_state")
     state = root / "state"
@@ -75,6 +75,12 @@ def _isolated_state_and_data(tmp_path_factory):
         (config, "LEAGUES_PATH", state / "leagues.json"),
         (board, "STATE_DIR", state), (server, "STATE_DIR", state),
         (server, "DATA_DIR", data), (watch, "STATE_DIR", state),
+        (governor, "DECISION_POINTS", state / "decision_points.json"),
+        (governor, "CONTROLLER_STATE", state / "controller-state.json"),
+        (improve, "LEASE", state / "improvement-lease.json"),
+        (improve, "RUNS", state / "improvement-runs.jsonl"),
+        (ticks, "TICKS", state / "ticks"),
+        (runner, "LOCK", state / "runner.lock"), (runner, "RUN_DIR", state / "runner"),
     ]
     before = [(m, n, getattr(m, n)) for m, n, _ in patched]
     for m, n, v in patched:
