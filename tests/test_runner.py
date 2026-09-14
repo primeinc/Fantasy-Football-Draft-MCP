@@ -27,12 +27,16 @@ class FakeRun:
     def __call__(self, cmd, **kw):
         self.calls.append(cmd)
         if cmd[0] == "git":
-            out = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+            out = ""
+            if "status" in cmd:
+                out = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
             return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
         tree = cmd[cmd.index("--worktree") + 1] if "--worktree" in cmd else "fantasy"
         role = tree.split("-")[0]
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout=json.dumps({"result": "done\n" + self.verdicts.get(role, "")}), stderr="")
+        # The shape Claude Code 2.1.270 prints: an array of events ending in `result`.
+        events = [{"type": "system", "subtype": "init"},
+                  {"type": "result", "result": "done\n" + self.verdicts.get(role, "")}]
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(events), stderr="")
 
     def models(self):
         return [c for c in self.calls if c[0] != "git"]
@@ -79,6 +83,13 @@ class TestCommand:
         assert runner.last_json_line('text\n{"full_suite": true}\n') == {"full_suite": True}
         assert runner.last_json_line("no json") is None
 
+    def test_result_text_reads_the_event_array_and_a_single_object(self):
+        events = json.dumps([{"type": "system"}, {"type": "result", "result": "ok"}])
+        assert runner.result_text(subprocess.CompletedProcess([], 0, stdout=events)) == "ok"
+        single = json.dumps({"result": "ok"})
+        assert runner.result_text(subprocess.CompletedProcess([], 0, stdout=single)) == "ok"
+        assert runner.result_text(subprocess.CompletedProcess([], 0, stdout="plain")) == "plain"
+
 
 class TestModes:
     def test_degraded_starts_no_model(self, isolated):
@@ -115,6 +126,11 @@ class TestEngineering:
                                 "still_idle": True}
         assert out["promotion"]["promote"] is True
         assert out["outcome"] == "parked: branch worktree-fix-q-a; promotion not performed"
+        removes = [c for c in run.calls if c[0] == "git" and "remove" in c]
+        assert [c[-1].replace("\\", "/").rsplit("/", 1)[-1] for c in removes] == [
+            "fix-q-a", "verify-q-a", "review-q-a"]
+        deleted = [c[-1] for c in run.calls if c[0] == "git" and "-d" in c]
+        assert deleted == ["worktree-verify-q-a", "worktree-review-q-a"]
         assert not (isolated / "lease.json").exists()
         assert improve.attempted(isolated / "runs.jsonl") == {"q-a"}
         # Attempted once, the item is not picked again.

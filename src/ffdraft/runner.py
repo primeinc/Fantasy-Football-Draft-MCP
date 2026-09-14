@@ -39,7 +39,10 @@ LOCK = STATE_DIR / "runner.lock"
 RUN_DIR = STATE_DIR / "runner"
 LOCK_STALE_MINUTES = 150
 LEAGUE_ENV = "ESPN_LEAGUE_ID"
-BUDGET_USD = {"fantasy": 1.0, "fixer": 5.0, "verifier": 2.0, "oracle": 2.0}
+# Spend caps per `claude -p`. A one-word reply cost $0.28-0.40 here on
+# 2026-09-13: this machine's plugins, skills and CLAUDE.md are ~40k tokens of
+# cache creation before any work.
+BUDGET_USD = {"fantasy": 3.0, "fixer": 8.0, "verifier": 3.0, "oracle": 3.0}
 MAX_TURNS = {"fantasy": 20, "fixer": 60, "verifier": 30, "oracle": 30}
 FANTASY_TOOLS = ("mcp__fantasy-draft__game_tick", "mcp__fantasy-draft__controller_state",
                  "mcp__fantasy-draft__injury_report", "mcp__fantasy-draft__live_scores",
@@ -103,11 +106,33 @@ def last_json_line(text: str) -> dict | None:
 
 
 def result_text(proc: subprocess.CompletedProcess) -> str:
-    """The model's final text from `--output-format json`, else stdout."""
+    """The model's final text from `--output-format json`, else stdout. Claude
+    Code 2.1.270 prints a JSON array of events whose last `result` event
+    carries it (probed 2026-09-13)."""
     try:
-        return str(json.loads(proc.stdout).get("result") or "")
-    except (ValueError, AttributeError, TypeError):
+        doc = json.loads(proc.stdout)
+    except (ValueError, TypeError):
         return str(proc.stdout or "")
+    events = doc if isinstance(doc, list) else [doc]
+    results = [e for e in events if isinstance(e, dict) and e.get("type", "result") == "result"
+               and "result" in e]
+    return str(results[-1]["result"] or "") if results else str(proc.stdout or "")
+
+
+def remove_worktree(run: Runner, name: str, keep_branch: bool) -> str:
+    """Remove `.claude/worktrees/<name>`, which a headless `--worktree` run leaves
+    behind locked (probed 2026-09-13), and its branch unless `keep_branch`."""
+    path = str(REPO / ".claude" / "worktrees" / name)
+    done = run(["git", "-C", str(REPO), "worktree", "remove", "-f", "-f", path],
+               capture_output=True, text=True)
+    out = f"worktree {name}: rc {done.returncode}"
+    if not keep_branch:
+        # -d, not -D: a verify or review branch has no commits of its own, so a
+        # refusal here means it gained some and a human should look.
+        gone = run(["git", "-C", str(REPO), "branch", "-d", f"worktree-{name}"],
+                   capture_output=True, text=True)
+        out += f", branch rc {gone.returncode}"
+    return out
 
 
 def acquire_lock(now: pd.Timestamp, path: Path | None = None) -> bool:
@@ -223,10 +248,13 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
         return entry
 
     current = "fixer"
+    record["cleanup"] = []
     try:
         before = git_status(run)
         step("fixer", FIXER_PROMPT.format(id=item["id"], expires=lease["expires_utc"],
                                           item=item_json), FIXER_TOOLS, fixer_tree)
+        # The branch stays; the worktree goes so the verifier can check it out.
+        record["cleanup"].append(remove_worktree(run, fixer_tree, keep_branch=True))
         if git_status(run) != before:
             outcome = "failed: the main checkout changed while the fixer ran"
         else:
@@ -234,10 +262,12 @@ def _engineering(state: dict, controller: Callable[[str], str], league_id: str, 
             verify = step("verifier", VERIFIER_PROMPT.format(id=item["id"], branch=branch,
                                                              item=item_json),
                           VERIFIER_TOOLS, f"verify-{item['id']}")
+            record["cleanup"].append(remove_worktree(run, f"verify-{item['id']}", False))
             current = "oracle"
             review = step("oracle", ORACLE_PROMPT.format(id=item["id"], branch=branch,
                                                          item=item_json),
                           ORACLE_TOOLS, f"review-{item['id']}")
+            record["cleanup"].append(remove_worktree(run, f"review-{item['id']}", False))
             still = json.loads(controller(league_id)).get("mode") in ("IDLE", "DEEP_IDLE")
             gates = {"targeted_tests": bool((verify["verdict"] or {}).get("targeted_tests")),
                      "full_suite": bool((verify["verdict"] or {}).get("full_suite")),
