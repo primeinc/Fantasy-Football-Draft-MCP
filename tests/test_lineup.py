@@ -132,7 +132,7 @@ class TestStartingLineup:
         assert lineup.unfilled_slots(starters, _league()) == {}
 
     def test_the_value_column_is_the_caller_s_choice(self):
-        # set_lineup maximises a weekly number rather than the season one. Same
+        # weekly_lineup maximises a weekly number rather than the season one. Same
         # shape, different column, so the two questions share this function.
         rows = _rows(UNBALANCED)
         rows["week_points"] = [1.0] * len(rows)

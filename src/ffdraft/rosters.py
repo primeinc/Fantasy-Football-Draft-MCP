@@ -1,6 +1,6 @@
 """The in-season ESPN roster reader: mRoster entries into the board's row shape.
 
-One reader, two consumers. #44's `set_lineup` needs the roster it is choosing a
+One reader, two consumers. #44's `weekly_lineup` needs the roster it is choosing a
 lineup from; #47's trade evaluator needs both sides of a trade as they stand
 after waivers. Both used to have to invent it, and #47 currently reads the draft
 record, which is the right source in week 1 and the wrong one in week 9.

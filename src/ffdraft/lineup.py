@@ -131,7 +131,7 @@ def starting_lineup(rows: pd.DataFrame, league: LeagueSettings,
     and the flex does.
 
     `value` is the column the lineup maximises. It defaults to the season
-    projection, which is the right question for "who is on my bench"; `set_lineup`
+    projection, which is the right question for "who is on my bench"; `weekly_lineup`
     passes a weekly number for "who do I start in week 9". The two questions have
     the same shape and differ only in what is being maximised, which is why this
     takes a column rather than assuming one.
