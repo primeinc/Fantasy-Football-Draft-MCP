@@ -237,8 +237,8 @@ def test_session_pings_on_a_timer_despite_constant_inbound_traffic(tmp_path, mon
 
 def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
     w, _events = _watch(tmp_path, monkeypatch)
-    w.directory = {3: {"name": "adverse possession", "owners": ["Will Peters"]},
-                   9: {"name": "The Nine Squad", "owners": ["Cool Breeze"]},
+    w.directory = {3: {"name": "alpha home team", "owners": ["Home Owner"]},
+                   9: {"name": "The Nine Squad", "owners": ["Nine Owner"]},
                    15: {"name": "Fifteen Sideline Stars", "owners": ["Sam Example"]}}
     asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
     online_from_init = {r["team_id"] for r in w.room()["online"]}
@@ -249,13 +249,13 @@ def test_room_tracks_presence_and_chat(tmp_path, monkeypatch):
     asyncio.run(w.handle_line("CHAT 15 {DEF} 1788469125122 Kate+Pick+your+player+man"))
     room = w.room()
     online = {r["team_id"]: r["team"] for r in room["online"]}
-    assert online[9] == "The Nine Squad (Cool Breeze)"
+    assert online[9] == "The Nine Squad (Nine Owner)"
     assert 15 not in online
     assert room["chat"][-1]["text"] == "Kate Pick your player man"
     assert room["chat"][-1]["team"] == "Fifteen Sideline Stars (Sam Example)"
     assert room["on_the_clock"] == 115
     assert [(r["team"], r["event"]) for r in room["recent"]] == [
-        ("The Nine Squad (Cool Breeze)", "joined"),
+        ("The Nine Squad (Nine Owner)", "joined"),
         ("Fifteen Sideline Stars (Sam Example)", "left"),
     ]
     assert all(r["at_ms"] > 0 for r in room["recent"])
@@ -266,7 +266,7 @@ def test_room_names_the_next_pickers(tmp_path, monkeypatch):
     asyncio.run(w.handle_line("INIT " + FIXTURE.read_text().strip()))
     team_of_slot = {slot: team for team, slot in w.slot_of.items()}
     w.directory = {team_of_slot[14]: {"name": "Fourteen", "owners": ["Ada"]},
-                   3: {"name": "adverse possession", "owners": ["Will Peters"]}}
+                   3: {"name": "alpha home team", "owners": ["Home Owner"]}}
     asyncio.run(w.handle_line(f"JOINED {team_of_slot[14]} {{X}}"))
     asyncio.run(w.handle_line(f"LEFT {team_of_slot[13]} {{Y}} 1"))
 
@@ -277,7 +277,7 @@ def test_room_names_the_next_pickers(tmp_path, monkeypatch):
     assert up[0]["slot"] == 14 and up[0]["team"] == "Fourteen (Ada)" and up[0]["online"] is True
     assert up[1]["slot"] == 13 and up[1]["online"] is False and up[1]["mine"] is False
     assert [u["pick"] for u in w.upcoming(11) if u["mine"]] == [125]
-    assert w.upcoming(11)[-1]["team"] == "adverse possession (Will Peters)"
+    assert w.upcoming(11)[-1]["team"] == "alpha home team (Home Owner)"
 
 
 def test_set_queue_sends_full_list_and_returns_echo(tmp_path, monkeypatch):

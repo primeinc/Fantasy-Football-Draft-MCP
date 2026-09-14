@@ -246,7 +246,7 @@ class TestTool:
         pulls = [] if pulls is None else pulls
         answers = list(statuses)
         monkeypatch.setenv("ESPN_SWID", SWID)
-        payload = {"teams": [{"id": 3, "name": "adverse possession", "owners": ["{AAAA-1111}"],
+        payload = {"teams": [{"id": 3, "name": "alpha home team", "owners": ["{AAAA-1111}"],
                               "waiverRank": 12, "roster": {"entries": [
                                   {"playerId": pid, "lineupSlotId": slot}
                                   for pid, slot in SLOTS.items()]}}]}

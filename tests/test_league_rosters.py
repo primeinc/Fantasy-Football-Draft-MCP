@@ -29,7 +29,7 @@ def _payload():
              "roster": {"entries": [
                  _entry(4429160, "De'Von Achane", 2, 2, pro_team=15),
                  _entry(3054850, "Alvin Kamara", 2, 20, pro_team=18, status="OUT")]}},
-            {"id": 3, "name": "adverse possession", "owners": ["{AAAA-1111}"],
+            {"id": 3, "name": "alpha home team", "owners": ["{AAAA-1111}"],
              "roster": {"entries": [
                  _entry(3917315, "Kyler Murray", 1, 0, pro_team=16, status="OUT"),
                  _entry(-16033, "Ravens D/ST", 16, 16, pro_team=33, status=None),
@@ -38,7 +38,7 @@ def _payload():
              "roster": {"entries": []}},
         ],
         "members": [
-            {"id": "{AAAA-1111}", "firstName": "Will", "lastName": "Peters"},
+            {"id": "{AAAA-1111}", "firstName": "Home", "lastName": "Owner"},
             {"id": "{BBBB-2222}", "firstName": "Pat", "lastName": "Example"},
             {"id": "{CCCC-3333}"},
         ],
@@ -106,7 +106,7 @@ class TestTool:
         out, captured = self._run(monkeypatch)
         assert out["columns"] == ["player", "position", "pro_team", "slot", "status"]
         assert [t["team"] for t in out["teams"]] == [
-            "adverse possession", "Office Pool Team", "Empty Team"]
+            "alpha home team", "Office Pool Team", "Empty Team"]
         assert out["empty_rosters"] == ["Empty Team"]
         assert out["no_team_matches"] is None
         assert out["basis"]

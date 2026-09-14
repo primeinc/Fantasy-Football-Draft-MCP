@@ -80,7 +80,7 @@ def _entry(row):
 class TestTool:
     def run(self, monkeypatch, **kw):
         monkeypatch.setenv("ESPN_SWID", SWID)
-        payload = {"teams": [{"id": 3, "name": "adverse possession", "owners": ["{AAAA-1111}"],
+        payload = {"teams": [{"id": 3, "name": "alpha home team", "owners": ["{AAAA-1111}"],
                               "roster": {"entries": [{"playerId": p, "lineupSlotId": s}
                                                      for p, s in SLOTS.items()]
                                          + [{"playerId": 100 + i, "lineupSlotId": 20}

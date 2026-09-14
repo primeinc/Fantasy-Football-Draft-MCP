@@ -41,7 +41,7 @@ def _player(name, pid, pro, slot, live_pts, proj):
 
 LEAGUE = {
     "teams": [
-        {"id": 3, "name": "adverse possession", "owners": ["{ME}"],
+        {"id": 3, "name": "alpha home team", "owners": ["{ME}"],
          "roster": {"entries": [_player("Rhamondre Stevenson", 4569173, 17, 2, 3.3, 14.0),
                                 _player("Ja'Marr Chase", 4362628, 4, 4, 0.0, 19.9)]}},
         {"id": 7, "name": "Seven's Star Team", "owners": ["{K}"],
@@ -97,7 +97,7 @@ class TestTheTool:
         assert len(out["games"]) == 1
         g = out["games"][0]
         assert g["game"] == "NE @ SEA" and g["detail"] == "Halftime"
-        mine = g["players_by_fantasy_team"]["adverse possession"]
+        mine = g["players_by_fantasy_team"]["alpha home team"]
         assert mine[0]["player"] == "Rhamondre Stevenson" and mine[0]["live"] == 3.3
         assert mine[0]["box"]["rushing"]["YDS"] == "18"
         # Chase is not in this game.
@@ -134,7 +134,7 @@ class TestTheTool:
         out = json.loads(server.live_scores("1", 1))
         game = out["games"][0]
         assert game["state"] == "post"
-        assert list(game["players_by_fantasy_team"]) == ["adverse possession"]
+        assert list(game["players_by_fantasy_team"]) == ["alpha home team"]
 
     def test_no_game_on_is_said_not_inferred(self, monkeypatch):
         pre = {"events": [dict(SCOREBOARD["events"][2])]}
