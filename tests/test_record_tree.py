@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -124,6 +125,73 @@ def test_any_configured_filter_driver_is_emptied(repo, tmp_path, driver):
     assert blob == b"import os\n"
 
 
+def test_an_inherited_git_config_parameters_driver_does_not_run(repo, tmp_path, monkeypatch):
+    # git applies GIT_CONFIG_PARAMETERS after GIT_CONFIG_COUNT/KEY_n/VALUE_n, so an
+    # inherited `process` would override the runner's emptied one (devil, reproduced).
+    main, clone, base = repo
+    script, marker = marker_script(tmp_path, "inherited")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS",
+                       f"'filter.s.clean'='{script.as_posix()}' 'filter.s.process'='{script.as_posix()}'")
+    (main / ".git" / "info").mkdir(exist_ok=True)
+    (main / ".git" / "info" / "attributes").write_text("*.py filter=s\n")
+    (clone / "payload.py").write_bytes(b"import os\n")
+    # The control: an add in this environment runs the inherited driver.
+    subprocess.run(["git", f"--git-dir={main / '.git'}", f"--work-tree={clone}", "add", "-A"],
+                   capture_output=True, env=os.environ | {"GIT_INDEX_FILE": str(tmp_path / "c.index")})
+    assert marker.exists()
+    marker.unlink()
+    commit = runner.record_tree(subprocess.run, clone, base, "queue/t", "m")
+    assert not marker.exists()
+    blob = subprocess.run(["git", "cat-file", "blob", f"{commit}:payload.py"], cwd=main,
+                          capture_output=True, check=True).stdout
+    assert blob == b"import os\n"
+
+
+def test_an_inherited_git_config_file_does_not_hide_a_driver(repo, tmp_path, monkeypatch):
+    # GIT_CONFIG redirects only `git config` (angel): no_filters would list an empty
+    # file and find no driver while the add still reads the repository's config.
+    main, clone, base = repo
+    script, marker = marker_script(tmp_path, "hidden")
+    git("config", "filter.custom.clean", script.as_posix(), cwd=main)
+    (main / ".git" / "info").mkdir(exist_ok=True)
+    (main / ".git" / "info" / "attributes").write_text("*.py filter=custom\n")
+    (clone / "payload.py").write_bytes(b"import os\n")
+    empty = tmp_path / "empty.gitconfig"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG", str(empty))
+    # The controls: `git config` in this environment does not see the driver, and
+    # an add in it runs the driver.
+    listed = subprocess.run(["git", f"--git-dir={main / '.git'}", "config", "--list"],
+                            capture_output=True, text=True).stdout
+    assert "filter.custom.clean" not in listed
+    subprocess.run(["git", f"--git-dir={main / '.git'}", f"--work-tree={clone}", "add", "-A"],
+                   capture_output=True, env=os.environ | {"GIT_INDEX_FILE": str(tmp_path / "c.index")})
+    assert marker.exists()
+    marker.unlink()
+    commit = runner.record_tree(subprocess.run, clone, base, "queue/t", "m")
+    assert not marker.exists()
+    blob = subprocess.run(["git", "cat-file", "blob", f"{commit}:payload.py"], cwd=main,
+                          capture_output=True, check=True).stdout
+    assert blob == b"import os\n"
+
+
+def test_an_inherited_git_dir_does_not_redirect_the_config_listing(repo, tmp_path, monkeypatch):
+    main, _clone, _base = repo
+    other = tmp_path / "other"
+    other.mkdir()
+    git("init", "-q", cwd=other)
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    # The control: `-C main` in this environment reads the other repository's config.
+    listed = subprocess.run(["git", "-C", str(main), "config", "--list", "--show-origin",
+                             "--name-only", "-z"], capture_output=True, text=True).stdout
+    origins = {Path(o[len("file:"):]) for o in listed.split("\0")[0::2] if o.startswith("file:")}
+    assert other / ".git" / "config" in origins
+    assert main / ".git" / "config" not in origins and Path(".git/config") not in origins
+    monkeypatch.setattr(runner, "REPO", main)
+    files = runner.config_files(subprocess.run)
+    assert main / ".git" / "config" in files and other / ".git" / "config" not in files
+
+
 def test_a_nested_gitmodules_is_refused(repo):
     _main, clone, base = repo
     (clone / "sub").mkdir()
@@ -178,6 +246,18 @@ def test_config_files_follow_includes(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "REPO", main)
     files = runner.config_files(subprocess.run)
     assert extra in files and main / ".git" / "config" in files
+
+
+def test_config_files_reads_an_include_path_git_quotes(repo, tmp_path, monkeypatch):
+    main, _clone, _base = repo
+    extra = tmp_path / "backslash.gitconfig"
+    extra.write_text("[core]\n\tbare = false\n")
+    git("config", "include.path", str(extra), cwd=main)
+    # The control: the plain listing quotes this origin.
+    plain = git("config", "--list", "--show-origin", "--includes", "--name-only", cwd=main)
+    assert 'file:"' in plain
+    monkeypatch.setattr(runner, "REPO", main)
+    assert extra in runner.config_files(subprocess.run)
 
 
 def test_a_planted_hooks_directory_does_not_run(repo, tmp_path):

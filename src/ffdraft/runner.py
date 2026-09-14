@@ -78,7 +78,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -371,15 +371,30 @@ def release_lock(path: Path | None = None) -> None:
     (path or FANTASY_LOCK).unlink(missing_ok=True)
 
 
-def git(run: Runner, *args: str, **kw) -> subprocess.CompletedProcess:
+def _without_inherited_git(environ: Mapping[str, str]) -> dict[str, str]:
+    """`environ` without any GIT_* variable but the author and committer identity.
+    Inherited, GIT_CONFIG_PARAMETERS applies after the runner's GIT_CONFIG_COUNT and
+    restores an emptied driver; GIT_CONFIG redirects `git config` alone, so the
+    driver listing misses what `add` reads; GIT_DIR, GIT_ATTR_SOURCE and the object
+    and index variables point the runner's git at another repository or attributes."""
+    return {k: v for k, v in environ.items()
+            if not k.upper().startswith("GIT_")
+            or k.upper().startswith(("GIT_AUTHOR_", "GIT_COMMITTER_"))}
+
+
+def git(run: Runner, *args: str, env: dict[str, str] | None = None,
+        **kw) -> subprocess.CompletedProcess:
     """git with hooks read from a new empty directory and every other config-named
     program this runner's commands could start turned off: fsmonitor, commit
-    signing (gpg.program), the pager and auto gc. Diffs add DIFF_SAFE at the call."""
+    signing (gpg.program), the pager and auto gc. Diffs add DIFF_SAFE at the call.
+    The environment is the runner's without inherited GIT_* variables, plus `env`."""
     hooks = tempfile.mkdtemp(prefix="ffdraft-no-hooks-")
     try:
         return run(["git", "-c", f"core.hooksPath={hooks}", "-c", "core.fsmonitor=false",
                     "-c", "commit.gpgSign=false", "-c", "core.pager=cat", "-c", "gc.auto=0",
-                    *args], **({"capture_output": True, "text": True, "check": True} | kw))
+                    *args], **({"capture_output": True, "text": True, "check": True,
+                                "env": _without_inherited_git(os.environ) | (env or {})}
+                               | kw))
     finally:
         shutil.rmtree(hooks, ignore_errors=True)
 
@@ -428,10 +443,10 @@ def no_filters(run: Runner) -> dict[str, str]:
     lfs pointer and wrote .git/lfs. Passed as GIT_CONFIG_KEY_n/VALUE_n, not `-c`:
     a driver name may contain `=`, which `-c name=value` would split on."""
     names = git(run, f"--git-dir={GIT_DIR}", "config", "--list", "--includes",
-                "--name-only").stdout
+                "--name-only", "-z").stdout
     # A driver name may hold dots (`[filter "x.y"]` lists as filter.x.y.clean): the
     # section ends at the first dot and the variable starts after the last.
-    drivers = sorted({key[len("filter."):key.rindex(".")] for key in names.splitlines()
+    drivers = sorted({key[len("filter."):key.rindex(".")] for key in names.split("\0")
                       if key.startswith("filter.") and key.count(".") >= 2})
     pairs = [(f"filter.{d}.{k}", "") for d in drivers for k in FILTER_KEYS]
     pairs += [(f"filter.{d}.required", "false") for d in drivers]
@@ -443,12 +458,13 @@ def no_filters(run: Runner) -> dict[str, str]:
 
 def config_files(run: Runner) -> list[Path]:
     """Every file git reads configuration from for REPO, includes followed, as git
-    reports them. Listing runs no config-named program."""
+    reports them. Listing runs no config-named program. NUL-separated: without -z
+    git quotes an origin holding a backslash (`file:"C:\\\\x"`)."""
     listed = git(run, "-C", str(REPO), "config", "--list", "--show-origin", "--includes",
-                 "--name-only").stdout
+                 "--name-only", "-z").stdout
     out = []
-    for line in listed.splitlines():
-        origin = line.split("\t", 1)[0]
+    # -z lists origin NUL name NUL for each entry.
+    for origin in listed.split("\0")[0::2]:
         if origin.startswith("file:"):
             path = Path(origin[len("file:"):])
             out.append(path if path.is_absolute() else REPO / path)
@@ -564,8 +580,7 @@ def record_tree(run: Runner, tree: Path, base: str, branch: str, message: str) -
     files and the stored blobs, and a tree that changes one is refused before any
     ref exists. `update-ref` with an empty old value refuses a branch that already
     exists."""
-    env = (os.environ | {"GIT_INDEX_FILE": str(tree.parent / f"{tree.name}.index")}
-           | no_filters(run))
+    env = {"GIT_INDEX_FILE": str(tree.parent / f"{tree.name}.index")} | no_filters(run)
 
     def g(*args: str) -> str:
         return git(run, f"--attr-source={base}", f"--git-dir={GIT_DIR}",

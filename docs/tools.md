@@ -812,6 +812,10 @@ run the user is watching; `just runner tick ""` is unattended. The tick runs
   `core.fsmonitor`, commit signing, the pager and auto gc; every diff it reads
   runs with `--no-ext-diff --no-textconv`, and `commit-tree` with
   `--no-gpg-sign`. No program a git config names runs in a runner git call.
+  Runner git calls inherit no `GIT_*` variable but `GIT_AUTHOR_*` and
+  `GIT_COMMITTER_*`: an inherited `GIT_CONFIG_PARAMETERS` would restore an emptied
+  filter driver, `GIT_CONFIG` would hide one from the driver listing, and
+  `GIT_DIR` or `GIT_ATTR_SOURCE` would point git at another repository.
 
   One fingerprint is taken before the fixer and compared after the fixer, after
   the commit, after the tests and after the reviews. Files are compared first,

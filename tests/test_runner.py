@@ -342,6 +342,31 @@ class TestEngineering:
         assert improve.attempted(isolated / "runs.jsonl") == {"q-a"}
         assert tick([state("IDLE", allowed=True)])["outcome"] == "idle: nothing to take"
 
+    def test_no_runner_git_call_inherits_git_config_from_the_environment(self, isolated, monkeypatch):
+        # git applies GIT_CONFIG_PARAMETERS after GIT_CONFIG_COUNT, so an inherited one
+        # would override the emptied filter drivers record_tree passes.
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'filter.s.process'='evil'")
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "filter.s.process")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "evil")
+        for name in ("GIT_CONFIG", "GIT_DIR", "GIT_WORK_TREE", "GIT_ATTR_SOURCE",
+                     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+            monkeypatch.setenv(name, "elsewhere")
+        monkeypatch.setenv("GIT_AUTHOR_NAME", "kept")
+        run = FakeRun(verdicts=APPROVE)
+        assert tick([state("IDLE", allowed=True)], run=run)["outcome"].startswith("parked")
+        gits = [(cmd, env) for env, cmd in zip(run.envs, run.calls) if cmd[0] == "git"]
+        assert gits and all(env is not None and env.get("GIT_AUTHOR_NAME") == "kept"
+                            and env.get("GIT_CONFIG_KEY_0") != "filter.s.process"
+                            and not {"GIT_CONFIG_PARAMETERS", "GIT_CONFIG", "GIT_DIR",
+                                     "GIT_WORK_TREE", "GIT_ATTR_SOURCE", "GIT_OBJECT_DIRECTORY",
+                                     "GIT_ALTERNATE_OBJECT_DIRECTORIES"} & env.keys()
+                            for _cmd, env in gits)
+        recorded = [env for cmd, env in gits if "--attr-source=base123" in cmd]
+        # FakeRun lists no filter drivers, so the runner's own count is zero.
+        assert recorded and all(env["GIT_CONFIG_COUNT"] == "0" and "GIT_INDEX_FILE" in env
+                                for env in recorded)
+
     def test_espn_credentials_reach_only_the_fantasy_model(self, isolated, monkeypatch):
         monkeypatch.setenv("ESPN_S2", "cookie")
         monkeypatch.setenv("ESPN_SWID", "{swid}")
