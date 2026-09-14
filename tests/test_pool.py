@@ -45,6 +45,16 @@ def _players():
     ]
 
 
+def _period_players():
+    """`_players` as a pull for a scoring period returns them: every WAIVERS
+    entry filed FREEAGENT with another process time, as week 2's was on 2026-09-13."""
+    players = _players()
+    for e in players:
+        if e["status"] == "WAIVERS":
+            e["status"], e["waiverProcessDate"] = "FREEAGENT", WAIVER_MS + 7 * 86400000
+    return players
+
+
 class TestPoolRows:
     def rows(self):
         return pool.pool_rows(_players(), _ESPN_POSITION_NAMES, 2026, 1)
@@ -113,7 +123,7 @@ class TestTool:
             captured["weeks"].append(week)
             if raises:
                 raise raises
-            return _players()
+            return _players() if week is None else _period_players()
         monkeypatch.setattr(pool, "fetch_pool", fetch)
         return json.loads(server.league_free_agents("123", 1, **kw)), captured
 
@@ -130,6 +140,12 @@ class TestTool:
         assert out["census"] == {"FREEAGENT": 2, "ONTEAM": 1, "WAIVERS": 3}
         assert out["acquirable"] == 5 and out["matched"] == 5
         assert out["shape"] == pool.POOL_SHAPE and out["basis"]
+
+    def test_status_and_waiver_time_are_the_current_pulls(self, monkeypatch):
+        out, _ = self.run(monkeypatch)
+        brissett = out["players"][self.column(out, "player").index("Jacoby Brissett")]
+        row = dict(zip(out["columns"], brissett))
+        assert row["status"] == "WAIVERS" and row["waiver_clears"] == "2026-09-16 03:00 ET"
 
     def test_none_sorts_last_not_first(self, monkeypatch):
         out, _ = self.run(monkeypatch)

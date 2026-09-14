@@ -91,7 +91,14 @@ class TestParts:
 
 class TestTool:
     def run(self, monkeypatch, weekly_raises=False, **kw):
-        monkeypatch.setattr(pool, "fetch_pool", lambda *a, **k: [_wentz()])
+        def fetch(league_id, season, week=None):
+            if week is None:
+                return [_wentz()]
+            # A pull for a scoring period files a WAIVERS player FREEAGENT.
+            period = _wentz(status="FREEAGENT")
+            period["player"]["injuryStatus"] = "QUESTIONABLE"
+            return [period]
+        monkeypatch.setattr(pool, "fetch_pool", fetch)
         monkeypatch.setattr(sources, "schedules", _schedule)
 
         def weekly(*a, **k):
@@ -110,6 +117,11 @@ class TestTool:
         assert wentz["nflverse"] is None
         assert out["not_found"] == ["Nobody"] and out["nflverse_weeks"] == [1]
         assert out["unread"] == {} and out["matches_dropped"] == {}
+
+    def test_status_is_the_current_pulls_and_the_week_injury_the_periods(self, monkeypatch):
+        wentz = self.run(monkeypatch, names="Carson Wentz")["players"][0]
+        assert wentz["status"] == "WAIVERS" and wentz["injury_status"] == "ACTIVE"
+        assert wentz["week_injury_status"] == "QUESTIONABLE"
 
     def test_matches_past_three_are_named_not_dropped_silently(self, monkeypatch):
         out = self.run(monkeypatch, names="Carson Wentz")
