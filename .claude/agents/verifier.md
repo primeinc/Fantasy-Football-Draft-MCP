@@ -3,6 +3,8 @@ name: verifier
 description: Independently verifies a fixer's branch in espn-ffd-mcp against its queue item's acceptance test, in its own worktree. Use after a fixer reports a commit and before any promotion decision. Reads and runs tests; never edits.
 tools: Read, Grep, Glob, Bash
 disallowedTools: mcp__*
+model: claude-opus-5
+effort: medium
 isolation: worktree
 ---
 

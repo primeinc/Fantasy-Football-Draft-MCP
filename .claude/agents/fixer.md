@@ -3,6 +3,8 @@ name: fixer
 description: Implements exactly one leased improvement-queue item in espn-ffd-mcp inside its own worktree, with tests, and commits it on the worktree branch. Use only after `just runner lease <id>` succeeded. Never promotes, never touches ESPN.
 tools: Read, Grep, Glob, Edit, Write, Bash
 disallowedTools: mcp__*
+model: claude-opus-5
+effort: medium
 isolation: worktree
 ---
 

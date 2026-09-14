@@ -3,6 +3,8 @@ name: oracle-static
 description: Read-only adversarial review in espn-ffd-mcp of one improvement-queue item, one module, or one candidate diff. Use during IDLE or DEEP_IDLE ticks for discovery, and before promotion to re-review a fixer's branch. Never edits and never runs code.
 tools: Read, Grep, Glob
 disallowedTools: mcp__*
+model: claude-opus-5
+effort: medium
 isolation: worktree
 ---
 
