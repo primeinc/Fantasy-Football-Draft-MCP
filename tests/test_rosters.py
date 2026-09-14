@@ -311,20 +311,6 @@ class TestFetch:
         assert captured["cookies"] == {}
 
 
-class TestOnEspnBench:
-    def test_a_player_espn_starts_is_not_bench_whatever_his_value(self):
-        # Christian Watson, 2026-09-13: ESPN WR slot, offered as the drop.
-        rows = pd.DataFrame({"name": ["Watson", "Jeudy", "Hurt"],
-                             "lineup_slot": [4, rosters.BENCH_SLOT, rosters.IR_SLOT]})
-        assert list(rosters.on_espn_bench(rows)["name"]) == ["Jeudy"]
-
-    def test_an_unknown_slot_stays_and_a_frame_without_slots_is_whole(self):
-        rows = pd.DataFrame({"name": ["Known", "Unknown"], "lineup_slot": [2, None]})
-        assert list(rosters.on_espn_bench(rows)["name"]) == ["Unknown"]
-        draft = pd.DataFrame({"name": ["A", "B"]})
-        assert list(rosters.on_espn_bench(draft)["name"]) == ["A", "B"]
-
-
 class TestStarted:
     def test_bench_and_ir_are_not_starts(self):
         out = rosters.roster_rows([

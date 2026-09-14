@@ -498,7 +498,7 @@ magnitude at all. Had two windows disagreed in sign, the honest report would hav
 been the sweep and no number.
 
 The magnitudes themselves are deliberately not repeated here. They live in
-`waivers.ROLE_CHANGE_EVIDENCE`, which ships in every claim row, and
+`waivers.ROLE_CHANGE_EVIDENCE`, which ships in every `role_change` row, and
 `just rolechange` recomputes them; a figure copied into a second place is a
 figure that will disagree with the first as soon as the harness is retuned.
 Structural claims — how many windows, how many blocks, that every one was

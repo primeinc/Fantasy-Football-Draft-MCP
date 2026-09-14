@@ -1,13 +1,8 @@
 """Which of a roster's players start, and which sit.
 
-Written because two callers were answering it by guessing. `waivers` took the
-bench as a positional slice of board-ordered rows -- "everyone outside my top
-eight by rank" -- which on an ordinary receiver-heavy roster calls five
-receivers starters and offers the team's only kicker, only defense and only
-tight end as droppable. `drop_candidate` then picks the lowest bench value of
-those three, so the tool could recommend dropping the only kicker and leave a
-starting slot that cannot be filled. #44's `set_lineup` needs the same answer
-for a different reason, so it is one function rather than a second guess.
+By position against the league's slot counts, never by board rank: "everyone
+outside my top eight by rank" on an ordinary receiver-heavy roster calls five
+receivers starters and the only kicker, defense and tight end spare.
 
 The slot counts come from `league.starters`, which `board.espn_league_context`
 parses out of mSettings' `lineupSlotCounts`. Nothing here hardcodes a slot map:

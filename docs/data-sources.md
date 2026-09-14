@@ -112,16 +112,15 @@ returns nothing. Picks appear only once `draftDetail.drafted` is true.
 
 ### In-season waiver surfaces
 
-Read for `waiver_targets`, from `espn_dump_1734659820_2026_20260905-003140` at
-2026-09-05. Everything below was measured on that capture; the two gaps are named
-because they are the fields the tool depends on most.
+Read for `league_free_agents` and `waiver_candidates`, from
+`espn_dump_1734659820_2026_20260905-003140` (2026-09-05, mid-draft) unless a line
+names the 2026-09-13 pull.
 
 **Who is available.** Each `kona_player_info` entry carries `status` and `onTeamId`
 alongside `player`. `status` is one of `FREEAGENT` / `WAIVERS` / `ONTEAM` and `onTeamId`
-is 0 for an unrostered player. **This capture cannot exercise that split**: it was taken
-mid-draft, so all 1036 rows come back `FREEAGENT` with `onTeamId` 0 — the same blindness
-described above, one field further on. The FA/waivers/rostered distinction is unverified
-here and must be checked against a real in-season pull before anything relies on it.
+is 0 for an unrostered player. Mid-draft every row is `FREEAGENT` with `onTeamId` 0. The
+2026-09-13 pull: 1038 entries, 433 FREEAGENT, 380 WAIVERS (each with `waiverProcessDate`),
+225 ONTEAM.
 
 **Ownership**, under `player.ownership`: `percentOwned`, `percentStarted`,
 `percentChange` (the week-over-week move in roster rate, which is the pickup signal),

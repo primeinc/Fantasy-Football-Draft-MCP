@@ -1074,9 +1074,9 @@ takerate:
               f"value {float(head['pick_value']):.2f} survives "
               f"{float(head['p_available_next']):.2f}")
 
-# Who to claim off waivers this week, at what priority, dropping whom
+# Waiver claims for $week as ADD -> DROP pairs (waiver_candidates); submits nothing
 [script]
-waivers $week $league_id='' $limit='8':
+waivers $week $league_id='' $limit='3':
     import json
     import os
     import sys
@@ -1089,32 +1089,40 @@ waivers $week $league_id='' $limit='8':
     league_id = os.environ["league_id"] or env.get("ESPN_LEAGUE_ID", "")
     if not league_id:
         sys.exit("no league id: pass one or set ESPN_LEAGUE_ID in .mcp.json")
-    out = json.loads(server.waiver_targets(league_id, int(os.environ["week"]),
-                                           limit=int(os.environ["limit"])))
+    out = json.loads(server.waiver_candidates(league_id, int(os.environ["week"]),
+                                              limit=int(os.environ["limit"])))
     if "error" in out:
         sys.exit(out["error"])
-    c = out["census"]
-    print(f"week {out['week']}: {c['considered']} free agents considered, "
-          f"{c['role_moved']} with a moved role, {c['starter_out']} with a starter out, "
-          f"{c['claimed']} claimed  [{c['status']}]")
-    print(f"claim priority: {out['claim_priority_basis']}; {out['bench_slots']} bench slots, "
-          f"so every claim names a drop")
-    if not out["claims"]:
-        print("nothing worth claiming this week" if c["considered"]
-              else "the pool came back empty -- check the pull before reading this as quiet")
-    hdr = (f"{'#':>2}  {'player':<24}{'pos':<5}{'reason':<22}{'role':>7}{'cont':>7}"
-           f"{'owned':>7}  drop")
-    print()
-    print(hdr)
-    print("-" * len(hdr))
-    for c_ in out["claims"]:
-        drop = c_["drop"]["player"] or "-"
-        print(f"{c_['claim_priority']['order']:>2}  {c_['player'][:23]:<24}{c_['position']:<5}"
-              f"{c_['reason']:<22}{c_['role_change']:>7.3f}{c_['contingent_value']:>7.1f}"
-              f"{(c_['percent_owned'] or 0):>6.1f}%  {drop}")
-    print()
-    print("measured: role entropy only. role change, projection lag and contingent "
-          "value are unmeasured; the pool shape is unverified until an in-season pull.")
+    print(f"week {out['week']} for {out['my_team']}, waiver rank {out['waiver_rank']} "
+          f"of {out['teams']}")
+
+    def need_lines(label, rows):
+        for n in rows:
+            print(f"{label} {n['position']}: " + "; ".join(n["why"]))
+
+    def claim_lines(label, rows):
+        if not rows:
+            return
+        print(f"\n{label}")
+        for c in rows:
+            ev = c["add_evidence"]
+            print(f"{c['order']:>2}  ADD {c['add']:<24} DROP {c['drop'] or '-':<22} "
+                  f"proj {ev['claim_week_proj']}  last {ev['last_week_points']}  "
+                  f"clears {ev['waiver_clears'] or 'now'}"
+                  + (f"  (fallback for {c['fallback_for']})" if c["fallback_for"] else ""))
+
+    need_lines("need", out["needs"])
+    need_lines("at risk", out["at_risk"])
+    claim_lines("claims", out["claims"])
+    claim_lines("insurance", out["insurance"])
+    print("\ndrop options")
+    for d in out["drop_options"]:
+        print(f"    {d['player']:<24} proj {d['claim_week_proj']}  "
+              f"{'HOLD: ' + d['hold'] if d['hold'] else ''}")
+    for d in out["not_droppable"]:
+        print(f"    {d['player']:<24} not droppable: {d['reason']}")
+    for k, v in out["unread"].items():
+        print(f"unread {k}: {v}")
 
 # Does a role change through week w predict points in w+1..w+4? ($what: one|sweep|names)
 [script]

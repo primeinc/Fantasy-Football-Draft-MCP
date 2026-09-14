@@ -1,12 +1,8 @@
 """Who starts and who sits.
 
-The defect this exists to stop: `waivers` took the bench as a positional slice
-of board-ordered rows, so on a receiver-heavy roster it called five receivers
-starters and offered the only kicker, defense and tight end as droppable. The
-drop then went to the lowest bench value, which is a kicker or a defense on any
-roster, and the tool could recommend emptying a starting slot.
-
-The unbalanced roster below is the ordinary shape of a team that drafted best
+A bench taken as a positional slice of board-ordered rows calls five receivers
+starters on a receiver-heavy roster and the only kicker, defense and tight end
+spare. The unbalanced roster below is the ordinary shape of a team that drafted best
 available. A balanced fixture cannot see this, which is why nothing caught it.
 """
 from typing import Any

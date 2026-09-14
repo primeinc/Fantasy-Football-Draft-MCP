@@ -1,10 +1,8 @@
 """`waiver_candidates`: ADD x -> DROP y pairs derived from the read surfaces.
 
-The regression it exists for: `waiver_targets` offered Christian Watson (ESPN
-WR slot, 32.7 points in week 1) as the drop for every claim because it read a
-preseason bench value. Here a slotted starter is never a drop, and a bench
-player whose game has not been played (Tyrone Tracy, NYG on Sunday night) is
-held rather than offered.
+A slotted starter is never a drop (Christian Watson, ESPN WR slot, 32.7 points
+in week 1), and a bench player whose game has not been played (Tyrone Tracy,
+NYG on Sunday night) is held rather than offered.
 """
 import json
 
