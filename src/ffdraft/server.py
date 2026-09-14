@@ -2813,7 +2813,8 @@ def league_free_agents(league_id: str, week: int, position: str = "", names: str
     so far and `week_proj` its projection; null means ESPN has no row for the
     week, not zero. Status, ownership, waiver time and injury are ESPN's
     current ones; only the points come from the pull for `week`, because a pull
-    for a later period reports status as of that period.
+    for a later period reports every WAIVERS player FREEAGENT with a different
+    waiver time.
 
     `position` narrows (QB, RB, WR, TE, K, DST). `names` is a comma-separated
     list: matches come back as rows, a named player a team holds is listed in
@@ -3686,7 +3687,8 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
 
 
 @mcp.tool(structured_output=False)
-async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_SEASON) -> str:
+async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_SEASON,
+                     period: int = 0) -> str:
     """Write everything ESPN reports about this league's draft under
     `<out_dir>/espn_dump_<league>_<season>_<stamp>/`: every read-API view as
     its own JSON file, the player pool with ownership and ADP, league history,
@@ -3697,7 +3699,9 @@ async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_S
     file's as-of pick count and whether the state reconciles with the read
     API's `mDraftDetail`. Uses the watch's socket when one is running;
     otherwise opens the room once, which bumps any other connection for your
-    team. Returns the manifest with the absolute path."""
+    team. `period` also saves the pool and rosters pulled for that scoring
+    period, beside the current pulls. Returns the manifest with the absolute
+    path."""
     import asyncio
     import os
 
@@ -3714,7 +3718,8 @@ async def dump_draft(league_id: str, out_dir: str = ".", season: int = CURRENT_S
                                       os.environ.get("ESPN_S2"))
         team_id = info["my_team_id"]
     manifest = await asyncio.to_thread(
-        espn_dump.dump_draft, league_id, out_dir, season, None, None, init_b64, lines, team_id)
+        espn_dump.dump_draft, league_id, out_dir, season, None, None, init_b64, lines, team_id,
+        period or None)
     return _emit(manifest, indent=2)
 
 

@@ -1124,6 +1124,48 @@ waivers $week $league_id='' $limit='3':
     for k, v in out["unread"].items():
         print(f"unread {k}: {v}")
 
+# Fields that differ between the current pulls and the $week period pulls in one dump_draft(period=$week) directory
+[script]
+period-diff $dump $week:
+    import json
+    import os
+    from pathlib import Path
+
+    read = Path(os.environ["dump"]) / "read_api"
+    week = os.environ["week"]
+
+    def load(name):
+        return json.loads((read / name).read_text(encoding="utf-8"))
+
+    def pool(doc):
+        return {e["id"]: {"name": (e.get("player") or {}).get("fullName"),
+                          "status": e.get("status"), "onTeamId": e.get("onTeamId"),
+                          "waiverProcessDate": e.get("waiverProcessDate"),
+                          "injuryStatus": (e.get("player") or {}).get("injuryStatus")}
+                for e in doc.get("players") or []}
+
+    now = pool(load("kona_player_info.json"))
+    per = pool(load(f"kona_player_info_period_{week}.json"))
+    both = sorted(now.keys() & per.keys(), key=lambda k: str(now[k]["name"]))
+    print(f"kona_player_info: {len(now)} current, {len(per)} period {week}, {len(both)} in both")
+    for field in ("status", "onTeamId", "waiverProcessDate", "injuryStatus"):
+        diff = [k for k in both if now[k][field] != per[k][field]]
+        print(f"{field}: {len(diff)} differ")
+        for k in diff:
+            print(f"    {now[k]['name']}: current {now[k][field]} -> period {per[k][field]}")
+
+    def roster(doc):
+        return {e.get("playerId"): ((e.get("playerPoolEntry") or {}).get("player") or {})
+                for t in doc.get("teams") or [] for e in (t.get("roster") or {}).get("entries") or []}
+
+    rnow, rper = roster(load("mRoster.json")), roster(load(f"mRoster_period_{week}.json"))
+    diff = [k for k in rnow.keys() & rper.keys()
+            if rnow[k].get("injuryStatus") != rper[k].get("injuryStatus")]
+    print(f"mRoster injuryStatus: {len(rnow)} current, {len(rper)} period {week}, {len(diff)} differ")
+    for k in diff:
+        print(f"    {rnow[k].get('fullName')}: current {rnow[k].get('injuryStatus')} "
+              f"-> period {rper[k].get('injuryStatus')}")
+
 # Does a role change through week w predict points in w+1..w+4? ($what: one|sweep|names)
 [script]
 rolechange $what='one' $seasons='2022,2023,2024,2025' $recent='2' $prior='3' $blocks='2' $min_prior_games='0' $week='10':

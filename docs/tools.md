@@ -669,10 +669,11 @@ period so far, `week_proj` its projection, null where ESPN has no row. `names`
 returns the matches, lists a named player a team holds under `not_acquirable`,
 and a name the pool lacks under `not_found`. `census` counts the pool by status.
 Status, ownership, waiver time and injury come from the pull with no scoring
-period; points and projection from the pull for `week`. A later period's pull
-answers as of that period: on 2026-09-13 the week 2 pull had Jacoby Brissett
-FREEAGENT and Kyler Murray QUESTIONABLE while the current pull had Brissett on
-WAIVERS until 2026-09-16 03:00 ET and Murray OUT.
+period; points and projection from the pull for `week`. Paired capture
+2026-09-13 21:31 ET, week 1 current (`dump_draft(period=2)`, `just period-diff`):
+the week 2 pull had all 380 WAIVERS players FREEAGENT and 409 different waiver
+times; `onTeamId` and injury status matched in all 1041 pool and 225 roster
+entries.
 Shape verified live 2026-09-13: 1038 entries, 433 FREEAGENT, 380 WAIVERS, 225
 ONTEAM.
 

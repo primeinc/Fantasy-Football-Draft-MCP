@@ -134,6 +134,18 @@ class TestDumpDraft:
         assert any(e.startswith("draft socket: RuntimeError") for e in m["errors"])
         assert (Path(m["root"]) / "read_api" / "mSettings.json").exists()
 
+    def test_a_period_adds_the_pool_and_rosters_for_that_period(self, api, tmp_path):
+        # Oracle 2026-09-13: "a later-period pull reports status as of that
+        # period" rested on a pull no dump kept.
+        m = espn_dump.dump_draft("1734659820", tmp_path, 2026, swid="{A}", espn_s2="s",
+                                 period=2)
+        read = Path(m["root"]) / "read_api"
+        assert (read / "kona_player_info_period_2.json").exists()
+        assert (read / "mRoster_period_2.json").exists()
+        periods = [p for _u, p, _h, _c, _t in api if p.get("scoringPeriodId") == "2"]
+        assert [p["view"] for p in periods] == ["kona_player_info", ["mRoster", "mTeam"]]
+        assert len(api) == len(espn_dump.READ_VIEWS) + 4
+
     def test_no_live_section_without_watch_or_team(self, api, tmp_path):
         m = espn_dump.dump_draft("1734659820", tmp_path, 2026, swid="{A}", espn_s2="s")
         assert m["live_source"].startswith("none")

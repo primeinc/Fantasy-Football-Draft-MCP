@@ -72,8 +72,13 @@ def _write(path: Path, resp: requests.Response) -> dict:
 def dump_draft(league_id: str, out_dir: str | os.PathLike, season: int = CURRENT_SEASON,
                swid: str | None = None, espn_s2: str | None = None,
                init_b64: str | None = None, lines: list[tuple[int, str]] | None = None,
-               team_id: int | None = None) -> dict:
+               team_id: int | None = None, period: int | None = None) -> dict:
     """Write the dump and return its manifest (also saved as manifest.json).
+
+    `period` adds `kona_player_info_period_<n>.json` and `mRoster_period_<n>.json`,
+    the same pulls with `scoringPeriodId`, beside the current ones, so what a
+    period pull reports can be compared with the current pull taken moments
+    before (`just period-diff`).
 
     `init_b64` and `lines` come from a running watch. Without them, `team_id`
     opens the draft socket once to take a snapshot, which bumps any other
@@ -108,6 +113,19 @@ def dump_draft(league_id: str, out_dir: str | os.PathLike, season: int = CURRENT
     manifest["read_api"].append(entry)
     if entry["status"] != 200:
         manifest["errors"].append(f"kona_player_info: HTTP {entry['status']}")
+    if period:
+        pulls = (("kona_player_info", {"view": "kona_player_info"},
+                  {"X-Fantasy-Filter": json.dumps(PLAYER_FILTER)}),
+                 ("mRoster", {"view": ["mRoster", "mTeam"]}, None))
+        for name, params, headers in pulls:
+            label = f"{name}_period_{int(period)}"
+            entry = _write(read_dir / f"{label}.json",
+                           _get(base, {**params, "scoringPeriodId": str(int(period))},
+                                cookies, headers))
+            entry["view"] = label
+            manifest["read_api"].append(entry)
+            if entry["status"] != 200:
+                manifest["errors"].append(f"{label}: HTTP {entry['status']}")
     entry = _write(read_dir / "leagueHistory.json",
                    _get(f"{READS_HOST}/apis/v3/games/ffl/leagueHistory/{league_id}",
                         {"view": ["mSettings", "mTeam", "mDraftDetail"],

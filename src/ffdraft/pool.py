@@ -12,12 +12,13 @@ split 1 is a single scoring period.
 A player absent from every roster is not thereby addable; `status` and
 `onTeamId` together are the fact, and this module reads both.
 
-Status belongs to the pull with no scoring period. A pull for a later period
-answers as of that period: on 2026-09-13, with week 1 current, the week 2 pull
-had Jacoby Brissett FREEAGENT and Kyler Murray QUESTIONABLE while the current
-pull had Brissett on WAIVERS until 2026-09-16 03:00 ET and Murray OUT. So a
-caller takes status, ownership, waiver time and injury from `fetch_pool` with
-no week, and a week's totals from a pull for that week, through `stats`.
+Status and waiver time belong to the pull with no scoring period. Paired
+capture 2026-09-13 21:31 ET, week 1 current (`dump_draft(period=2)`, `just
+period-diff`): of 1041 entries the week 2 pull had all 380 WAIVERS players
+FREEAGENT and 409 different `waiverProcessDate`s; `onTeamId` and
+`injuryStatus` matched in every entry, and in all 225 mRoster entries. So a
+caller takes status and waiver time from `fetch_pool` with no week, and a
+week's totals from a pull for that week, through `stats`.
 """
 from __future__ import annotations
 
