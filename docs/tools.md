@@ -668,6 +668,11 @@ week_proj, injury_status, espn_id]`: `waiver_clears` is ESPN's
 period so far, `week_proj` its projection, null where ESPN has no row. `names`
 returns the matches, lists a named player a team holds under `not_acquirable`,
 and a name the pool lacks under `not_found`. `census` counts the pool by status.
+Status, ownership, waiver time and injury come from the pull with no scoring
+period; points and projection from the pull for `week`. A later period's pull
+answers as of that period: on 2026-09-13 the week 2 pull had Jacoby Brissett
+FREEAGENT and Kyler Murray QUESTIONABLE while the current pull had Brissett on
+WAIVERS until 2026-09-16 03:00 ET and Murray OUT.
 Shape verified live 2026-09-13: 1038 entries, 433 FREEAGENT, 380 WAIVERS, 225
 ONTEAM.
 
@@ -682,10 +687,32 @@ and draft picks are hidden by default and `counts` covers everything. `memberId`
 is never printed. A failed waiver claim has not been observed in a live pull, so
 how ESPN records one is unverified.
 
+### `waiver_candidates`
+
+Waiver claims as replacement pairs, derived rather than sourced:
+`waiver_candidates(league_id, week, limit=3)`, where `week` is the scoring
+period claimed for and the week before it supplies what happened. `needs` are
+starting positions (mSettings `lineupSlotCounts`) the roster cannot fill that
+week because a starter is OUT, IR, DOUBTFUL, suspended or on bye with nobody
+behind him. `claims` lists each need's best acquirable players in entry order,
+each naming the same drop, so the second is the fallback for the first;
+`claim_order_note` states that ESPN's handling of a later claim whose drop an
+earlier one used is unverified. `at_risk` names positions with nobody behind a
+QUESTIONABLE or DAY_TO_DAY starter, and `insurance` gives them the same ordered
+claims, conditional on the starter missing the game, each on a drop the needs
+did not take. Candidates are ordered by ESPN's claim-week
+projection, then last week's ESPN points. `drop_options` are ESPN BENCH-slot
+players only, cheapest claim-week projection first; a bench player whose
+played-week game is not final on ESPN's scoreboard is held; undroppable players
+and a player whose loss leaves his position short are in `not_droppable` with
+the reason. `upgrades` are optional adds projected above the cheapest drop. It
+submits nothing.
+
 ### `player_week`
 
 One week for named players, every part with its basis: `player_week(league_id,
-week, names)`. From ESPN's pool: status, owning team id, injury status,
+week, names)`. From ESPN's pool: status, owning team id and injury status now,
+`week_injury_status` as ESPN lists it for `week`,
 `week_points`, `week_proj`, and `espn_line`, the stat row ESPN applied, named by
 the espn-api stat map (`refs/cwendt94/espn-api/espn_api/football/constant.py`);
 a stat ESPN did not send is left out, not filled. From the nfldata schedule:

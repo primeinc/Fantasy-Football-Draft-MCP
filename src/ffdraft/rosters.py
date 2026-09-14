@@ -374,6 +374,21 @@ def read_rosters(league_id: str, board: pd.DataFrame, positions: dict[str, str],
         fetch_roster_teams(league_id, season, week, swid, espn_s2), board, positions)
 
 
+def on_espn_bench(rows: pd.DataFrame) -> pd.DataFrame:
+    """The rows ESPN does not have in a starting slot: BENCH, or no slot known.
+
+    A lineup chosen by projection can bench a player ESPN starts, and a drop
+    taken from that bench offered Christian Watson (ESPN WR slot, 32.7 points
+    in week 1) as the cut in the week 2 waiver report of 2026-09-13. IR is not
+    the bench. A frame without the live column is returned whole: the draft
+    record knows no slots.
+    """
+    if "lineup_slot" not in rows.columns or rows.empty:
+        return rows
+    slot = pd.to_numeric(rows["lineup_slot"], errors="coerce")
+    return rows[(slot.isna() | (slot == BENCH_SLOT)).to_numpy()]
+
+
 def started(rows: pd.DataFrame) -> pd.DataFrame:
     """The players currently in the starting lineup, by ESPN's own slotting.
 

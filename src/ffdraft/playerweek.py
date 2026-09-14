@@ -119,14 +119,18 @@ def published_weeks(weekly: pd.DataFrame, season: int) -> list[int]:
 
 def player_week_row(entry: dict, season: int, week: int, positions: dict[str, str],
                     schedule: pd.DataFrame | None, weekly: pd.DataFrame | None,
-                    snaps: pd.DataFrame | None) -> dict:
-    """Everything known about one pool entry's `week`."""
-    base = pool_rows([entry], positions, season, week)[0]
-    player = entry.get("player") or {}
+                    snaps: pd.DataFrame | None, period: dict | None = None) -> dict:
+    """Everything known about one pool entry's `week`. `entry` is from the
+    current pull; `period`, when given, is the same player's entry from a pull
+    for `week` and supplies the week's numbers (see `pool`)."""
+    base = pool_rows([entry], positions, season, week,
+                     stats=None if period is None else [period])[0]
+    player = (entry if period is None else period).get("player") or {}
     return {
         "player": base["player"], "position": base["position"], "pro_team": base["pro_team"],
         "espn_id": base["espn_id"], "status": base["status"], "on_team_id": base["on_team_id"],
         "injury_status": base["injury_status"],
+        "week_injury_status": base["period_injury_status"],
         "opponent": None if schedule is None else opponent(schedule, season, week, base["pro_team"]),
         "week_points": base["week_points"], "week_proj": base["week_proj"],
         "espn_line": espn_line(player, season, week),

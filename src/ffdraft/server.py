@@ -2518,11 +2518,105 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
 
 
 @mcp.tool(structured_output=False)
+def waiver_candidates(league_id: str, week: int, limit: int = 3,
+                      season: int = CURRENT_SEASON) -> str:
+    """Waiver claims for `week` as replacement pairs, ADD x -> DROP y, with evidence.
+
+    `week` is the scoring period the claim is for; the week before it is read
+    for what actually happened. `needs` are starting positions the roster cannot
+    fill that week (a starter OUT or on bye with nobody behind him). `claims`
+    lists, per need, the best acquirable players in the order to enter them,
+    each naming the same drop so a later one is the fallback for an earlier one;
+    `claim_order_note` says what about ESPN's processing of that is unverified.
+    `at_risk` are positions with nobody behind a QUESTIONABLE or DAY_TO_DAY
+    starter, and `insurance` the same claim list for them, conditional on the
+    starter missing the game; each insurance claim takes a drop the needs did
+    not. `drop_options` are ESPN bench players only, cheapest first; a bench player
+    whose played-week game is not final is held, never offered first.
+    `upgrades` are optional adds projected above the cheapest drop. Every row
+    carries ESPN's projection for the claim week and last week's ESPN points;
+    `basis` names each rule. A source that cannot be read is named in `unread`.
+
+    A derived view: `league_free_agents`, `league_rosters`, `player_week` and
+    `injury_report` are the evidence it is built on. It submits nothing.
+    """
+    from . import claims, live, pool, rosters
+
+    played = week - 1
+    try:
+        payload = rosters.fetch_roster_payload(league_id, season, week)
+        current = pool.fetch_pool(league_id, season)
+        claim_players = pool.fetch_pool(league_id, season, week)
+        settings = claims.fetch_settings(league_id, season)
+    except Exception as exc:
+        return _emit({"error": f"could not read the roster, pool or settings: "
+                               f"{type(exc).__name__}: {exc}", "week": week, "season": season})
+    teams = payload.get("teams") or []
+    my_id = rosters.my_team_id(teams)
+    if my_id is None:
+        return _emit({"error": "no team in this league is owned by ESPN_SWID", "week": week})
+    my_team = next(t for t in teams if t.get("id") == my_id)
+    unread: dict[str, str] = {}
+    played_rows: list[dict] = []
+    if played >= 1:
+        try:
+            played_rows = pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, played,
+                                         stats=pool.fetch_pool(league_id, season, played))
+        except Exception as exc:
+            unread["played_week_pool"] = f"{type(exc).__name__}: {exc}"
+    merged = claims.merge_weeks(
+        pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, week, stats=claim_players),
+        played_rows)
+    mine = [r for r in merged if r["on_team_id"] == my_id]
+    entries = (my_team.get("roster") or {}).get("entries") or []
+    slots = {e.get("playerId"): e.get("lineupSlotId") for e in entries}
+    in_pool = {r["espn_id"] for r in mine}
+    bye_teams: set[str] = set()
+    try:
+        bye_teams = claims.byes(sources.schedules(), season, week)
+    except Exception as exc:
+        unread["schedule"] = f"{type(exc).__name__}: {exc}"
+    pending = None
+    if played >= 1:
+        try:
+            scoreboard = live.fetch_scoreboard()
+            shown = (scoreboard.get("week") or {}).get("number")
+            pending = claims.pending_teams(live.games(scoreboard), shown, played)
+            if pending is None:
+                unread["scoreboard"] = (f"ESPN's scoreboard shows week {shown}, not week {played}; "
+                                        f"no bench player is held for an unfinished game")
+        except Exception as exc:
+            unread["scoreboard"] = f"{type(exc).__name__}: {exc}"
+    required = claims.required_starters(settings)
+    need_rows = claims.needs(mine, required, bye_teams)
+    risk_rows = claims.at_risk(mine, required, bye_teams)
+    drops, not_droppable = claims.drop_options(mine, slots, required, bye_teams, pending)
+    return _emit({
+        "week": week, "played_week": played if played >= 1 else None, "season": season,
+        "my_team": my_team.get("name"), "waiver_rank": my_team.get("waiverRank"),
+        "teams": len(teams), "required_starters": required,
+        "needs": need_rows,
+        "no_backup": claims.no_backup(mine, required, bye_teams),
+        "claims": claims.plan(need_rows, drops, merged, limit),
+        "at_risk": risk_rows,
+        "insurance": claims.plan(risk_rows, drops, merged, limit, drops_taken=len(need_rows)),
+        "claim_order_note": claims.CLAIM_ORDER_NOTE,
+        "drop_options": drops, "not_droppable": not_droppable,
+        "upgrades": claims.upgrades(merged, drops, limit),
+        "roster_not_in_pool": sorted(str(e.get("playerId")) for e in entries
+                                     if e.get("playerId") not in in_pool),
+        "unread": unread,
+        "basis": claims.BASIS,
+    })
+
+
+@mcp.tool(structured_output=False)
 def player_week(league_id: str, week: int, names: str, season: int = CURRENT_SEASON) -> str:
     """One week for each named player, every part with its basis.
 
     `names` is comma-separated; each matches ESPN's pool by name (up to three
-    players per name). Per player: status and owning team id, injury status,
+    players per name). Per player: status and owning team id and injury status
+    as ESPN holds them now, `week_injury_status` as ESPN lists it for `week`,
     `opponent` from the nfldata schedule (null on a bye), `week_points` and
     `week_proj` from ESPN, `espn_line` -- the stat row ESPN applied, named, with
     a stat ESPN did not send left out rather than zeroed -- and `nflverse`:
@@ -2539,7 +2633,8 @@ def player_week(league_id: str, week: int, names: str, season: int = CURRENT_SEA
     if not wanted:
         return _emit({"error": "names is required: a comma-separated list of players"})
     try:
-        players = pool.fetch_pool(league_id, season, week)
+        players = pool.fetch_pool(league_id, season)
+        period = {e.get("id"): e for e in pool.fetch_pool(league_id, season, week)}
     except Exception as exc:
         return _emit({"error": f"could not read ESPN's player pool: {type(exc).__name__}: {exc}",
                       "week": week, "season": season})
@@ -2566,7 +2661,9 @@ def player_week(league_id: str, week: int, names: str, season: int = CURRENT_SEA
         if not hits:
             not_found.append(name)
         rows += [playerweek.player_week_row(e, season, week, bd._ESPN_POSITION_NAMES,
-                                            schedule, weekly, snaps) for e in hits[:3]]
+                                            schedule, weekly, snaps,
+                                            period.get(e.get("id")) or {})
+                 for e in hits[:3]]
     return _emit({
         "week": week, "season": season, "players": rows, "not_found": not_found,
         "nflverse_weeks": None if weekly is None else playerweek.published_weeks(weekly, season),
@@ -2649,7 +2746,9 @@ def league_free_agents(league_id: str, week: int, position: str = "", names: str
     ESPN processes claims on a WAIVERS player (Eastern); a FREEAGENT can be
     added outright. `week_points` is ESPN's applied fantasy total for `week`
     so far and `week_proj` its projection; null means ESPN has no row for the
-    week, not zero.
+    week, not zero. Status, ownership, waiver time and injury are ESPN's
+    current ones; only the points come from the pull for `week`, because a pull
+    for a later period reports status as of that period.
 
     `position` narrows (QB, RB, WR, TE, K, DST). `names` is a comma-separated
     list: matches come back as rows, a named player a team holds is listed in
@@ -2663,11 +2762,12 @@ def league_free_agents(league_id: str, week: int, position: str = "", names: str
     if sort not in FREE_AGENT_SORTS:
         return _emit({"error": f"sort must be one of {', '.join(FREE_AGENT_SORTS)}; got {sort!r}"})
     try:
-        players = pool.fetch_pool(league_id, season, week)
+        current = pool.fetch_pool(league_id, season)
+        period = pool.fetch_pool(league_id, season, week)
     except Exception as exc:
         return _emit({"error": f"could not read ESPN's player pool: {type(exc).__name__}: {exc}",
                       "week": week, "season": season})
-    rows = pool.pool_rows(players, bd._ESPN_POSITION_NAMES, season, week)
+    rows = pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, week, stats=period)
     census: dict[str, int] = {}
     for r in rows:
         census[str(r["status"])] = census.get(str(r["status"]), 0) + 1
@@ -2777,7 +2877,7 @@ def _waiver_inputs(league_id: str, week: int, season: int):
     Separate from the tool so the tool is composition: this is the only part
     that touches the network or the caches, and a test replaces it whole.
     """
-    from . import lineup, sources, waivers
+    from . import lineup, rosters, sources, waivers
 
     league, _ = _settings()
     board = _build_board()
@@ -2827,7 +2927,7 @@ def _waiver_inputs(league_id: str, week: int, season: int):
     # hold at his position who project for more points than he does". A `mine`
     # trimmed to the bench would price a deep bench player as though the starters
     # ahead of him were absent -- this same defect from the other end.
-    bench = lineup.droppable(mine, league) if len(mine) else mine
+    bench = rosters.on_espn_bench(lineup.droppable(mine, league)) if len(mine) else mine
     # Rows the lineup cannot place carry no usable position, so they are neither
     # starters nor droppable. Reported rather than dropped from the answer: an
     # empty list means the roster is understood, and a non-empty one is a board
@@ -3689,7 +3789,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "pool", "transactions", "playerweek", "watchstore", "lineup_write", "injuries", "live")
+                "trade", "waivers", "pool", "transactions", "playerweek", "claims", "watchstore", "lineup_write", "injuries", "live")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

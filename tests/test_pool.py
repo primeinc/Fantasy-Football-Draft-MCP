@@ -72,6 +72,29 @@ class TestPoolRows:
                              _ESPN_POSITION_NAMES, 2026, 1)[0]
         assert row["week_proj"] is None
 
+    def test_status_from_the_current_pull_points_from_the_period_pull(self):
+        # 2026-09-13: the week 2 pull had Brissett FREEAGENT and Murray
+        # QUESTIONABLE; the current pull had Brissett on WAIVERS and Murray OUT.
+        current = [_entry(2578570, "Jacoby Brissett", 1, 22, actual=16.48),
+                   _entry(3917315, "Kyler Murray", 1, 16, status="ONTEAM", on_team=3,
+                          injury="OUT")]
+        week_two = [_entry(2578570, "Jacoby Brissett", 1, 22, status="FREEAGENT"),
+                    _entry(3917315, "Kyler Murray", 1, 16, status="ONTEAM", on_team=3,
+                           injury="QUESTIONABLE")]
+        for e, proj in zip(week_two, (12.75, 17.33)):
+            e["player"]["stats"].append(_stat(1, proj, week=2))
+        rows = pool.pool_rows(current, _ESPN_POSITION_NAMES, 2026, 2, stats=week_two)
+        brissett, murray = rows
+        assert brissett["status"] == "WAIVERS" and brissett["waiver_clears"]
+        assert brissett["week_proj"] == 12.75 and brissett["week_points"] is None
+        assert murray["injury_status"] == "OUT"
+        assert murray["period_injury_status"] == "QUESTIONABLE"
+
+    def test_a_player_the_period_pull_lacks_has_no_totals(self):
+        rows = pool.pool_rows([_entry(1, "Only Now", 2, 1, actual=9.0)],
+                              _ESPN_POSITION_NAMES, 2026, 1, stats=[])
+        assert rows[0]["week_points"] is None
+
     def test_acquirable_excludes_a_rostered_player(self):
         names = [r["player"] for r in pool.acquirable(self.rows())]
         assert "Kyler Murray" not in names and "Jacoby Brissett" in names
@@ -84,10 +107,10 @@ class TestPoolRows:
 
 class TestTool:
     def run(self, monkeypatch, raises=None, **kw):
-        captured: dict = {}
+        captured: dict = {"weeks": []}
 
-        def fetch(league_id, season, week):
-            captured.update(league_id=league_id, season=season, week=week)
+        def fetch(league_id, season, week=None):
+            captured["weeks"].append(week)
             if raises:
                 raise raises
             return _players()
@@ -100,7 +123,7 @@ class TestTool:
 
     def test_default_lists_acquirable_by_week_points_with_census(self, monkeypatch):
         out, captured = self.run(monkeypatch)
-        assert captured["week"] == 1
+        assert captured["weeks"] == [None, 1]
         assert self.column(out, "player")[:3] == ["Devaughn Vele", "Carson Wentz",
                                                  "Jacoby Brissett"]
         assert "Kyler Murray" not in self.column(out, "player")

@@ -11,6 +11,13 @@ split 1 is a single scoring period.
 
 A player absent from every roster is not thereby addable; `status` and
 `onTeamId` together are the fact, and this module reads both.
+
+Status belongs to the pull with no scoring period. A pull for a later period
+answers as of that period: on 2026-09-13, with week 1 current, the week 2 pull
+had Jacoby Brissett FREEAGENT and Kyler Murray QUESTIONABLE while the current
+pull had Brissett on WAIVERS until 2026-09-16 03:00 ET and Murray OUT. So a
+caller takes status, ownership, waiver time and injury from `fetch_pool` with
+no week, and a week's totals from a pull for that week, through `stats`.
 """
 from __future__ import annotations
 
@@ -68,8 +75,16 @@ def eastern(ms) -> str | None:
 
 
 def pool_rows(players: list[dict], positions: dict[str, str], season: int,
-              week: int) -> list[dict]:
-    """One row per pool entry, every player whatever his status."""
+              week: int, stats: list[dict] | None = None) -> list[dict]:
+    """One row per pool entry, every player whatever his status.
+
+    `players` supplies status, ownership, waiver clear time and injury; pass
+    the current pull. `stats`, when given, is a pull for `week`: the week's
+    totals and ESPN's injury status for that period come from it by ESPN id,
+    and a player it lacks has no totals rather than the current pull's.
+    """
+    period = (None if stats is None
+              else {e.get("id"): (e.get("player") or {}) for e in stats})
     rows = []
     for entry in players or []:
         player = entry.get("player") or {}
@@ -77,8 +92,10 @@ def pool_rows(players: list[dict], positions: dict[str, str], season: int,
         pos_id = player.get("defaultPositionId")
         pro = player.get("proTeamId")
         status = entry.get("status")
+        pid = entry.get("id", player.get("id"))
+        source = player if period is None else period.get(pid, {})
         rows.append({
-            "espn_id": entry.get("id", player.get("id")),
+            "espn_id": pid,
             "player": player.get("fullName"),
             "position": (positions.get(str(pos_id))
                          or (None if pos_id is None else f"position {pos_id}")),
@@ -87,10 +104,13 @@ def pool_rows(players: list[dict], positions: dict[str, str], season: int,
             "on_team_id": entry.get("onTeamId") or 0,
             "waiver_clears": eastern(entry.get("waiverProcessDate")) if status == "WAIVERS" else None,
             "injury_status": player.get("injuryStatus"),
+            # ESPN's undroppable list; None when the entry does not carry it.
+            "droppable": player.get("droppable"),
             "percent_owned": own.get("percentOwned"),
             "percent_change": own.get("percentChange"),
-            "week_points": week_total(player, season, week, ACTUAL_SOURCE),
-            "week_proj": week_total(player, season, week, PROJECTED_SOURCE),
+            "week_points": week_total(source, season, week, ACTUAL_SOURCE),
+            "week_proj": week_total(source, season, week, PROJECTED_SOURCE),
+            "period_injury_status": None if period is None else source.get("injuryStatus"),
         })
     return rows
 

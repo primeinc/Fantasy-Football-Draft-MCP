@@ -754,6 +754,30 @@ class TestTheTool:
         assert drops <= {"Waiver Pickup"}
         assert "Bench Man" not in drops
 
+    def test_a_player_espn_starts_is_never_the_drop(self, monkeypatch):
+        # 2026-09-13: the week 2 report offered Christian Watson, in ESPN's WR
+        # slot with 32.7 points, as the drop for every claim, because the bench
+        # was the complement of a lineup chosen by preseason projection.
+        from ffdraft import rosters
+
+        server = self.wire(monkeypatch, self.rows())
+        live = pd.DataFrame({
+            "name": ["Starter Back", "Slotted Receiver"], "position": ["RB", "WR"],
+            "team": ["BBB", "CCC"], "proj_points": [250.0, 60.0],
+            "adj_ppg": [16.0, 4.0], "exp_games": [14.0, 17.0],
+            "injury_risk": [0.3, 0.1], "bye_week": [np.nan, 9],
+            "draft_score": [90.0, 5.0], "adp": [20.0, 200.0],
+            "lineup_slot": [2, 4],
+        })
+        live["_key"] = live["name"].map(bd.norm_name)
+        monkeypatch.setattr(rosters, "fetch_roster_teams", lambda *a, **k: [{"id": 4}])
+        monkeypatch.setattr(rosters, "my_team_id", lambda teams, swid=None: 4)
+        monkeypatch.setattr(rosters, "rosters_by_team", lambda teams, b, positions: {4: live})
+        out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
+        assert out["roster_basis"] == server.ROSTER_LIVE
+        drops = {c["drop"]["player"] for c in out["claims"] if c.get("drop")}
+        assert "Slotted Receiver" not in drops
+
     def test_an_empty_pool_still_round_trips_and_says_it_is_broken(self, monkeypatch):
         server = self.wire(monkeypatch, [])
         out = json.loads(server.waiver_targets("1", WEEK), parse_constant=self._reject)
