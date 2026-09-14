@@ -2683,7 +2683,10 @@ def controller_state(league_id: str, season: int = CURRENT_SEASON) -> str:
     waiver clear time, the next decision point, a 15-minute recheck while
     observing. `idle_budget_minutes` is that minus now minus a 15-minute margin.
     `engineering` says whether engineering may run, for how long, and at which
-    risk class. The scoring period is the ESPN scoreboard's week. Written to
+    risk class. The scoring and matchup periods are the league's (mStatus); the
+    scoreboard supplies games, and while it shows a later week my roster adds
+    no actionable. A started, unlocked player on bye (nfldata schedule) is
+    actionable. Written to
     the state directory as controller-state.json. Decision points are read
     from decision_points.json there (`just decision-point`).
     """
@@ -2692,28 +2695,37 @@ def controller_state(league_id: str, season: int = CURRENT_SEASON) -> str:
     now = pd.Timestamp.now(tz="UTC").isoformat()
     unread: dict[str, str] = {}
     games: list[dict] = []
-    week = None
+    scoreboard_week = None
     try:
         scoreboard = live.fetch_scoreboard()
         games = live.games(scoreboard)
-        week = (scoreboard.get("week") or {}).get("number")
+        scoreboard_week = (scoreboard.get("week") or {}).get("number")
     except Exception as exc:
         unread["scoreboard"] = f"{type(exc).__name__}: {exc}"
+    # The league's periods, not the scoreboard's week: the NFL scoreboard rolls
+    # to the next week before the fantasy scoring and matchup periods do.
+    week = matchup = None
+    try:
+        status = live.fetch_league_status(league_id, season)
+        week = status.get("scoringPeriodId")
+        matchup = (status.get("status") or {}).get("currentMatchupPeriod")
+        if week is None or matchup is None:
+            raise RuntimeError("mStatus carried no scoringPeriodId or currentMatchupPeriod")
+    except Exception as exc:
+        unread["league"] = f"{type(exc).__name__}: {exc}"
     mine: list[dict] = []
     theirs: list[dict] = []
-    if week is not None:
+    if week is not None and matchup is not None:
         try:
             payload = live.fetch_league_live(league_id, season, int(week))
             team_id = rosters.my_team_id(payload.get("teams") or [])
             if team_id is None:
                 raise RuntimeError("no team in this league is owned by ESPN_SWID")
             mine = governor.roster(payload, team_id)
-            opponent = governor.opponent_id(payload, int(week), team_id)
+            opponent = governor.opponent_id(payload, int(matchup), team_id)
             theirs = [] if opponent is None else governor.roster(payload, opponent)
         except Exception as exc:
             unread["league"] = f"{type(exc).__name__}: {exc}"
-    elif "scoreboard" not in unread:
-        unread["league"] = "ESPN's scoreboard carried no week number"
     clears = None
     try:
         clears = pool.next_waiver_clear(league_id, season)
@@ -2722,8 +2734,22 @@ def controller_state(league_id: str, season: int = CURRENT_SEASON) -> str:
     points, err = governor.load_decision_points()
     if err:
         unread["decision_points"] = err
-    state = governor.controller_state(now, games, mine, theirs, clears, points, unread)
-    state = {"week": week, "season": season, **state}
+    bye_teams: set[str] = set()
+    if week is not None:
+        from . import claims
+
+        try:
+            bye_teams = claims.byes(sources.schedules(), season, int(week))
+        except Exception as exc:
+            unread["schedule"] = f"{type(exc).__name__}: {exc}"
+    ahead = scoreboard_week is not None and week is not None and scoreboard_week > week
+    if scoreboard_week is not None and week is not None and scoreboard_week < week:
+        unread["scoreboard_week"] = (f"ESPN's scoreboard shows week {scoreboard_week}; the league "
+                                     f"is in scoring period {week}, so no inactives are scheduled")
+    state = governor.controller_state(now, games, mine, theirs, clears, points, unread, bye_teams,
+                                      scoreboard_ahead=ahead)
+    state = {"week": week, "matchup_period": matchup, "scoreboard_week": scoreboard_week,
+             "season": season, **state}
     try:
         governor.write_state(state)
     except OSError as exc:
@@ -3205,7 +3231,9 @@ def game_tick(league_id: str, week: int, season: int = CURRENT_SEASON) -> str:
         "unread": unread,
     })
     state_path = ticks.path_for(league_id, week)
-    prev = ticks.load(state_path)
+    prev, prev_err = ticks.load(state_path)
+    if prev_err:
+        cur["unread"]["previous_tick"] = prev_err
     cur["changes_since_last_tick"] = ticks.delta(prev, cur)
     cur["last_tick_read_at"] = None if prev is None else prev.get("read_at")
     try:

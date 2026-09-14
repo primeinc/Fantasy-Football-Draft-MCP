@@ -20,12 +20,33 @@ def player(name, team, started=True, locked=False, status="ACTIVE"):
             "injury_status": status}
 
 
-def state(games=(), mine=(), theirs=(), clears=None, points=(), unread=None, now=NOW):
+def state(games=(), mine=(), theirs=(), clears=None, points=(), unread=None, now=NOW, byes=()):
     return governor.controller_state(now, list(games), list(mine), list(theirs), clears,
-                                     list(points), unread or {})
+                                     list(points), unread or {}, set(byes))
 
 
 class TestModes:
+    def test_a_started_player_on_bye_is_actionable(self):
+        # Absent from the scoreboard is not the test; the schedule's bye list is.
+        out = state([game("DAL @ NYG", {"DAL", "NYG"}, "pre")], [player("Puka Nacua", "LA")],
+                    byes={"LA"})
+        assert out["mode"] == "HOT"
+        assert out["fantasy_actionable"] == ["Puka Nacua starts and LA is on bye"]
+
+    def test_a_benched_or_locked_player_on_bye_is_not(self):
+        out = state([], [player("Nacua", "LA", started=False), player("Kupp", "LA", locked=True)],
+                    byes={"LA"})
+        assert out["fantasy_actionable"] == []
+
+    def test_a_team_missing_from_the_scoreboard_is_not_a_bye(self):
+        assert state([], [player("Nacua", "LA")])["fantasy_actionable"] == []
+
+    def test_a_scoreboard_ahead_of_the_league_week_adds_nothing_from_my_roster(self):
+        out = governor.controller_state(NOW, [game("DAL @ NYG", {"DAL", "NYG"}, "pre")],
+                                        [player("Nacua", "LA"), player("Tracy", "NYG", status="OUT")],
+                                        [], None, [], {}, {"LA"}, scoreboard_ahead=True)
+        assert out["fantasy_actionable"] == [] and out["mode"] != "HOT"
+
     def test_an_out_starter_before_his_lock_is_hot(self):
         out = state([game("DAL @ NYG", {"DAL", "NYG"}, "pre")],
                     [player("Tyrone Tracy Jr.", "NYG", status="OUT")])
@@ -136,14 +157,27 @@ class TestTool:
         monkeypatch.setenv("ESPN_SWID", "AAAA")
         monkeypatch.setattr(governor, "CONTROLLER_STATE", tmp_path / "state.json")
         monkeypatch.setattr(governor, "DECISION_POINTS", tmp_path / "none.json")
-        monkeypatch.setattr(live, "fetch_scoreboard", lambda *a, **k: {"week": {"number": 1},
+        # The scoreboard has rolled to week 2; the league is still in period 1.
+        monkeypatch.setattr(live, "fetch_scoreboard", lambda *a, **k: {"week": {"number": 2},
                                                                        "events": []})
+        monkeypatch.setattr(live, "fetch_league_status", lambda *a, **k: {
+            "scoringPeriodId": 1, "status": {"currentMatchupPeriod": 1}})
+        periods: list = []
+        monkeypatch.setattr(governor, "opponent_id",
+                            lambda payload, week, team: periods.append(week))
         monkeypatch.setattr(live, "fetch_league_live", lambda *a, **k: {
             "teams": [{"id": 3, "owners": ["{AAAA}"], "roster": {"entries": []}}], "schedule": []})
         monkeypatch.setattr(rosters, "my_team_id", lambda teams, swid=None: 3)
         monkeypatch.setattr(pool, "next_waiver_clear", lambda *a, **k: None)
+        import pandas as pd
+
+        from ffdraft import sources
+        monkeypatch.setattr(sources, "schedules", lambda: pd.DataFrame(
+            [{"season": 2026, "week": 1, "game_type": "REG", "home_team": "MIN",
+              "away_team": "GB"}]))
         out = json.loads(server.controller_state("123"))
-        assert out["week"] == 1 and out["mode"] == "DEEP_IDLE"
+        assert out["week"] == 1 and out["scoreboard_week"] == 2 and periods == [1]
+        assert out["mode"] == "DEEP_IDLE"
         assert json.loads((tmp_path / "state.json").read_text())["mode"] == "DEEP_IDLE"
 
     def test_a_scoreboard_failure_degrades(self, monkeypatch, tmp_path):
@@ -153,6 +187,7 @@ class TestTool:
         def boom(*a, **k):
             raise RuntimeError("503")
         monkeypatch.setattr(live, "fetch_scoreboard", boom)
+        monkeypatch.setattr(live, "fetch_league_status", boom)
         monkeypatch.setattr(pool, "next_waiver_clear", lambda *a, **k: None)
         out = json.loads(server.controller_state("123"))
         assert out["mode"] == "DEGRADED" and "scoreboard" in out["degraded_capabilities"]

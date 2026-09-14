@@ -738,7 +738,7 @@ Whether a tick belongs to fantasy operations or engineering:
 | mode | when | engineering |
 |---|---|---|
 | `DEGRADED` | the ESPN scoreboard or league document could not be read | no |
-| `HOT` | a started player of mine is OUT, INJURY_RESERVE, DOUBTFUL, SUSPENSION or NA before his lock, or a deadline is within 30 min | no |
+| `HOT` | a started, unlocked player of mine is on bye (nfldata schedule) or OUT, INJURY_RESERVE, DOUBTFUL, SUSPENSION or NA before his game, or a deadline is within 30 min | no |
 | `WATCH` | a game in progress with a player of mine, of my opponent, or of a team a pending decision point names | no |
 | `DEEP_IDLE` | 180+ minutes of idle budget, or nothing scheduled | up to 120 min, risk class up to B |
 | `IDLE` | otherwise | up to the budget if at least 15 min, risk class A |
@@ -748,38 +748,75 @@ minutes) for a game with an unlocked player of mine, ESPN's
 `waiverProcessDate` (a 25-row WAIVERS pull), the next decision point, and a
 15-minute recheck while observing. The recheck does not make a tick HOT.
 `idle_budget_minutes` is attention minus now minus 15. `engineering.lease_expires`
-is when engineering work stops. The scoring period is the ESPN scoreboard's
-week. The state is written to `~/.ffdraft/state/controller-state.json`.
+is when engineering work stops. The scoring and matchup periods come from the
+league's `mStatus` (`scoringPeriodId`, `status.currentMatchupPeriod`); the ESPN
+scoreboard supplies games and `scoreboard_week`. While the scoreboard shows a
+later week, my roster adds no actionable and no inactives; while it shows an
+earlier one, `degraded_capabilities.scoreboard_week` says so. The state is written
+to `~/.ffdraft/state/controller-state.json`.
 
 Decision points live in `~/.ffdraft/state/decision_points.json` as
 `{at, what, teams}`; `just decision-point 2026-09-15T21:13:00-04:00 "final claim
 order" MIN,SEA` adds one. Their teams become relevant for WATCH until the point
 passes.
 
-### Unattended ticks: `just runner tick|queue|pick|lease|release|candidate-risk|install`
+### Unattended ticks: `just runner tick|accept-unsandboxed|queue|pick|lease|release|install`
 
-`python -m ffdraft.runner tick` is one tick without a session; `just runner
-tick` runs it as a dry run (`just runner tick ""` for real). The tick runs
+`python -m ffdraft.runner tick [--dry-run] [--supervised]` is one tick without a
+session. `just runner tick` is a dry run; `just runner tick --supervised` is a
+run the user is watching; `just runner tick ""` is unattended. The tick runs
 `controller_state` itself:
 
 - DEGRADED: logged, no model.
-- HOT or WATCH: `game_tick` runs, and it now carries `changes_since_last_tick`
-  (from `~/.ffdraft/state/ticks/`). A `claude -p` with only the fantasy tools
-  starts when that or `fantasy_actionable` is non-empty; it may bench an OUT
-  starter for an ACTIVE one and never submits waiver claims.
+- HOT or WATCH, under a fantasy lock that engineering never holds: `game_tick`
+  runs and carries `changes_since_last_tick` (from `~/.ffdraft/state/ticks/`;
+  the week's first tick reports "no prior tick this week"). A report-only
+  `claude -p` starts when that is non-empty or `fantasy_actionable` differs from
+  the set last reported (`runner-fantasy-last.json`). It has the fantasy read
+  tools and no `submit_lineup`: it can say ACTION NEEDED, and it cannot write a
+  lineup or a claim. ACTION NEEDED is written only to the run record. A
+  `game_tick` error is a failed tick, not "no change".
 - IDLE or DEEP_IDLE: the first open item in `.agent/improvement-queue.jsonl`
-  that fits the budget and risk class, and has no run record, is leased.
-  Fixer, verifier and oracle-static then each run as `claude -p --worktree` with
-  `--permission-mode dontAsk`, their own tool allowlist and no MCP server. A
-  change to the main checkout's `git status` during the fixer aborts the run.
-  The lease is released with the outcome and the branch is parked; the
-  promotion verdict (`improve.promotion`) is recorded, never performed.
+  that fits the budget and risk class and has no run record is leased. The
+  lease is the engineering lock. The runner creates each worktree, then runs:
+  1. the fixer, on a new `queue/<id>` branch;
+  2. the runner's own commit of that work. It first checks that the worktree's
+     `.git` gitfile points inside `.git/worktrees` and that its HEAD is the
+     queue branch, then commits through that explicit git dir with hooks off.
+     The commit SHA is recorded;
+  3. the verifier, in a detached worktree at that commit;
+  4. `just check` there, whose exit code is the `full_suite` gate;
+  5. the angel and devil reviews of a diff the runner produced, in a fresh
+     worktree no tests ran in. They must return APPROVE and NO-EXPLOIT or
+     OVERCAUTIOUS.
 
-Every tick writes `~/.ffdraft/state/runner/<stamp>.json`, and a lock stops
-overlapping ticks. `just runner install` prints the Task Scheduler command and
-creates the task only with `confirm=install`. Running `claude -p` from Task
-Scheduler is not covered by Claude Code's documentation, so the first scheduled
-run is the verification.
+  Every agent runs with `--restricted` (file tools confined to its working
+  directory), on `claude-opus-5 --effort medium`, and in `dontAsk` mode. Its
+  definition comes from the main checkout's `.claude/agents`. Queue text and the
+  diff are fenced as data. A run whose init event shows another model or mode
+  fails the step.
+
+  One fingerprint is taken before the fixer and compared after the fixer, after
+  the commit and after the tests. It covers git status, `git diff HEAD`, every
+  ref except this item's branch, and the size and mtime of `.mcp.json`, the
+  Claude settings, `~/.gitconfig`, `.venv` config and `.pth` files, and
+  `.git/config` and hooks. A detected change fails the run, names the keys that
+  moved, and reverts nothing. Code that restores a file's size and mtime is not
+  detected; the user's acceptance below is the control.
+
+  The risk class and the promotion verdict come from the branch's actual diff.
+  `targeted_tests` is the verifier model's report, so no promotion may merge on
+  it. Nothing is merged.
+
+The fixer's and the verifier's `just check` executes code the fixer wrote, as
+the user, outside any sandbox. No Claude Code flag contains that, so an
+unattended tick takes engineering work only after the user's own words are
+recorded with `just runner accept-unsandboxed "<quote>" accept`.
+
+Every tick writes `~/.ffdraft/state/runner/<stamp>.json`. `just runner install`
+prints the Task Scheduler command and creates the task only with
+`confirm=install`. Running `claude -p` from Task Scheduler is not covered by
+Claude Code's documentation, so the first scheduled run is the verification.
 
 ### `player_week`
 

@@ -38,10 +38,12 @@ RUNS = STATE_DIR / "improvement-runs.jsonl"
 FIELDS = ("id", "title", "evidence", "scope", "defect", "estimated_minutes", "risk_class",
           "acceptance_test", "dependencies", "discovered_by", "last_attempt", "status")
 STATUSES = ("open", "leased", "done", "parked", "blocked")
+ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
 RISK_RANK = {"A": 0, "B": 1, "C": 2}
 PROTECTED = ("src/ffdraft/governor.py", "src/ffdraft/improve.py", "src/ffdraft/runner.py",
              "src/ffdraft/ticks.py", "src/ffdraft/lineup_write.py",
-             "src/ffdraft/claim_write.py", "runner.just", ".agent/", ".claude/", "CLAUDE.md",
+             "src/ffdraft/claim_write.py", "runner.just", "justfile", "tests/conftest.py",
+             ".agent/", ".claude/", "CLAUDE.md",
              ".mcp.json", "pyproject.toml", "uv.lock", ".venv/")
 PROMOTION_GATES = ("targeted_tests", "full_suite", "oracle_review", "still_idle")
 
@@ -70,6 +72,10 @@ def load(path: Path | None = None) -> tuple[list[dict], list[str]]:
             continue
         if item["status"] not in STATUSES:
             errors.append(f"line {n}: status {item['status']!r} is not one of {STATUSES}")
+            continue
+        # The id becomes a branch and a worktree directory name.
+        if not item["id"] or not set(str(item["id"])) <= ID_CHARS:
+            errors.append(f"line {n}: id {item['id']!r} is not [a-z0-9-_]")
             continue
         items.append(item)
     return items, errors

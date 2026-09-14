@@ -20,13 +20,18 @@ def path_for(league_id: str, week: int, root: Path | None = None) -> Path:
     return (root or TICKS) / f"game_tick_{league_id}_{int(week)}.json"
 
 
-def load(path: Path) -> dict | None:
+def load(path: Path) -> tuple[dict | None, str | None]:
+    """The previous tick, and why it could not be read. A missing file is no
+    previous tick; a corrupt one is an error, not a first tick."""
     if not path.exists():
-        return None
+        return None, None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+        tick = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(tick, dict):
+        return None, f"{path.name} is not a JSON object"
+    return tick, None
 
 
 def save(tick: dict, path: Path) -> None:
@@ -44,6 +49,10 @@ def delta(prev: dict | None, cur: dict) -> list[str]:
         if old.get(name) == new.get(name):
             continue
         as_of = f" (feed as_of {newest['as_of']})" if newest.get("player") == name else ""
+        if prev is None:
+            # No read saw a transition; say what is, not a change from ACTIVE.
+            out.append(f"{name}: {new.get(name)} (no prior tick this week){as_of}")
+            continue
         out.append(f"{name}: {old.get(name) or 'ACTIVE'} -> {new.get(name) or 'ACTIVE'}{as_of}")
 
     def key(d: dict) -> tuple:

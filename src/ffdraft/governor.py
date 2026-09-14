@@ -2,9 +2,10 @@
 
 Three facts, each from a read:
 
-  actionable   a started player of mine is OUT, INJURY_RESERVE, DOUBTFUL,
-               SUSPENSION or NA and his game has not locked: a lineup move ESPN
-               still accepts.
+  actionable   a started player of mine who is not locked and either is on bye
+               (nfldata schedule) or is OUT, INJURY_RESERVE, DOUBTFUL,
+               SUSPENSION or NA before his game: a lineup move ESPN still
+               accepts. None while the scoreboard is ahead of the league week.
   observing    a game in progress with a player of mine, of my opponent, or of
                a team a pending decision point names.
   attention    the earliest of: the inactives list for a game with an unlocked
@@ -51,8 +52,9 @@ BENCH_SLOT, IR_SLOT = 20, 21
 DECISION_POINTS = STATE_DIR / "decision_points.json"
 CONTROLLER_STATE = STATE_DIR / "controller-state.json"
 BASIS = {
-    "actionable": "started (ESPN lineup slot not BENCH/IR), injuryStatus in "
-                  + "/".join(OUT_STATUSES) + ", lineupLocked not true, game state pre",
+    "actionable": "started (ESPN lineup slot not BENCH/IR), lineupLocked not true, and either "
+                  "the team is on bye in the nfldata schedule or injuryStatus is in "
+                  + "/".join(OUT_STATUSES) + " with the game state pre",
     "observing": "ESPN scoreboard state `in` for a team of mine, my opponent's, or a "
                  "pending decision point's",
     "attention": f"kickoff minus {INACTIVES_LEAD_MINUTES} min for games with an unlocked "
@@ -149,9 +151,14 @@ def write_state(state: dict, path: Path | None = None) -> None:
 
 def controller_state(at: object, games: list[dict], mine: list[dict],
                      theirs: list[dict], waiver_clears, decision_points: list[dict],
-                     unread: dict[str, str]) -> dict:
+                     unread: dict[str, str], bye_teams: set[str] | frozenset[str] = frozenset(),
+                     scoreboard_ahead: bool = False) -> dict:
     """The mode for this tick, the next moment fantasy needs attention, and what
-    engineering may do until then. `at` is now, as anything `when` reads."""
+    engineering may do until then. `at` is now, as anything `when` reads.
+    `bye_teams` comes from the schedule, never from absence on the scoreboard.
+    `scoreboard_ahead` means the scoreboard shows a later week than the league's
+    scoring period: its games say nothing about this period's lineup, so my
+    roster contributes no actionable and no inactives attention."""
     now = when(str(at))
     if now is None:
         raise ValueError(f"unreadable time {at!r}")
@@ -159,7 +166,11 @@ def controller_state(at: object, games: list[dict], mine: list[dict],
     attention: list[tuple[pd.Timestamp, str]] = []
     actionable: list[str] = []
 
-    for p in mine:
+    for p in [] if scoreboard_ahead else mine:
+        if p["pro_team"] in bye_teams:
+            if p["started"] and p["locked"] is not True:
+                actionable.append(f"{p['player']} starts and {p['pro_team']} is on bye")
+            continue
         g = by_team.get(p["pro_team"])
         kick = None if g is None else when(g.get("date"))
         if g is None or g.get("state") != "pre" or p["locked"] is True or kick is None or kick <= now:

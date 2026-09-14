@@ -10,8 +10,8 @@ def test_an_unchanged_tick_has_no_delta():
     assert ticks.delta(BASE, dict(BASE)) == []
 
 
-def test_the_first_tick_reports_what_is_there():
-    assert ticks.delta(None, BASE) == ["Kyler Murray: ACTIVE -> QUESTIONABLE"]
+def test_the_first_tick_reports_what_is_there_without_inventing_a_transition():
+    assert ticks.delta(None, BASE) == ["Kyler Murray: QUESTIONABLE (no prior tick this week)"]
 
 
 def test_a_status_change_carries_the_feed_as_of_when_the_feed_is_about_him():
@@ -43,8 +43,9 @@ def test_a_gain_with_no_lock_ahead_is_not_reported():
 
 def test_the_state_file_round_trips(tmp_path):
     path = ticks.path_for("123", 1, tmp_path)
-    assert ticks.load(path) is None
+    assert ticks.load(path) == (None, None)
     ticks.save(BASE, path)
-    assert ticks.load(path) == BASE
+    assert ticks.load(path) == (BASE, None)
     path.write_text("{", encoding="utf-8")
-    assert ticks.load(path) is None
+    tick, err = ticks.load(path)
+    assert tick is None and err is not None and err.startswith("JSONDecodeError")

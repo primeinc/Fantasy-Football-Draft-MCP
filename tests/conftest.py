@@ -80,7 +80,8 @@ def _isolated_state_and_data(tmp_path_factory):
         (improve, "LEASE", state / "improvement-lease.json"),
         (improve, "RUNS", state / "improvement-runs.jsonl"),
         (ticks, "TICKS", state / "ticks"),
-        (runner, "LOCK", state / "runner.lock"), (runner, "RUN_DIR", state / "runner"),
+        (runner, "FANTASY_LOCK", state / "runner-fantasy.lock"),
+        (runner, "POLICY", state / "runner-policy.json"), (runner, "RUN_DIR", state / "runner"),
     ]
     before = [(m, n, getattr(m, n)) for m, n, _ in patched]
     for m, n, v in patched:

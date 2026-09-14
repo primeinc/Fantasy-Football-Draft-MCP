@@ -22,10 +22,12 @@ class TestQueue:
     def test_load_names_bad_lines_and_keeps_good_ones(self, tmp_path):
         path = tmp_path / "q.jsonl"
         path.write_text(json.dumps(item()) + "\n{not json\n" + json.dumps({"id": "x"}) + "\n"
-                        + json.dumps(item("q2", status="weird")) + "\n", encoding="utf-8")
+                        + json.dumps(item("q2", status="weird")) + "\n"
+                        + json.dumps(item("../q3")) + "\n", encoding="utf-8")
         items, errors = improve.load(path)
         assert [i["id"] for i in items] == ["q1"]
-        assert len(errors) == 3 and errors[1].startswith("line 3: missing")
+        assert len(errors) == 4 and errors[1].startswith("line 3: missing")
+        assert errors[3] == "line 5: id '../q3' is not [a-z0-9-_]"
 
     def test_a_missing_queue_is_an_error_not_an_empty_queue(self, tmp_path):
         assert improve.load(tmp_path / "none.jsonl")[1]
@@ -41,6 +43,9 @@ class TestRisk:
         assert improve.effective_risk(item(scope=["src/ffdraft/governor.py"])) == "C"
         assert improve.effective_risk(item(scope=["./.claude/agents/fixer.md"])) == "C"
         assert improve.effective_risk(item(scope=[".venv/Lib/x.py"])) == "C"
+        # Code `just check` runs: a fixer editing these runs anything as the user.
+        assert improve.effective_risk(item(scope=["tests/conftest.py"])) == "C"
+        assert improve.effective_risk(item(scope=["justfile"])) == "C"
         assert improve.effective_risk(item(risk="B", scope=["src/ffdraft/pool.py"])) == "B"
 
     def test_an_unknown_class_is_c(self):

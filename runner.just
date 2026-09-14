@@ -3,9 +3,30 @@
 
 set script-interpreter := ['sh', '-euc', 'v="$(just --evaluate venv)"; if [ -z "$v" ] || [ ! -x "$v/Scripts/python.exe" ]; then echo "just: no virtualenv python for this checkout. Run: just setup" >&2; exit 1; fi; exec "$v/Scripts/python.exe" "$0" "$@"']
 
-# One unattended governor tick (ffdraft.runner); $dry '--dry-run' leases nothing and starts no model
-tick $dry='--dry-run':
-    "{{ justfile_directory() }}/.venv/Scripts/python.exe" -m ffdraft.runner tick $dry
+# One governor tick (ffdraft.runner); $flags: --dry-run (default), --supervised, or empty for unattended
+tick $flags='--dry-run':
+    "{{ justfile_directory() }}/.venv/Scripts/python.exe" -m ffdraft.runner tick $flags
+
+# Record that the user accepts unattended fixer and verifier runs executing fixer-written code unsandboxed; $quote is the user's words
+[script]
+accept-unsandboxed $quote $confirm='':
+    import json
+    import os
+    import sys
+
+    import pandas as pd
+
+    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+    from ffdraft import runner
+
+    if os.environ["confirm"] != "accept" or not os.environ["quote"].strip():
+        sys.exit("not recorded: pass the user's own words as $quote and confirm=accept")
+    runner.POLICY.parent.mkdir(parents=True, exist_ok=True)
+    runner.POLICY.write_text(json.dumps({"unsandboxed_tests_accepted": True,
+                                         "user_quote": os.environ["quote"],
+                                         "recorded_utc": pd.Timestamp.now(tz="UTC").isoformat()}),
+                             encoding="utf-8")
+    print(f"recorded {runner.POLICY}")
 
 # The Task Scheduler command for the tick every $minutes; runs schtasks only when $confirm is 'install'
 [script]
@@ -106,17 +127,3 @@ release $outcome:
 
     print(json.dumps(improve.release(os.environ["outcome"], pd.Timestamp.now(tz="UTC").isoformat())))
 
-# The effective risk class of a branch's actual diff against HEAD, declared class $declared
-[script]
-candidate-risk $branch $declared:
-    import os
-    import subprocess
-    import sys
-
-    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
-    from ffdraft import improve
-
-    changed = subprocess.run(["git", "diff", "--name-only", f"HEAD...{os.environ['branch']}"],
-                             check=True, capture_output=True, text=True).stdout.split()
-    print("\n".join(changed))
-    print(improve.effective_risk({"risk_class": os.environ["declared"], "scope": changed}))
