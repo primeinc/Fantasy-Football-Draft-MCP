@@ -322,6 +322,15 @@ class TestTool:
         assert self.run(monkeypatch, espn_period=2, statuses=(None, None), pulls=every) == out
         assert any(d["last_week_points"] is not None for d in out["drop_options"])
 
+    def test_a_status_behind_the_pool_pulls_every_week(self, monkeypatch):
+        # mStatus still says 1 on both reads while the pool has moved to 2: the pull
+        # carries no week 1 rows, so it is not reused for the played week (angel).
+        stale, every = [], []
+        out = self.run(monkeypatch, espn_period=2, statuses=(1, 1), pulls=stale)
+        assert stale == [None, 2, 1]
+        assert self.run(monkeypatch, espn_period=2, statuses=(None, None), pulls=every) == out
+        assert any(d["last_week_points"] is not None for d in out["drop_options"])
+
     def test_an_unreadable_status_pulls_every_week(self, monkeypatch):
         pulls = []
         self.run(monkeypatch, statuses=(None,), pulls=pulls)

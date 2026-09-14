@@ -50,6 +50,9 @@ class _Resp:
 
 TEAMS = {8: "Andrea's Closing Team", 12: "Post Closing King"}
 PLAYERS = {4243331: "Waiver Back", 4682648: "Cut Receiver", 4429086: "Free Agent End"}
+# What the tool's name pull can answer: the lineup and draft movers too, so a wrong
+# include flag leaves them as ids and the rows differ.
+POOL_NAMES = PLAYERS | {4432665: "Lineup Mover", 4569987: "Draft Pick"}
 
 
 class TestRows:
@@ -92,7 +95,7 @@ class TestRows:
     def test_no_ids_no_request(self, monkeypatch):
         def get(*a, **k):
             raise AssertionError("no request expected")
-        monkeypatch.setattr(board.requests, "get",get)
+        monkeypatch.setattr(board.requests, "get", get)
         assert transactions.fetch_player_names("123", []) == {}
 
     def test_counts_cover_hidden_types(self):
@@ -101,7 +104,9 @@ class TestRows:
 
 
 class TestTool:
-    def run(self, monkeypatch, names_fail=False, **kw):
+    def run(self, monkeypatch, names_fail=False, unanswered=(), nameless=(), **kw):
+        """`unanswered` ids the name pull leaves out; `nameless` ids it returns
+        with no fullName."""
         captured: dict = {}
 
         def fetch(league_id, season, week):
@@ -117,15 +122,16 @@ class TestTool:
             flt = json.loads(headers["X-Fantasy-Filter"])
             captured.setdefault("name_pulls", []).append({"params": params, "filter": flt})
             wanted = set(flt["players"]["filterIds"]["value"])
-            return _Resp({"players": [{"id": pid, "player": {"fullName": n}}
-                                      for pid, n in PLAYERS.items() if pid in wanted]})
+            return _Resp({"players": [
+                {"id": pid, "player": {} if pid in nameless else {"fullName": n}}
+                for pid, n in POOL_NAMES.items() if pid in wanted and pid not in unanswered]})
 
         def whole_pool(*a, **k):
             raise AssertionError("the whole pool is not pulled for names")
 
         monkeypatch.setattr(transactions, "fetch_transactions", fetch)
         monkeypatch.setattr(board, "espn_league_directory", directory)
-        monkeypatch.setattr(board.requests, "get",get)
+        monkeypatch.setattr(board.requests, "get", get)
         monkeypatch.setattr(pool, "fetch_pool", whole_pool)
         return json.loads(server.league_transactions("123", 1, **kw)), captured
 
@@ -140,14 +146,27 @@ class TestTool:
 
     def test_same_rows_as_names_from_the_whole_pool(self, monkeypatch):
         out, _ = self.run(monkeypatch, include_lineup=True, include_draft=True)
-        expected = transactions.transaction_rows(_payload(), TEAMS, PLAYERS, True, True)
+        expected = transactions.transaction_rows(_payload(), TEAMS, POOL_NAMES, True, True)
         assert out["transactions"] == json.loads(json.dumps(expected))
+        assert "player 4432665" not in json.dumps(out) and out["unread"] == {}
+
+    def test_players_the_pull_leaves_out_are_counted_in_unread(self, monkeypatch):
+        out, _ = self.run(monkeypatch, unanswered={4243331})
+        assert out["unread"]["player_names"] == (
+            "1 of 3 moved players came back without a name; their ids stand in")
+        assert out["transactions"][1]["moves"][0][1] == "player 4243331"
+
+    def test_an_entry_without_a_name_stands_in_as_its_id(self, monkeypatch):
+        out, _ = self.run(monkeypatch, nameless={4682648})
+        assert out["transactions"][1]["moves"][1][1] == "player 4682648"
+        assert "None" not in json.dumps(out["transactions"])
+        assert out["unread"]["player_names"].startswith("1 of 3 ")
 
     def test_a_failed_player_name_pull_is_named(self, monkeypatch):
         def boom(*a, **k):
             raise RuntimeError("500")
         self.run(monkeypatch)
-        monkeypatch.setattr(board.requests, "get",boom)
+        monkeypatch.setattr(board.requests, "get", boom)
         out = json.loads(server.league_transactions("123", 1))
         assert out["unread"]["player_names"] == "RuntimeError: 500"
         assert out["transactions"][0]["moves"][0][1] == "player 4429086"

@@ -686,8 +686,8 @@ include_lineup=false, include_draft=false)`. Newest first; each move is
 carries its `processDate`; a direct move its `proposedDate`. Lineup-only moves
 and draft picks are hidden by default and `counts` covers everything. Player
 names come from one `kona_player_info` pull filtered to the shown moves' ids
-(`filterIds`, no limit), team names from mTeam; a failed lookup is named in
-`unread` and ids stand in. `memberId` is never printed. A failed waiver claim has not been observed in a live pull, so
+(`filterIds`, no limit), team names from mTeam; a failed lookup, or moved
+players the pull returns no name for, is named in `unread` and ids stand in. `memberId` is never printed. A failed waiver claim has not been observed in a live pull, so
 how ESPN records one is unverified.
 
 ### `waiver_candidates`
@@ -717,8 +717,9 @@ loss leaves his position short are in `not_droppable` with the reason.
 `upgrades` are optional adds projected above the cheapest drop at their own
 position. It submits nothing. It pulls the pool with no period, and a pool for
 the claim and played weeks, except a week mStatus names as current both before
-and after the no-period pull: ESPN's pull for the current period is that pull
-(paired capture 2026-09-14, 1041 entries equal).
+and after the no-period pull when that pull carries stat rows for the week:
+ESPN's pull for the current period is that pull (paired capture 2026-09-14, 1041
+entries equal).
 
 ### `preview_waiver_claim`
 

@@ -58,15 +58,16 @@ def fetch_player_names(league_id: str, ids: list[int], season: int = CURRENT_SEA
     request. The filter carries no `limit`: ESPN answers a limit without a sort
     with HTTP 400 FILTER_LIMIT_MISSING_SORT. Checked live 2026-09-14 on week 1's
     227 moved ids, D/ST included: all 227 returned, every name equal to the
-    whole pool's."""
+    whole pool's. An entry without a `fullName` is left out, so its id stands in."""
     if not ids:
         return {}
     flt = {"players": {"filterIds": {"value": [int(i) for i in ids]}}}
     resp = espn_league_get(league_id, season, {"view": "kona_player_info"}, swid, espn_s2,
                            player_filter=flt)
     resp.raise_for_status()
-    return {int(e["id"]): str((e.get("player") or {}).get("fullName"))
-            for e in resp.json().get("players") or [] if e.get("id") is not None}
+    return {int(e["id"]): str(name)
+            for e in resp.json().get("players") or []
+            if e.get("id") is not None and (name := (e.get("player") or {}).get("fullName"))}
 
 
 def _team(team_names: dict[int, str], team_id) -> str | None:
