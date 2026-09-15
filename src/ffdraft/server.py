@@ -2463,7 +2463,7 @@ async def draft_room(league_id: str, chat_limit: int = 10, ctx: Context = None) 
 
 
 ROSTER_LIVE = "ESPN's roster for the week"
-ROSTER_DRAFT = "the draft record; ESPN's roster could not be read"
+ROSTER_DRAFT = "the draft record: ESPN reports this league's draft is not complete"
 # `evaluate_trade` without `league_id`: chosen by the caller, never a fallback.
 TRADE_ROSTER_DRAFT = "the draft record: no league_id"
 
@@ -2493,7 +2493,10 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
 
     board = _build_board()
     state = _state()
-    mine, roster_basis = _my_roster(league_id, season, week, board, state)
+    try:
+        mine, roster_basis = _my_roster(league_id, season, week, board, state)
+    except RuntimeError as exc:
+        return _emit({"error": str(exc), "week": week, "season": season})
     try:
         feed, stamp = injuries.parse_injuries(injuries.fetch_injuries())
     except Exception as exc:
@@ -3038,12 +3041,13 @@ def _my_roster(league_id: str, season: int, week: int | None, board: pd.DataFram
                state) -> tuple[pd.DataFrame, str]:
     """My roster as ESPN holds it, and where it came from.
 
-    The draft record is right on draft night and wrong after the first add,
-    drop or trade, so ESPN's mRoster is the source; the draft record is the
-    fallback when the read fails (the read API withholds rosters until the
-    draft completes) and the basis names it, the way a priced row names its
-    basis. The frame is in the board's row shape either way, so every
-    consumer downstream reads the same columns.
+    ESPN's mRoster is the source. The draft record is used only when mRoster
+    gives no roster AND ESPN's `draftDetail` says the draft is not complete:
+    the read API withholds rosters until then, and on draft night the record is
+    the roster. Once the draft is complete the record is wrong after the first
+    add, drop or trade, so a roster that cannot be read raises `RuntimeError`
+    naming the read, as does a draft state that cannot be read. The frame is in
+    the board's row shape either way, so every consumer reads the same columns.
     """
     from . import rosters
 
@@ -3053,11 +3057,20 @@ def _my_roster(league_id: str, season: int, week: int | None, board: pd.DataFram
         if team_id is None:
             raise RuntimeError("no team in this league is owned by ESPN_SWID")
         mine = rosters.rosters_by_team(teams, board, bd._ESPN_POSITION_NAMES)[team_id]
-    except Exception:
-        return state.my_rows(board), ROSTER_DRAFT
-    if mine.empty:
-        return state.my_rows(board), ROSTER_DRAFT
-    return mine, ROSTER_LIVE
+        if not mine.empty:
+            return mine, ROSTER_LIVE
+        problem = "ESPN returned no roster entries for your team"
+    except Exception as exc:
+        problem = f"{type(exc).__name__}: {exc}"
+    try:
+        drafted = bool(bd.espn_league_context(league_id, season)["drafted"])
+    except Exception as exc:
+        raise RuntimeError(f"could not read your roster ({problem}) or whether the draft "
+                           f"is complete ({type(exc).__name__}: {exc})") from exc
+    if drafted:
+        raise RuntimeError(f"could not read your roster ({problem}); the draft is complete, "
+                           f"so the draft record is not your roster")
+    return state.my_rows(board), ROSTER_DRAFT
 
 
 def _lineup_inputs(league_id: str, week: int, season: int):
@@ -3630,7 +3643,10 @@ def stream_kdst(league_id: str, week: int, season: int = CURRENT_SEASON,
     team_of = {str(r["name"]): str(r["team"])
                for _, r in free[free["position"] == "K"].iterrows()
                if pd.notna(r.get("team"))}
-    mine, roster_basis = _my_roster(league_id, season, week, b, state)
+    try:
+        mine, roster_basis = _my_roster(league_id, season, week, b, state)
+    except RuntimeError as exc:
+        return _emit({"error": str(exc)})
     starters = {}
     for pos in ("DST", "K"):
         held = mine[mine["position"] == pos]

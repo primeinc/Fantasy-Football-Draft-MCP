@@ -44,7 +44,9 @@ PROTECTED = ("src/ffdraft/governor.py", "src/ffdraft/improve.py", "src/ffdraft/r
              "src/ffdraft/contain.py", "src/ffdraft/ticks.py", "src/ffdraft/lineup_write.py",
              "src/ffdraft/claim_write.py", "runner.just", "justfile", "tests/conftest.py",
              ".agent/", ".claude/", "CLAUDE.md",
-             ".mcp.json", "pyproject.toml", "uv.lock", ".venv/")
+             ".mcp.json", "pyproject.toml", "uv.lock", ".venv/",
+             # The write tools' entry points, dry-run defaults and send gates.
+             "src/ffdraft/server.py")
 PROMOTION_GATES = ("targeted_tests", "full_suite", "oracle_review", "still_idle")
 
 

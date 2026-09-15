@@ -8,6 +8,17 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**`injury_report` and `stream_kdst` answered from the draft record when mRoster failed**
+- A failed or empty roster read returned the draft-night roster under
+  `roster_basis`. The draft record is now used only while ESPN's `draftDetail`
+  says the draft is not complete; after it, the tool answers with an error
+  naming the failed read.
+
+**Unattended improvement agents could edit the write tools' gates**
+- `server.py` holds the dry-run defaults and send gates of `submit_lineup` and
+  the other write tools, and was not in `improve.PROTECTED`. It is, so any
+  queue item touching it is class C.
+
 **`evaluate_trade` scored a trade on facts from somewhere other than the league**
 - With `league_id`, a failed roster read scored the draft record, a failed
   `mStatus` or settings read scored weeks 1-14, and a failed pool read priced

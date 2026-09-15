@@ -46,6 +46,8 @@ class TestRisk:
         # Code `just check` runs: a fixer editing these runs anything as the user.
         assert improve.effective_risk(item(scope=["tests/conftest.py"])) == "C"
         assert improve.effective_risk(item(scope=["justfile"])) == "C"
+        # The write tools' dry-run defaults and send gates live here.
+        assert improve.effective_risk(item(risk="A", scope=["src/ffdraft/server.py"])) == "C"
         assert improve.effective_risk(item(risk="B", scope=["src/ffdraft/pool.py"])) == "B"
 
     def test_an_unknown_class_is_c(self):
