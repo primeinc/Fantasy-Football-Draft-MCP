@@ -435,6 +435,56 @@ class TestAnEmptySlotIsAWaiverPickupNotZero:
         assert out["points"] == pytest.approx(18.0 * 13, abs=0.05)
 
 
+def _live(names: list[str]) -> list[dict]:
+    rows = {r["name"]: r for r in FIXTURE}
+    return [{"name": n, "position": rows[n]["position"]} for n in names]
+
+
+class TestLiveRostersAreKeyedByTeam:
+    """Rosters read from ESPN are keyed by team id and carry every move since
+    the draft; the draft record still supplies the counterparty's tendencies."""
+
+    def test_sides_are_reported_and_named_by_team_id(self, fixture_board, by_slot):
+        live = {3: _live(MINE), 2: _live(THEIRS)}
+        out = trade.evaluate(fixture_board, live, _league(), my_slot=3, counterparty_slot=2,
+                             give=["Elite WR"], get=["Good WR", "Okay WR"], n_trials=10,
+                             blocks=2, seed=0, roster_key="team_id",
+                             counterparty_picks=by_slot[2])
+        assert out["ok"] is True, out.get("errors")
+        assert out["you"]["team_id"] == 3 and out["counterparty"]["team_id"] == 2
+        assert "slot" not in out["you"] and "slot" not in out["counterparty"]
+        assert out["counterparty"]["verdict"].startswith("team 2")
+        assert out["counterparty"]["tendencies"]["picks"] == len(THEIRS)
+
+    def test_a_player_moved_since_the_draft_is_on_his_new_roster(self, fixture_board, by_slot):
+        # "Their WR" was drafted by slot 2 and now sits on team 3. The draft
+        # record would refuse to let team 3 give him; the live roster does not.
+        live = {3: _live(MINE + ["Their WR"]),
+                2: _live([n for n in THEIRS if n != "Their WR"])}
+        out = trade.evaluate(fixture_board, live, _league(), my_slot=3, counterparty_slot=2,
+                             give=["Their WR"], get=["Good WR"], n_trials=10, blocks=2,
+                             seed=0, roster_key="team_id", counterparty_picks=by_slot[2])
+        assert out["ok"] is True, out.get("errors")
+        refused = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                                 counterparty_slot=2, give=["Their WR"], get=["Good WR"])
+        assert refused["ok"] is False
+
+    def test_a_refusal_names_the_team_not_a_slot(self, fixture_board):
+        live = {3: _live(MINE), 2: _live(THEIRS)}
+        out = trade.evaluate(fixture_board, live, _league(), my_slot=3, counterparty_slot=2,
+                             give=["Their RB"], get=["My QB"], roster_key="team_id")
+        assert out["ok"] is False
+        assert any("(team 3)" in e for e in out["errors"])
+        assert any("team 2's roster" in e for e in out["errors"])
+
+    def test_no_draft_record_for_the_counterparty_is_said(self, fixture_board):
+        live = {3: _live(MINE), 2: _live(THEIRS)}
+        out = trade.evaluate(fixture_board, live, _league(), my_slot=3, counterparty_slot=2,
+                             give=["Elite WR"], get=["Good WR"], n_trials=10, blocks=2,
+                             seed=0, roster_key="team_id", counterparty_picks=[])
+        assert out["counterparty"]["tendencies"]["note"] == "no draft record for this team"
+
+
 class TestParseOut:
     def test_weeks_ranges_and_lists(self):
         parsed, errors = trade.parse_out("Kyler Murray:2-3;6, Ja'Marr Chase:4")
@@ -600,6 +650,20 @@ class TestRefusals:
                              get=["Good WR", "Okay WR"])
         assert out["you"]["spread_note"] is None
         assert out["counterparty"]["spread_note"] is None
+
+    def test_a_stand_in_at_an_unscored_position_is_not_listed(self, fixture_board, by_slot):
+        # Kicker and defense never enter a simulated lineup, so a stand-in there
+        # contributes nothing to the total and is no warning about it. Live, ESPN's
+        # "Ravens D/ST" listed 78 points the delta never contained.
+        picks = {1: by_slot[1] + [{"overall": 99, "slot": 1, "name": "Ravens D/ST",
+                                   "player_id": None, "position": "DST"}],
+                 2: by_slot[2]}
+        out = trade.evaluate(_priced(fixture_board), picks, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"])
+        assert out["ok"] is True, out.get("errors")
+        assert out["stand_ins"]["yours"] == []
+        assert out["you"]["spread_note"] is None
 
     def test_a_bystander_nothing_can_place_is_named_not_silently_dropped(
             self, fixture_board, by_slot):

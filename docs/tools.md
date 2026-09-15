@@ -555,8 +555,17 @@ cannot model fill their slot at 0 points.
 ### `evaluate_trade`
 Score a proposed trade for both sides over the rest of the season. `give` and
 `get` are comma-separated names: `give` leaves your roster, `get` arrives on it.
-`counterparty_slot` is their draft slot; with a running watch for `league_id`
-both teams are named.
+The counterparty is `counterparty_team` (a team id, or text in the team or owner
+name) or `counterparty_slot` (their draft slot).
+
+**Rosters.** With `league_id`, both rosters are ESPN's `mRoster` as it stands:
+every add, drop and trade since the draft is in them. Sides are reported under
+`team_id` with the team named, and `roster_basis` says `espn mRoster`. The
+counterparty's `tendencies` still come from their draft picks, found through
+the `mDraftDetail` team-to-slot map. When the roster read fails or returns no
+entries, the draft record is used, `roster_basis` names it, the failure is under
+`unread`, and `counterparty_slot` is required. A counterparty that matches no
+team, or several, refuses with the league's teams listed.
 
 **Window.** `first_week` through `last_week`, inclusive. With `league_id` and
 0, the window opens at the league's current scoring period (ESPN `mStatus`) and
@@ -580,10 +589,9 @@ not 0, and a rostered starter below it is streamed over, so a backup is worth
 his margin over a free agent rather than a full game. `empty_slots_before` and
 `empty_slots_after` count the slots no rostered player could fill.
 
-Rosters come from the draft record: a player added after the draft is not on
-either roster. A roster player the board cannot price who is not in the trade is
-stood in at replacement level and listed under `stand_ins`; a traded player with
-no board row refuses.
+A roster player the board cannot price who is not in the trade is stood in at
+replacement level and listed under `stand_ins`; a traded player with no board
+row refuses.
 
 Each side's roster is simulated week by week on its own starting lineup, and
 each side is reported as points before and after, per-position depth before and

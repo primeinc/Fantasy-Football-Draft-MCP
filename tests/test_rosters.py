@@ -215,6 +215,21 @@ class TestRosterRows:
         assert UNPRICED in out.columns
 
 
+class TestDraftSlotByTeam:
+    def test_a_team_s_slot_is_its_earliest_pick_s_round_position(self):
+        # Listed out of order on purpose: round 2's pick for team 3 comes first.
+        detail = {"picks": [
+            {"teamId": 3, "overallPickNumber": 29, "roundPickNumber": 13},
+            {"teamId": 3, "overallPickNumber": 4, "roundPickNumber": 4},
+            {"teamId": 2, "overallPickNumber": 9, "roundPickNumber": 9},
+        ]}
+        assert rosters.draft_slot_by_team(detail) == {3: 4, 2: 9}
+
+    def test_a_payload_with_no_picks_maps_no_teams(self):
+        assert rosters.draft_slot_by_team({}) == {}
+        assert rosters.draft_slot_by_team({"picks": [{"teamId": 1}]}) == {}
+
+
 class TestRostersByTeam:
     def test_keys_by_espn_team_id_not_by_draft_slot(self):
         teams = [{"id": 7, "roster": {"entries": [_entry(3001, "Real Back", 2)]}},

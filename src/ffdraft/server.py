@@ -3775,16 +3775,82 @@ def draft_strength(league_id: str = "") -> str:
                        "teams": tbl.to_dict(orient="records")}, indent=2)
 
 
+def _live_trade_rosters(league_id: str, season: int, counterparty_team: str,
+                        counterparty_slot: int, board: pd.DataFrame) -> dict:
+    """Both sides' rosters as ESPN holds them now, for `evaluate_trade`.
+
+    Players are named through `rosters.rosters_by_team`, the one roster join: a
+    player the board carries gets the board's name (matched by ESPN id first),
+    so a defense ESPN calls "Ravens D/ST" is priced as the board's "Baltimore
+    Ravens D/ST" rather than stood in by a name that matches nothing.
+
+    Raises when the rosters cannot be read or your team has no entries, so the
+    caller falls back to the draft record and says so. Returns `error` rather
+    than raising when the read worked but the counterparty names no single
+    team: that is the caller's input to fix, not a reason to score a different
+    source. The draft-slot map is read for the counterparty's draft tendencies
+    and for resolving `counterparty_slot`; a failed read of it is named under
+    `unread`.
+    """
+    from . import rosters
+
+    payload = rosters.fetch_roster_payload(league_id, season)
+    frames = rosters.rosters_by_team(payload.get("teams") or [], board,
+                                     bd._ESPN_POSITION_NAMES)
+    by_team = {tid: [{"name": str(r["name"]), "position": r.get("position")}
+                     for r in frame.to_dict("records")]
+               for tid, frame in frames.items()}
+    mine = rosters.my_team_id(payload.get("teams") or [])
+    if mine is None:
+        raise RuntimeError("no team in this league is owned by ESPN_SWID")
+    if not by_team.get(mine):
+        raise RuntimeError("ESPN returned no roster entries for your team")
+    directory = bd.league_directory_from_mteam(payload)
+    unread: dict[str, str] = {}
+    slots: dict[int, int] = {}
+    try:
+        resp = bd.espn_league_get(league_id, season, {"view": "mDraftDetail"}, timeout=20)
+        resp.raise_for_status()
+        slots = rosters.draft_slot_by_team(resp.json().get("draftDetail") or {})
+    except Exception as exc:
+        unread["draft_slots"] = f"{type(exc).__name__}: {exc}"
+    needle = counterparty_team.strip().lower()
+    if needle:
+        matches = [tid for tid, d in directory.items()
+                   if needle == str(tid) or needle in d["name"].lower()
+                   or any(needle in o.lower() for o in d["owners"])]
+        asked = f"counterparty_team {counterparty_team!r}"
+    elif counterparty_slot:
+        matches = [tid for tid, s in slots.items() if s == counterparty_slot]
+        asked = f"counterparty_slot {counterparty_slot}"
+    else:
+        matches, asked = [], "no counterparty_team or counterparty_slot"
+    if len(matches) != 1:
+        return {"error": f"{asked} matches {len(matches)} teams, not one",
+                "teams": {tid: d["name"] for tid, d in sorted(directory.items())},
+                "unread": unread}
+    return {"by_team": by_team, "mine": mine, "theirs": matches[0],
+            "directory": directory, "slots": slots, "unread": unread}
+
+
 @mcp.tool(structured_output=False)
 def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
                    league_id: str = "", n_trials: int = 0, blocks: int = 0,
                    seed: int = 0, first_week: int = 0, last_week: int = 0,
-                   out: str = "", season: int = CURRENT_SEASON) -> str:
+                   out: str = "", season: int = CURRENT_SEASON,
+                   counterparty_team: str = "") -> str:
     """Score a proposed trade for both sides over the rest of the season.
 
     `give` and `get` are comma-separated player names: `give` leaves your roster,
-    `get` arrives on it. `counterparty_slot` is their draft slot; with a running
-    watch for `league_id` the teams are named too.
+    `get` arrives on it. The counterparty is `counterparty_team` -- a team id,
+    or text in the team or owner name -- or `counterparty_slot`, their draft
+    slot.
+
+    With `league_id`, both rosters are ESPN's mRoster as it stands, so every add,
+    drop and trade since the draft is in them, and each side is reported under
+    `team_id` and named. When that read fails or returns empty rosters, the
+    draft record is used and `roster_basis` says so; `counterparty_slot` is
+    required there.
 
     The window is `first_week` through `last_week`, inclusive. With `league_id`
     and 0 they are read from the league: the current scoring period (ESPN
@@ -3803,10 +3869,7 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
     between disjoint seed blocks beside it. A side whose blocks disagree in sign
     is reported as no call rather than as a win: that difference is inside the
     harness's own noise. Both sides can gain, because the same player is worth
-    different points to two different lineups.
-
-    Rosters come from the draft record, so a player added after the draft is not
-    on it yet."""
+    different points to two different lineups."""
     from . import live
 
     state = _state()
@@ -3852,25 +3915,55 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
     by_slot: dict[int, list[dict]] = {}
     for p in state.picks:
         by_slot.setdefault(p["slot"], []).append(p)
-    if counterparty_slot == state.my_slot:
-        return _emit({"ok": False,
-                      "errors": [f"counterparty_slot {counterparty_slot} is your own slot"]},
+    live_rosters: dict | None = None
+    if league_id:
+        try:
+            live_rosters = _live_trade_rosters(league_id, season, counterparty_team,
+                                               counterparty_slot, b)
+        except Exception as exc:
+            unread["rosters"] = f"{type(exc).__name__}: {exc}"
+    if live_rosters is not None and "error" in live_rosters:
+        return _emit({"ok": False, "errors": [live_rosters["error"]],
+                      "teams": live_rosters["teams"], "unread": live_rosters["unread"]},
                      indent=2)
-    result = trade.evaluate(
-        b, by_slot, state.league, state.my_slot, counterparty_slot,
-        give_names, get_names,
-        n_trials=n_trials or trade.DEFAULT_TRIALS,
-        blocks=blocks or trade.DEFAULT_BLOCKS, seed=seed,
-        first_week=start, last_week=end, out=absences)
+    trials = n_trials or trade.DEFAULT_TRIALS
+    block_count = blocks or trade.DEFAULT_BLOCKS
+    if live_rosters is not None:
+        unread.update(live_rosters["unread"])
+        mine_id, theirs_id = live_rosters["mine"], live_rosters["theirs"]
+        if mine_id == theirs_id:
+            return _emit({"ok": False,
+                          "errors": [f"team {theirs_id} is your own team"]}, indent=2)
+        their_slot = live_rosters["slots"].get(theirs_id)
+        result = trade.evaluate(
+            b, live_rosters["by_team"], state.league, mine_id, theirs_id,
+            give_names, get_names, n_trials=trials, blocks=block_count, seed=seed,
+            first_week=start, last_week=end, out=absences, roster_key="team_id",
+            counterparty_picks=by_slot.get(their_slot, []) if their_slot else [])
+        result["roster_basis"] = ROSTER_LIVE
+        if result.get("ok"):
+            names = live_rosters["directory"]
+            result["you"]["team"] = (names.get(mine_id) or {}).get("name")
+            result["counterparty"]["team"] = (names.get(theirs_id) or {}).get("name")
+    else:
+        if counterparty_slot == state.my_slot:
+            return _emit({"ok": False,
+                          "errors": [f"counterparty_slot {counterparty_slot} is your own slot"]},
+                         indent=2)
+        result = trade.evaluate(
+            b, by_slot, state.league, state.my_slot, counterparty_slot,
+            give_names, get_names, n_trials=trials, blocks=block_count, seed=seed,
+            first_week=start, last_week=end, out=absences)
+        result["roster_basis"] = ROSTER_DRAFT
+        entry = _WATCHES.get(league_id) if league_id else None
+        if entry is not None and result.get("ok"):
+            w, _task = entry
+            labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
+            result["you"]["team"] = labels.get(state.my_slot)
+            result["counterparty"]["team"] = labels.get(counterparty_slot)
     result["window_basis"] = window_basis
     if unread:
         result["unread"] = unread
-    entry = _WATCHES.get(league_id) if league_id else None
-    if entry is not None and result.get("ok"):
-        w, _task = entry
-        labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
-        result["you"]["team"] = labels.get(state.my_slot)
-        result["counterparty"]["team"] = labels.get(counterparty_slot)
     return _emit(result, indent=2, default=str)
 
 

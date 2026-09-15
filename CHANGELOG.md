@@ -8,6 +8,21 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**`evaluate_trade` read rosters from the draft record**
+- Every add, drop and trade since the draft was invisible: a waiver pickup was
+  on no roster, and a player traded away still counted for his drafter. With
+  `league_id`, both rosters now come from ESPN `mRoster`, sides are keyed and
+  named by ESPN team id, and `roster_basis` names the source.
+- `counterparty_team` picks the counterparty by team id or team/owner name;
+  `counterparty_slot` resolves through the `mDraftDetail` team-to-slot map. The
+  counterparty's `tendencies` still read their draft picks.
+- A failed or empty roster read falls back to the draft record and is listed
+  under `unread`.
+- Live players are named through `rosters.rosters_by_team`, so a defense ESPN
+  calls "Ravens D/ST" is the board's row by ESPN id, not a stand-in.
+- `stand_ins` and `spread_note` list only positions the simulation scores; a
+  kicker or defense stand-in never enters a lineup and moved no total.
+
 **`evaluate_trade` scored an empty starting slot as 0**
 - A slot no rostered player could fill scored nothing, so every backup was
   credited a full game against zero instead of against a waiver pickup. On

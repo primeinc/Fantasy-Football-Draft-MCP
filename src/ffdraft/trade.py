@@ -396,7 +396,7 @@ def verdict(summary: dict, side: str, first_week: int = 1,
             f"the spread before the mean." + tail)
 
 
-def _spread_note(roster: list[Player], weeks: int) -> str | None:
+def _spread_note(roster: list[Player], weeks: int, scored: frozenset[str]) -> str | None:
     """What this side's `block_spread` does not include, when that is a stand-in.
 
     A stand-in is given full expected games, because the board has no injury
@@ -408,7 +408,7 @@ def _spread_note(roster: list[Player], weeks: int) -> str | None:
     delta, so it is said beside the number rather than left for a reader to
     deduce from the basis column.
     """
-    stand_ins = [p for p in roster if p.basis == BASIS_STAND_IN]
+    stand_ins = [p for p in roster if p.basis == BASIS_STAND_IN and p.position in scored]
     if not stand_ins:
         return None
     points = sum(p.adj_ppg * p.weekly_availability * weeks for p in stand_ins)
@@ -424,17 +424,20 @@ def _spread_note(roster: list[Player], weeks: int) -> str | None:
             f"it becomes more speculative. Per-player figures under stand_ins.")
 
 
-def _stand_ins_of(roster: list[Player], weeks: int) -> list[dict]:
+def _stand_ins_of(roster: list[Player], weeks: int, scored: frozenset[str]) -> list[dict]:
     """The replacement-level fill-ins on a roster, with what each contributes.
 
     Points rather than a bare name, because "two of these are guesses" and "two
     of these are guesses worth 96 points between them" are different warnings,
     and only the second lets a reader judge whether the delta survives them.
+    Only positions `scored` holds: a stand-in kicker or defense never enters a
+    simulated lineup, so listing his points would warn about a guess the total
+    does not contain.
     """
     return [{"player": p.name, "position": p.position,
              "points": round(p.adj_ppg * p.weekly_availability * weeks, 1),
              "basis": p.basis}
-            for p in roster if p.basis == BASIS_STAND_IN]
+            for p in roster if p.basis == BASIS_STAND_IN and p.position in scored]
 
 
 def _roster_names(picks: list[dict]) -> list[str]:
@@ -489,8 +492,17 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
              give: list[str], get: list[str], n_trials: int = DEFAULT_TRIALS,
              blocks: int = DEFAULT_BLOCKS, seed: int = 0,
              first_week: int = 1, last_week: int = FANTASY_WEEKS,
-             out: Mapping[str, frozenset[int]] | None = None) -> dict:
+             out: Mapping[str, frozenset[int]] | None = None,
+             roster_key: str = "slot",
+             counterparty_picks: list[dict] | None = None) -> dict:
     """Both sides of one proposed trade, before and after, with the spread.
+
+    `picks_by_slot` maps a side's id to its players (`name`, `position`). The id
+    is a draft slot for the draft record, or an ESPN team id for rosters read
+    live, and `roster_key` names which: it is the key each side is reported
+    under and, without its `_id` suffix, the word the verdict and errors use.
+    `counterparty_picks` is the counterparty's draft record for `tendencies`,
+    which a live roster cannot supply; omitted, it is read from `picks_by_slot`.
 
     `give` leaves your roster and `get` arrives on it; the counterparty's roster
     moves the other way, so one simulation answers for both and the two sides
@@ -505,15 +517,16 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
     rather than being dropped. A trade scored without one of its own pieces is a
     different trade.
     """
+    side_word = roster_key.removesuffix("_id")
     mine = _roster_names(picks_by_slot.get(my_slot, []))
     theirs = _roster_names(picks_by_slot.get(counterparty_slot, []))
     errors = []
     for name in give:
         if norm_name(name) not in {norm_name(n) for n in mine}:
-            errors.append(f"{name!r} is not on your roster (slot {my_slot})")
+            errors.append(f"{name!r} is not on your roster ({side_word} {my_slot})")
     for name in get:
         if norm_name(name) not in {norm_name(n) for n in theirs}:
-            errors.append(f"{name!r} is not on slot {counterparty_slot}'s roster")
+            errors.append(f"{name!r} is not on {side_word} {counterparty_slot}'s roster")
     if not give and not get:
         errors.append("a trade needs at least one player on one side")
     if first_week < 1 or last_week < first_week:
@@ -577,6 +590,10 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
                          n_trials, blocks, seed, first_week, last_week, known_out,
                          waiver_rate)
     span = last_week - first_week + 1
+    # The positions `simulate_season` puts in a lineup; `adp.best_weekly_lineup`
+    # skips kicker and defense.
+    scored = frozenset(pos for pos, n in league.starters.items()
+                       if n and pos not in ("FLEX", "K", "DST"))
     return {
         "ok": True,
         # The window scored, inclusive, by its bounds.
@@ -595,8 +612,8 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         # total is never silently moved by a guess. Empty means both rosters are
         # fully priced and the delta rests on the board throughout.
         "stand_ins": {
-            "yours": _stand_ins_of(resolved["mine_after"], span),
-            "theirs": _stand_ins_of(resolved["theirs_after"], span),
+            "yours": _stand_ins_of(resolved["mine_after"], span, scored),
+            "theirs": _stand_ins_of(resolved["theirs_after"], span, scored),
         },
         # Named on a roster but placeable by nothing -- no board row and no
         # recorded position. They are absent from the simulation entirely, which
@@ -604,22 +621,24 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         # to be inferred from a total.
         "not_scored": unplaceable,
         "you": {
-            "slot": my_slot, **yours,
+            roster_key: my_slot, **yours,
             "depth_before": depth(resolved["mine_before"], league),
             "depth_after": depth(resolved["mine_after"], league),
             "priced_by": priced_by(resolved["mine_after"]),
-            "spread_note": _spread_note(resolved["mine_after"], span),
+            "spread_note": _spread_note(resolved["mine_after"], span, scored),
             "verdict": verdict(yours, "you", first_week, last_week),
         },
         "counterparty": {
-            "slot": counterparty_slot, **theirs_cmp,
+            roster_key: counterparty_slot, **theirs_cmp,
             "depth_before": depth(resolved["theirs_before"], league),
             "depth_after": depth(resolved["theirs_after"], league),
             "priced_by": priced_by(resolved["theirs_after"]),
-            "spread_note": _spread_note(resolved["theirs_after"], span),
-            "verdict": verdict(theirs_cmp, f"slot {counterparty_slot}", first_week, last_week),
+            "spread_note": _spread_note(resolved["theirs_after"], span, scored),
+            "verdict": verdict(theirs_cmp, f"{side_word} {counterparty_slot}", first_week,
+                               last_week),
             "tendencies": counterparty_tendencies(
-                picks_by_slot.get(counterparty_slot, []), board),
+                counterparty_picks if counterparty_picks is not None
+                else picks_by_slot.get(counterparty_slot, []), board),
         },
         # Both sides can gain: they start different lineups, so the same player is
         # worth different points to each. Both sides losing is the tell that the

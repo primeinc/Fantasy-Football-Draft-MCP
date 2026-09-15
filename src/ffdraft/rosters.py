@@ -356,6 +356,24 @@ def rosters_by_team(teams: list[dict], board: pd.DataFrame,
     return out
 
 
+def draft_slot_by_team(draft_detail: dict) -> dict[int, int]:
+    """ESPN team id -> draft slot, from an mDraftDetail `draftDetail`.
+
+    A team's slot is the `roundPickNumber` of its earliest pick, the same rule
+    `board.espn_league_context` reads for your own slot. Empty when the payload
+    carries no picks.
+    """
+    first: dict[int, dict] = {}
+    for pick in draft_detail.get("picks") or []:
+        team_id, overall = pick.get("teamId"), pick.get("overallPickNumber")
+        if team_id is None or overall is None or pick.get("roundPickNumber") is None:
+            continue
+        held = first.get(int(team_id))
+        if held is None or overall < held["overallPickNumber"]:
+            first[int(team_id)] = pick
+    return {team_id: int(p["roundPickNumber"]) for team_id, p in first.items()}
+
+
 def read_rosters(league_id: str, board: pd.DataFrame, positions: dict[str, str],
                  season: int = CURRENT_SEASON, week: int | None = None,
                  swid: str | None = None, espn_s2: str | None = None,
