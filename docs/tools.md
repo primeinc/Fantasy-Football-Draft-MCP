@@ -685,6 +685,34 @@ Not yet run against a populated roster: ESPN withholds rosters until the draft
 completes. The first real send is a bench-to-bench move the user approves, read
 back afterwards.
 
+### `propose_trade`
+
+A trade offer sent to another team: `propose_trade(league_id, partner, give="",
+get="", days=2, comment="", dry_run=true)`. `partner` is a team id or a unique
+piece of the team's or an owner's name; `give` and `get` are comma-separated
+names matched on your roster and the partner's in mRoster (exact, else a unique
+substring). The dry run returns both sides, `refusals`, `expires` and the exact
+transaction. Both modes read the PENDING TRADE_PROPOSALs with the same proposer
+and moves in `mTransactions2` for every period mStatus names
+(`latestScoringPeriod`, `scoringPeriodId`), and an identical PENDING offer is a
+refusal. `dry_run=false` takes full names only, refuses when that read fails,
+sends, and reads again. `outcome` is REJECTED on a 4xx answer (no second read),
+CONFIRMED when exactly one proposal id is new (`espn_holds`), and
+UNKNOWN_AFTER_SEND for anything else, with `retry` saying not to resend. A 5xx,
+a missing status and a send that raises (`sent: "unknown"`) are reconciled the
+same way as a 2xx. No local clock takes part in the match.
+
+The body is ESPN's web client's (kona 5a90d30cd38d-1.490, 2026-09-15:
+`proposeTrade`, the transaction model's `get()`, the trade page's `sendTrade`):
+`{isLeagueManager, teamId, type: "TRADE_PROPOSAL", memberId, scoringPeriodId,
+executionType: "EXECUTE", items, expirationDate, comment}`, one item
+`{playerId, type: "TRADE", fromTeamId, toTeamId}` per player, `scoringPeriodId`
+mStatus `status.latestScoringPeriod`, `expirationDate` now plus `days` as a UTC
+ISO string. Sent to the same `/transactions/` endpoint with the same headers as
+`submit_lineup`. Refuses on an unresolved team or player, an empty trade, `days`
+outside 1-7, or a roster that would end past capacity (the client's drop items
+are not built). The SWID is redacted from everything returned.
+
 ### `league_rosters`
 
 Every team in the league and who is on it, from ESPN's `mRoster`+`mTeam` views:

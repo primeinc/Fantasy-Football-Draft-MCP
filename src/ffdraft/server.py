@@ -3515,6 +3515,165 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
 
 
 @mcp.tool(structured_output=False)
+def propose_trade(league_id: str, partner: str, give: str = "", get: str = "",
+                  days: int = 2, comment: str = "", dry_run: bool = True,
+                  season: int = CURRENT_SEASON) -> str:
+    """Propose a trade to another team on ESPN.
+
+    `partner` is a team id, or a unique piece of the team's name or an owner's
+    name. `give` and `get` are comma-separated player names, matched on your
+    roster and the partner's as ESPN holds them now (exact, else a unique
+    substring). `days` is how long the offer stays open, 1 through 7 as ESPN's
+    trade modal offers. `comment` goes to the partner with the offer.
+
+    By default (`dry_run=true`) it sends nothing and returns both sides, the
+    refusals and the exact transaction. `dry_run=false` takes full names only,
+    reads the PENDING proposals with the same proposer and moves in every period
+    mStatus names, sends one TRADE_PROPOSAL to ESPN's writes host (the request
+    ESPN's own web client makes), and reads them again. `outcome` is REJECTED on
+    a 4xx answer, CONFIRMED when exactly one proposal id is new (`espn_holds`
+    describes it), and UNKNOWN_AFTER_SEND otherwise, with `retry` saying not to
+    resend: the offer may exist. A 5xx, a missing status and a send that raises
+    (`sent: "unknown"`) are reconciled like a 2xx.
+
+    It refuses, and sends nothing, when the partner or a player does not
+    resolve, when the trade names nobody, when `days` is outside 1-7, when your
+    roster would end past capacity (which needs a drop it does not send), when an
+    identical offer is already PENDING, or, on a send, when that pending read fails.
+    The SWID is redacted everywhere it would appear. Scoring the trade is
+    `evaluate_trade`.
+    """
+    import os
+    from datetime import datetime, timezone
+
+    from . import claim_write, claims, lineup_write, live, rosters, trade_write, transactions
+    from .pool import eastern
+
+    swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
+    if not (swid and espn_s2):
+        return _emit({"error": "propose_trade needs ESPN_SWID and ESPN_S2"})
+    try:
+        payload = rosters.fetch_roster_payload(league_id, season, None, swid, espn_s2)
+        settings = claims.fetch_settings(league_id, season, swid, espn_s2)
+        league_status = live.fetch_league_status(league_id, season)
+        period = (league_status.get("status") or {}).get("latestScoringPeriod")
+        if type(period) is not int:
+            raise RuntimeError("mStatus carried no status.latestScoringPeriod")
+    except Exception as exc:
+        return _emit({"error": f"could not read the rosters, settings or scoring period: "
+                               f"{type(exc).__name__}: {exc}", "season": season})
+    periods = sorted({p for p in (period, league_status.get("scoringPeriodId")) if type(p) is int})
+    teams = [t for t in payload.get("teams") or [] if t.get("id") is not None]
+    my_id = rosters.my_team_id(teams, swid)
+    if my_id is None:
+        return _emit({"error": "no team in this league is owned by ESPN_SWID"})
+    table = rosters.league_table(payload, bd._ESPN_POSITION_NAMES, bd._ESPN_SLOT_NAMES, swid)
+    partner_team, partner_refusal = trade_write.resolve_team(table, partner, my_id)
+
+    def rows_of(team_id: int) -> list[dict]:
+        team = next((t for t in teams if int(t["id"]) == team_id), {})
+        facts = [rosters.entry_facts(e, bd._ESPN_POSITION_NAMES)
+                 for e in (team.get("roster") or {}).get("entries") or []]
+        return [{"player": f["name"], "espn_id": f["espn_id"], "position": f["position"],
+                 "slot": bd._ESPN_SLOT_NAMES.get(str(f["lineup_slot"]))} for f in facts]
+
+    def names_in(text: str) -> list[str]:
+        return [n.strip() for n in text.split(",") if n.strip()]
+
+    mine = rows_of(my_id)
+    exact = not dry_run
+    give_rows, refusals = trade_write.resolve_players(mine, names_in(give), "your roster", exact)
+    get_rows: list[dict] = []
+    if partner_team is None:
+        refusals.append(str(partner_refusal))
+    else:
+        get_rows, missing = trade_write.resolve_players(
+            rows_of(partner_team["team_id"]), names_in(get), f"{partner_team['team']}'s roster",
+            exact)
+        refusals += missing
+    if not refusals:
+        refusals = trade_write.check(give_rows, get_rows, sum(r["slot"] != "IR" for r in mine),
+                                     claim_write.roster_capacity(settings), days)
+    now = datetime.now(timezone.utc)
+    out: dict[str, Any] = {
+        "season": season, "scoring_period": period, "sent": False,
+        "partner": (None if partner_team is None
+                    else {k: partner_team[k] for k in ("team_id", "team", "owners")}),
+        "give": give_rows, "get": get_rows,
+        "expires": eastern(int(now.timestamp() * 1000) + days * 86_400_000),
+        "refusals": refusals,
+        "contract_basis": trade_write.CONTRACT_BASIS,
+    }
+    if partner_team is None:
+        out["why_not_sent"] = "refusals above; nothing is sent while any stand"
+        return _emit(out, indent=2)
+    body = trade_write.trade_transaction(my_id, partner_team["team_id"], swid, period,
+                                         give_rows, get_rows,
+                                         trade_write.expiration(now, days), comment)
+    out["transaction"] = {**body, "memberId": "<SWID>"}
+    if refusals:
+        out["why_not_sent"] = "refusals above; nothing is sent while any stand"
+        return _emit(out, indent=2)
+
+    def pending() -> list[dict]:
+        return trade_write.matching_proposals(
+            [transactions.fetch_transactions(league_id, season, p, swid, espn_s2)
+             for p in periods], body)
+
+    out["pending_periods"] = periods
+    try:
+        before: list[dict] | None = pending()
+    except Exception as exc:
+        before = None
+        out["pending_read_error"] = f"{type(exc).__name__}: {exc}"
+    if before:
+        refusals.append(f"an identical offer is already PENDING on ESPN, proposed "
+                        f"{eastern(before[0].get('proposedDate'))}")
+        out["why_not_sent"] = "refusals above; nothing is sent while any stand"
+        return _emit(out, indent=2)
+    if dry_run:
+        out["why_not_sent"] = "dry run; pass dry_run=false to send this proposal"
+        if before is None:
+            out["why_not_sent"] += ("; the duplicate check did not run because the pending "
+                                    "read failed, and a send refuses until that read succeeds")
+        return _emit(out, indent=2)
+    if before is None:
+        out["why_not_sent"] = ("the pending read failed, so a send could not be reconciled "
+                               "against it; nothing is sent")
+        return _emit(out, indent=2)
+    status: int | None = None
+    try:
+        result = lineup_write.send(league_id, season, body, swid, espn_s2)
+        out["espn_response"] = trade_write.redact(result, swid)
+        status = int(result.get("status") or 0)
+        out["sent"] = True
+    except Exception as exc:
+        out["sent"] = "unknown"
+        out["send_error"] = trade_write.redact(f"{type(exc).__name__}: {exc}", swid)
+    out["espn_holds"] = None
+    if status is not None and 400 <= status < 500:
+        out["outcome"] = trade_write.REJECTED
+        return _emit(out, indent=2)
+    try:
+        outcome, match = trade_write.reconcile(before, pending())
+    except Exception as exc:
+        outcome, match = trade_write.UNKNOWN_AFTER_SEND, None
+        out["read_back_error"] = f"{type(exc).__name__}: {exc}"
+    out["outcome"] = outcome
+    if match is not None:
+        out["espn_holds"] = {
+            "status": match.get("status"),
+            "scoring_period": match.get("scoringPeriodId"),
+            "proposed": eastern(match.get("proposedDate")),
+            "expires": eastern(match.get("expirationDate")),
+            "team_actions": match.get("teamActions"),
+        }
+    if outcome == trade_write.UNKNOWN_AFTER_SEND:
+        out["retry"] = trade_write.NO_RETRY
+    return _emit(out, indent=2)
+
+
+@mcp.tool(structured_output=False)
 def draft_room_stats(league_id: str = "", dump_dir: str = "") -> str:
     """Who was in the ESPN draft room, for how long, and who talked. Per member,
     by team and owner name: minutes in the room, joins and leaves with each
@@ -4111,7 +4270,7 @@ async def stop_watch(league_id: str) -> str:
 RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation",
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
-                "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "injuries", "live",
+                "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "trade_write", "injuries", "live",
                 "governor", "improve", "ticks", "contain", "runner")
 
 

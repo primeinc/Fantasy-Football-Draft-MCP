@@ -91,6 +91,19 @@ All notable changes to this project. Format follows
 
 ### Added
 
+**`propose_trade`: the trade offer write**
+- Dry run by default: both sides resolved on ESPN's rosters, refusals, expiry
+  and the exact `TRADE_PROPOSAL`. `dry_run=false` takes full names only, sends
+  it to `lm-api-writes`, and reconciles against the matching PENDING proposals
+  read before and after: `outcome` CONFIRMED, REJECTED (4xx) or
+  UNKNOWN_AFTER_SEND with `retry` saying not to resend.
+- An identical PENDING offer is a refusal; the match compares ESPN proposal ids
+  across every period mStatus names, never the local clock.
+- Body read from the fantasy web client (kona 5a90d30cd38d-1.490, 2026-09-15)
+  and cited in `trade_write.py`; items and expiry match the league's pending
+  proposals in `mTransactions2`.
+- Refuses a trade that would overfill your roster: drop items are not built.
+
 **`submit_lineup`: the lineup write (#59)**
 - `weekly_lineup` recommends; `submit_lineup` sets. Dry run by default: the
   moves, each slot before and after, and the exact transaction, nothing sent.

@@ -178,6 +178,7 @@ class TestCommand:
     def test_no_unattended_role_can_write_espn_or_merge(self):
         every = [t for tools in runner.ROLE_TOOLS.values() for t in tools]
         assert "mcp__fantasy-draft__submit_lineup" not in every
+        assert "mcp__fantasy-draft__propose_trade" not in every
         assert not any(t.startswith("mcp__") for r, ts in runner.ROLE_TOOLS.items()
                        if r != "fantasy" for t in ts)
         assert not any(w in t for t in every for w in ("commit", "merge", "push", "checkout"))

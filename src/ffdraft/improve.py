@@ -42,7 +42,7 @@ ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
 RISK_RANK = {"A": 0, "B": 1, "C": 2}
 PROTECTED = ("src/ffdraft/governor.py", "src/ffdraft/improve.py", "src/ffdraft/runner.py",
              "src/ffdraft/contain.py", "src/ffdraft/ticks.py", "src/ffdraft/lineup_write.py",
-             "src/ffdraft/claim_write.py", "runner.just", "justfile", "tests/conftest.py",
+             "src/ffdraft/claim_write.py", "src/ffdraft/trade_write.py", "runner.just", "justfile", "tests/conftest.py",
              ".agent/", ".claude/", "CLAUDE.md",
              ".mcp.json", "pyproject.toml", "uv.lock", ".venv/",
              # The write tools' entry points, dry-run defaults and send gates.
