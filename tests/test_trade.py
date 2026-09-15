@@ -384,6 +384,57 @@ class TestTheWindowIsTheRestOfTheSeason:
         assert any("is not a window" in e for e in out["errors"])
 
 
+class TestAnEmptySlotIsAWaiverPickupNotZero:
+    """A hole a bye or injury opens is filled from waivers in a real league.
+
+    The live miss: scoring holes at 0 credited every backup with a full game
+    against nothing, and a TE downgrade for a backup QB read as a gain for both
+    sides. Availability is pinned at 1 so each figure is exact.
+    """
+
+    QB_ONLY = LeagueSettings(name="t", teams=12, draft_slot=1, rounds=14,
+                             starters={"QB": 1, "RB": 0, "WR": 0, "TE": 0, "FLEX": 0,
+                                       "K": 0, "DST": 0})
+
+    def test_a_bye_week_scores_the_replacement_rate(self):
+        players, _ = trade.resolve(_board(IRON), ["Iron QB"])
+        out = trade.simulate_season(players, self.QB_ONLY, seed=0, replacement={"QB": 10.0})
+        # Weeks 1-14: thirteen of his games and one waiver start on his bye.
+        assert out["points"] == pytest.approx(18.0 * 13 + 10.0, abs=0.05)
+        assert out["empty_slots"] == 1
+
+    def test_a_starter_below_replacement_is_streamed_over(self):
+        weak = [{**IRON[0], "name": "Weak QB", "adj_ppg": 8.0, "proj_points": 136.0}]
+        players, _ = trade.resolve(_board(weak), ["Weak QB"])
+        out = trade.simulate_season(players, self.QB_ONLY, seed=0, replacement={"QB": 10.0})
+        assert out["points"] == pytest.approx(10.0 * 14, abs=0.05)
+
+    def test_a_backup_is_worth_only_his_margin_over_replacement(self):
+        rows = IRON + [{"name": "Backup QB", "position": "QB", "adj_ppg": 15.0,
+                        "exp_games": 17.0, "bye_week": 9, "proj_points": 255.0, "adp": 150.0}]
+        b = _board(rows)
+        alone, _ = trade.resolve(b, ["Iron QB"])
+        both, _ = trade.resolve(b, ["Iron QB", "Backup QB"])
+        rate = {"QB": 10.0}
+        gain = (trade.simulate_season(both, self.QB_ONLY, seed=0, replacement=rate)["points"]
+                - trade.simulate_season(alone, self.QB_ONLY, seed=0, replacement=rate)["points"])
+        # He plays only the starter's bye, and a free agent would have scored 10.
+        assert gain == pytest.approx(15.0 - 10.0, abs=0.05)
+
+    def test_evaluate_reports_the_rate_it_used(self, fixture_board, by_slot):
+        out = trade.evaluate(_priced(fixture_board), by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"], n_trials=10, blocks=2, seed=0)
+        rates = out["replacement_per_game"]
+        assert rates["QB"] == pytest.approx(200.0 / roles.SEASON_GAMES, abs=0.01)
+        assert rates["TE"] == pytest.approx(100.0 / roles.SEASON_GAMES, abs=0.01)
+
+    def test_a_board_with_no_replacement_level_leaves_holes_at_zero(self):
+        players, _ = trade.resolve(_board(IRON), ["Iron QB"])
+        out = trade.simulate_season(players, self.QB_ONLY, seed=0)
+        assert out["points"] == pytest.approx(18.0 * 13, abs=0.05)
+
+
 class TestParseOut:
     def test_weeks_ranges_and_lists(self):
         parsed, errors = trade.parse_out("Kyler Murray:2-3;6, Ja'Marr Chase:4")

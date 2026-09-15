@@ -32,7 +32,7 @@ import pandas as pd
 
 from . import adp as adp_mod
 from . import roles
-from .board import UNPRICED, is_position, with_stand_ins
+from .board import UNPRICED, is_position, replacement_points, with_stand_ins
 from .config import LeagueSettings
 from .names import normalize as norm_name
 
@@ -44,6 +44,9 @@ FANTASY_WEEKS = roles.FANTASY_WEEKS
 # one mean is not a finding.
 DEFAULT_TRIALS = 200
 DEFAULT_BLOCKS = adp_mod.DEFAULT_BLOCKS
+# Prefix of the waiver free agents `simulate_season` adds to every lineup. Board
+# keys are normalised names, which never start with an underscore.
+WAIVER_KEY = "__waiver__:"
 
 
 # What priced a player's per-game rate. Not decoration: a roster can mix them,
@@ -194,7 +197,8 @@ def _available(seed: int, key: str, week: int) -> float:
 
 def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
                     first_week: int = 1, last_week: int = FANTASY_WEEKS,
-                    out: Mapping[str, frozenset[int]] | None = None) -> dict:
+                    out: Mapping[str, frozenset[int]] | None = None,
+                    replacement: Mapping[str, float] | None = None) -> dict:
     """One roster's season: best legal lineup each week of the window, summed.
 
     `first_week` through `last_week` is the scored window, inclusive. A trade
@@ -211,6 +215,15 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
     slots are not scored, which is `adp.best_weekly_lineup`'s existing behaviour
     rather than a choice made here.
 
+    `replacement` is a per-game rate by position for a player on waivers. Every
+    starting slot can take one, so a slot is never worth less than a free agent:
+    a hole a bye or an injury opens scores that rate, not 0, and a rostered
+    starter below it is streamed over. Scoring holes at 0 credits every backup
+    with a full game against nothing, when the real alternative is a waiver
+    pickup; on 2026-09-15 that made a TE downgrade for a backup QB read as a gain
+    for both sides. `empty_slots` still counts the slots no ROSTERED player
+    could fill, which is where the replacement rate did the work.
+
     THE BYE IS CHARGED ONCE, and the reason is not obvious enough to leave
     implicit. This both skips the bye week and applies an availability derived
     from a 17 denominator, which looks like charging it twice. It is not:
@@ -223,6 +236,20 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
     """
     positions = {p.key: p.position for p in roster}
     known_out = out or {}
+    # One always-available free agent per slot his position can fill, flex
+    # included. Keyed outside the name space so no draw or roster entry touches
+    # them.
+    waiver: dict[str, float] = {}
+    with_waiver = dict(positions)
+    for pos, n in league.starters.items():
+        rate = (replacement or {}).get(pos, 0.0)
+        if pos in ("FLEX", "K", "DST") or not n or rate <= 0:
+            continue
+        slots = n + (league.starters.get("FLEX", 0) if pos in league.flex_eligible else 0)
+        for i in range(slots):
+            key = f"{WAIVER_KEY}{pos}:{i}"
+            waiver[key] = rate
+            with_waiver[key] = pos
     total, empty = 0.0, 0
     for week in range(first_week, last_week + 1):
         points = {}
@@ -233,6 +260,9 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
                 points[p.key] = p.adj_ppg
         week_points, week_empty = adp_mod.best_weekly_lineup(
             points, positions, league.starters, league.flex_eligible)
+        if waiver:
+            week_points, _ = adp_mod.best_weekly_lineup(
+                {**points, **waiver}, with_waiver, league.starters, league.flex_eligible)
         total += week_points
         empty += week_empty
     return {"points": round(total, 1), "empty_slots": empty}
@@ -241,7 +271,8 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
 def compare(before: list[Player], after: list[Player], league: LeagueSettings,
             n_trials: int = DEFAULT_TRIALS, blocks: int = DEFAULT_BLOCKS,
             seed: int = 0, first_week: int = 1, last_week: int = FANTASY_WEEKS,
-            out: Mapping[str, frozenset[int]] | None = None) -> dict:
+            out: Mapping[str, frozenset[int]] | None = None,
+            replacement: Mapping[str, float] | None = None) -> dict:
     """Season points for one roster before and after, in disjoint seed blocks.
 
     Blocks use `seed + block * n_trials + trial`, so a second block extends the
@@ -254,8 +285,10 @@ def compare(before: list[Player], after: list[Player], league: LeagueSettings,
         gains, before_pts, after_pts, empty_before, empty_after = [], [], [], [], []
         for trial in range(n_trials):
             trial_seed = block_seed + trial
-            a = simulate_season(before, league, trial_seed, first_week, last_week, out)
-            b = simulate_season(after, league, trial_seed, first_week, last_week, out)
+            a = simulate_season(before, league, trial_seed, first_week, last_week, out,
+                                replacement)
+            b = simulate_season(after, league, trial_seed, first_week, last_week, out,
+                                replacement)
             gains.append(b["points"] - a["points"])
             before_pts.append(a["points"])
             after_pts.append(b["points"])
@@ -533,15 +566,24 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
     if errors:
         return {"ok": False, "errors": errors}
 
+    # The board's replacement level per game, the same number a stand-in is
+    # priced at, so a waiver pickup and an unpriced bystander are worth the same.
+    waiver_rate = {pos: replacement_points(board, pos) / roles.SEASON_GAMES
+                   for pos, n in league.starters.items()
+                   if n and pos not in ("FLEX", "K", "DST")}
     yours = compare(resolved["mine_before"], resolved["mine_after"], league,
-                    n_trials, blocks, seed, first_week, last_week, known_out)
+                    n_trials, blocks, seed, first_week, last_week, known_out, waiver_rate)
     theirs_cmp = compare(resolved["theirs_before"], resolved["theirs_after"], league,
-                         n_trials, blocks, seed, first_week, last_week, known_out)
+                         n_trials, blocks, seed, first_week, last_week, known_out,
+                         waiver_rate)
     span = last_week - first_week + 1
     return {
         "ok": True,
         # The window scored, inclusive, by its bounds.
         "weeks": {"from": first_week, "to": last_week},
+        # What a free agent scores per game in a slot no rostered player fills
+        # or beats. 0 where the board carries no replacement level.
+        "replacement_per_game": {pos: round(rate, 2) for pos, rate in waiver_rate.items()},
         # Weeks each named player scores 0 regardless of the availability draw,
         # clipped to the window so the payload shows only absences that moved it.
         "known_out": {name: sorted(w for w in weeks if first_week <= w <= last_week)

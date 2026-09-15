@@ -8,6 +8,16 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**`evaluate_trade` scored an empty starting slot as 0**
+- A slot no rostered player could fill scored nothing, so every backup was
+  credited a full game against zero instead of against a waiver pickup. On
+  2026-09-15, over weeks 2-17, McBride + Meyers + Jeudy for Andrews + Stroud +
+  Egbuka read +11.1 for us and +11.5 for the counterparty; `empty_slots` fell
+  from 3.44 to 1.07 on our side, the backup-QB credit.
+- Every starting slot now takes a free agent at the board's replacement level
+  per game, the rate a stand-in is priced at; a rostered starter below it is
+  streamed over. `replacement_per_game` reports the rates used.
+
 **`evaluate_trade` scored weeks 1-14 whatever the week**
 - The window was fixed at weeks 1 through `FANTASY_WEEKS` (14). In week 2 it
   credited the played week and dropped playoff weeks 15-17; a concussed

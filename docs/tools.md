@@ -573,6 +573,13 @@ neither roster, refuses the evaluation. `known_out` echoes the absences that
 fall inside the window. An uncertain return is modelled by running more than
 once with different absences.
 
+**Empty slots are waiver pickups.** Every starting slot can take a free agent
+scoring the board's replacement level per game (`replacement_per_game`, the
+number a stand-in is priced at). A hole a bye or injury opens scores that rate,
+not 0, and a rostered starter below it is streamed over, so a backup is worth
+his margin over a free agent rather than a full game. `empty_slots_before` and
+`empty_slots_after` count the slots no rostered player could fill.
+
 Rosters come from the draft record: a player added after the draft is not on
 either roster. A roster player the board cannot price who is not in the trade is
 stood in at replacement level and listed under `stand_ins`; a traded player with
