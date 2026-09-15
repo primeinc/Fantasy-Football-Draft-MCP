@@ -555,49 +555,72 @@ cannot model fill their slot at 0 points.
 ### `evaluate_trade`
 Score a proposed trade for both sides over the rest of the season. `give` and
 `get` are comma-separated names: `give` leaves your roster, `get` arrives on it.
-The counterparty is `counterparty_team` (a team id, or text in the team or owner
-name) or `counterparty_slot` (their draft slot).
 
-**Rosters.** With `league_id`, both rosters are ESPN's `mRoster` as it stands:
-every add, drop and trade since the draft is in them. Sides are reported under
-`team_id` with the team named, and `roster_basis` says `espn mRoster`. The
-counterparty's `tendencies` still come from their draft picks, found through
-the `mDraftDetail` team-to-slot map. When the roster read fails or returns no
-entries, the draft record is used, `roster_basis` names it, the failure is under
-`unread`, and `counterparty_slot` is required. A counterparty that matches no
-team, or several, refuses with the league's teams listed.
+**With `league_id`, one league supplies every fact.** Its settings must equal
+the active league's, which select the board: team count, starters per position,
+flex count and eligibility, superflex, every modelled scoring value and the TE
+reception premium. A difference refuses with each field named. From that league
+come the window, both rosters (`mRoster`, sides under `team_id` and named), the
+counterparty's draft picks (`mDraftDetail`, for `tendencies` and to resolve
+`counterparty_slot`), the free agents and ESPN's season projections
+(`kona_player_info`), and each team's bye week. The counterparty is
+`counterparty_team` (a team id, or text in the team or owner name) or
+`counterparty_slot` (their draft slot); one that matches no team or several
+refuses with the teams listed. **A read that fails, or comes back without what it
+must carry, refuses the evaluation and names the read.** Nothing is filled in
+from the draft record, a default window or a replacement level. `league` echoes
+the league, the active settings it matched, the current period and the final
+week.
 
-**Window.** `first_week` through `last_week`, inclusive. With `league_id` and
-0, the window opens at the league's current scoring period (ESPN `mStatus`) and
-closes at its last playoff week (league settings): played weeks are not
-credited to either side and the playoffs are scored. Without a league read it
-falls back to week 1 and `trade.FANTASY_WEEKS`. `weeks` states the bounds and
-`window_basis` where each came from; a failed read is under `unread`.
+**Without `league_id`,** rosters are the draft record, the free agents are the
+board's players on no roster, the counterparty is `counterparty_slot`, and
+`first_week` and `last_week` are required. `roster_basis` names the source.
+
+**Window.** `first_week` through `last_week`, inclusive. With `league_id` and 0
+they are the current scoring period (`mStatus`) and the league's last playoff
+week; a bound given must lie between the current period and the final week.
+Every window lies inside weeks 1-18. `weeks` states the bounds and
+`window_basis` each bound's source.
 
 **Known absences.** `out` is `"Player Name:weeks"`, comma-separated; weeks are
-a number, a range `2-4`, or several joined by `;` (`"Kyler Murray:2-3"`). Those
-weeks score 0 for that player before any availability draw; every other week
-draws the board's preseason availability. A malformed entry, or a name on
-neither roster, refuses the evaluation. `known_out` echoes the absences that
-fall inside the window. An uncertain return is modelled by running more than
-once with different absences.
+a number, a range `2-4`, or several joined by `;` (`"Kyler Murray:2-3"`), inside
+1-18. Those weeks score 0 for that player before any availability draw; every
+other week draws the board's preseason availability. A malformed entry, or a
+name on neither roster, refuses the evaluation. `known_out` echoes the absences
+that fall inside the window. An uncertain return is modelled by running more
+than once with different absences.
 
-**Empty slots are waiver pickups.** Every starting slot can take a free agent
-at a per-game rate (`replacement_per_game`). With `league_id` the rate is the
-best ESPN season projection among the players ESPN's pool lists as acquirable at
-that position, over 17 (`season_proj / 17`). ESPN's projection, not the board's:
-the board's number for an unrostered player is the preseason one. Where no
-acquirable player at a position carries a projection, or the pool read fails, it
-is the board's replacement level. `replacement_basis` names the source and
-player per position. A hole a bye or injury opens scores that rate, not 0, and a
-rostered starter below it is streamed over, so a backup is worth his margin over
-a free agent rather than a full game. `empty_slots_before` and `empty_slots_after`
-count the slots no rostered player could fill.
+**Free agents fill holes.** Every lineup may start free agents: distinct
+players, each at most once a week, none on his bye. With `league_id` they are
+ESPN's acquirable players at their ESPN season projection over 17 a game;
+without, the board's players on no roster at `adj_ppg` times weekly
+availability. Per position the best are listed until every week of the window
+has as many of them off bye as the position can start. A hole a bye or injury
+opens takes the best free agent not already starting, so two holes take two
+different players, and a rostered starter below a free agent is streamed over.
+`waiver` lists each position's candidates and their source. A scored position
+with no free agent refuses. `empty_slots_before` and `empty_slots_after` count
+the slots no rostered player could fill.
 
-A roster player the board cannot price who is not in the trade is stood in and
-listed under `stand_ins` with his basis: his ESPN season projection over 17 when
-ESPN's pool carries one (with `league_id`), else the board's replacement level.
-A traded player with no board row refuses.
+**Stand-ins.** A roster player the board has no row for is priced from ESPN when
+ESPN projects him and his team gives him a bye week: his season projection over
+17 a game, every week he has a game. He is listed under `stand_ins` with his bye
+week and the points he contributes, and `spread_note` says the spread excludes
+his variance.
+
+**Refusals.** `ok: false`, the reasons under `errors`, and no number, when (a
+league read, settings, window or counterparty refusal returns before the
+checks below run):
+- a traded player is on the wrong roster, has no board row, or plays K or DST,
+  which the simulated lineup does not score;
+- a roster player at a scored position or with no position cannot be priced, or
+  any roster player at a scored position has no bye week;
+- `n_trials` is outside 1-5000 or `blocks` outside 1-20 (0 takes the defaults);
+- the window, an absence, the counterparty or the league settings are refused
+  as above.
+
+A kicker or defense on a roster that nothing can price is listed under
+`not_scored` and refuses nothing: no simulated lineup has those slots.
 
 Each side's roster is simulated week by week on its own starting lineup, and
 each side is reported as points before and after, per-position depth before and
@@ -642,15 +665,6 @@ rate derived from `proj_points / exp_games`, and one with no projection at all i
 worth 0. Every row that is not straight off the board is **named**, not merely
 counted, because a delta built from derived rows deserves less weight than one
 built from modelled ones.
-
-`weeks` reports the window scored, `from` 1 `to` 14. Rosters come from the draft
-record, so this is a season-long answer; a trade weighed in week 9 is really
-asking about weeks 9 to 14, and the tool does not yet know the difference. That
-arrives with the in-season roster reader.
-
-A player added after the draft is not on the record yet. Naming a player on the
-wrong roster, or one with no board row, stops the evaluation and says which: a
-trade scored without one of its own pieces is a different trade.
 
 ### `submit_lineup`
 

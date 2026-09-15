@@ -8,47 +8,64 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**`evaluate_trade` scored a trade on facts from somewhere other than the league**
+- With `league_id`, a failed roster read scored the draft record, a failed
+  `mStatus` or settings read scored weeks 1-14, and a failed pool read priced
+  free agents at the board's replacement level, each under `ok: true` with a
+  note under `unread`. Every read now refuses the evaluation and names the read;
+  `unread` is gone.
+- The board and scoring came from the active league while rosters, window and
+  free agents came from `league_id`. The league's settings must now equal the
+  active league's (`board.espn_settings_mismatch`), or the evaluation refuses
+  with each differing field. The counterparty's `tendencies` read that league's
+  `mDraftDetail` picks, not the active league's draft record.
+- One best free agent at a scalar rate filled every hole at his position, so
+  two empty RB slots scored him twice. Free agents are now distinct players with
+  bye weeks, listed per position under `waiver`; `replacement_per_game` and
+  `replacement_basis` are gone. A position with no free agent refuses.
+- A roster player nothing could place was dropped from the simulation under
+  `ok: true`, which can change who starts. It refuses, unless he is a kicker or
+  defense, whose slots no lineup has; those are listed under `not_scored`. An
+  mRoster entry with no name or position refuses too.
+- A stand-in had no bye week and was priced at replacement level when ESPN had
+  no projection. A stand-in is priced only from ESPN's projection and carries
+  his team's bye; without both he refuses. Any player at a scored position with
+  no bye week refuses.
+- A kicker or defense in the trade was valued at 0; it refuses.
+- `last_week` 99 was scored, and negative `n_trials` or `blocks` ran an empty
+  harness under `ok: true`. Windows lie inside weeks 1-18 and, with `league_id`,
+  between the current period and the league's final week; `n_trials` 1-5000,
+  `blocks` 1-20. Without `league_id` both bounds are required.
+- A no-call verdict printed "points" whatever `unit` said.
+
 **`evaluate_trade` priced a player the board has no row for at replacement level**
-- A roster player the board does not carry was a stand-in at the board's
-  replacement level whatever ESPN projected for him. With `league_id`, a stand-in
-  ESPN projects is priced at his ESPN season projection over 17, the same source
-  the waiver rate reads; replacement level remains the fallback. `stand_ins` and
-  `priced_by` name which basis each got.
+- With `league_id`, a stand-in ESPN projects is priced at his ESPN season
+  projection over 17. `stand_ins` and `priced_by` name the basis.
 
 **`evaluate_trade` priced a waiver pickup above what waivers hold**
-- The waiver rate was the board's replacement level, the last starter in a
+- The free agents were the board's replacement level, the last starter in a
   league this size, whom every team already rosters: 14.95 a game for a QB.
-- With `league_id`, each position's rate is the best ESPN season projection
-  among ESPN's acquirable players, over 17. ESPN's, not the board's: the board
-  priced unrostered players at their preseason role, Tua Tagovailoa at 254 and
-  Jawhar Jordan at 159 where ESPN had 115 and 0. `pool.pool_rows` carries
-  `season_proj`. Replacement level remains the fallback per position;
-  `replacement_basis` names the source and player.
+  With `league_id` they are ESPN's acquirable players at ESPN's season
+  projection over 17, not the board's preseason one, which had Tua Tagovailoa
+  at 254 and Jawhar Jordan at 159 where ESPN had 115 and 0. `pool.pool_rows`
+  carries `season_proj`.
 
 **`evaluate_trade` read rosters from the draft record**
-- Every add, drop and trade since the draft was invisible: a waiver pickup was
-  on no roster, and a player traded away still counted for his drafter. With
-  `league_id`, both rosters now come from ESPN `mRoster`, sides are keyed and
-  named by ESPN team id, and `roster_basis` names the source.
+- Every add, drop and trade since the draft was invisible. With `league_id`,
+  both rosters come from ESPN `mRoster`, sides are keyed and named by ESPN team
+  id, and `roster_basis` names the source.
 - `counterparty_team` picks the counterparty by team id or team/owner name;
-  `counterparty_slot` resolves through the `mDraftDetail` team-to-slot map. The
-  counterparty's `tendencies` still read their draft picks.
-- A failed or empty roster read falls back to the draft record and is listed
-  under `unread`.
+  `counterparty_slot` resolves through the `mDraftDetail` team-to-slot map.
 - Live players are named through `rosters.rosters_by_team`, so a defense ESPN
   calls "Ravens D/ST" is the board's row by ESPN id, not a stand-in.
-- `stand_ins` and `spread_note` list only positions the simulation scores; a
-  kicker or defense stand-in never enters a lineup and moved no total.
 
 **`evaluate_trade` scored an empty starting slot as 0**
 - A slot no rostered player could fill scored nothing, so every backup was
-  credited a full game against zero instead of against a waiver pickup. On
-  2026-09-15, over weeks 2-17, McBride + Meyers + Jeudy for Andrews + Stroud +
-  Egbuka read +11.1 for us and +11.5 for the counterparty; `empty_slots` fell
-  from 3.44 to 1.07 on our side, the backup-QB credit.
-- Every starting slot now takes a free agent at the board's replacement level
-  per game, the rate a stand-in is priced at; a rostered starter below it is
-  streamed over. `replacement_per_game` reports the rates used.
+  credited a full game against zero. On 2026-09-15, over weeks 2-17, McBride +
+  Meyers + Jeudy for Andrews + Stroud + Egbuka read +11.1 for us and +11.5 for
+  the counterparty; `empty_slots` fell from 3.44 to 1.07 on our side, the
+  backup-QB credit. A hole now takes a free agent; a rostered starter below one
+  is streamed over.
 
 **`evaluate_trade` scored weeks 1-14 whatever the week**
 - The window was fixed at weeks 1 through `FANTASY_WEEKS` (14). In week 2 it
@@ -56,8 +73,7 @@ All notable changes to this project. Format follows
   quarterback was priced at his preseason injury rate.
 - `first_week` and `last_week`: with `league_id` the window opens at ESPN
   `mStatus` `scoringPeriodId` and closes at the league's last playoff week.
-  `window_basis` names the source of each bound; a failed read falls back to
-  weeks 1-14 and is listed under `unread`.
+  `window_basis` names the source of each bound. `out` marks known absences.
 - `out="Player Name:2-3;6"`: known absences score 0 in those weeks before the
   availability draw. A malformed entry or a name on neither roster refuses.
 - The verdict names the window by its bounds (`over weeks 2-17`).

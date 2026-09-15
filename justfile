@@ -372,50 +372,19 @@ payloads $league_id='' $week='1':
     other = next((p["slot"] for p in st.picks if p["slot"] != st.my_slot), None)
     theirs = [p["name"] for p in st.picks if p["slot"] == other]
     if mine and theirs:
+        from ffdraft import trade
         for label, g, t in (("1 for 1", mine[:1], theirs[:1]),
                             ("2 for 2", mine[:2], theirs[:2])):
+            # A refusal is a few characters and says nothing about the size of an
+            # answer, so its errors are printed rather than priced around.
             text = server.evaluate_trade(",".join(g), ",".join(t),
-                                         counterparty_slot=other)
+                                         counterparty_slot=other, first_week=1,
+                                         last_week=trade.FANTASY_WEEKS)
             report(f"evaluate_trade({label})", text)
             body = json.loads(text)
             if body.get("ok") is False:
-                # A refusal is a few characters and tells us nothing about the
-                # size of an answer. Price the shape against a board that stands
-                # in for the picks it cannot price, which is what `my_rows`
-                # already does for the lineup model (#40).
-                import pandas as pd
-
-                from ffdraft import board as bd
-                from ffdraft import trade
-                b = server._build_board()
-                known = set(b["_key"])
-                extra = []
-                for p in st.picks:
-                    key = bd.norm_name(p["name"])
-                    if key in known or not p.get("position"):
-                        continue
-                    known.add(key)
-                    pos = str(p["position"])
-                    # The size of the answer does not depend on what the
-                    # stand-in is worth, only on there being a row, so this
-                    # takes the board's floor at the position rather than
-                    # claiming a valuation this recipe has no business making.
-                    at_pos = b[b["position"] == pos]["proj_points"]
-                    pts = float(at_pos.min()) if len(at_pos) else 0.0
-                    extra.append({"_key": key, "name": p["name"], "position": pos,
-                                  "proj_points": pts, "replacement_points": pts,
-                                  "adj_ppg": pts / 17.0, "exp_games": 17.0,
-                                  "vor": 0.0, "draft_score": 0.0, "adp": 300.0})
-                patched = pd.concat([b, pd.DataFrame(extra).reindex(columns=b.columns)],
-                                    ignore_index=True) if extra else b
-                by_slot = {}
-                for p in st.picks:
-                    by_slot.setdefault(p["slot"], []).append(p)
-                out = trade.evaluate(patched, by_slot, st.league, st.my_slot, other,
-                                     g, t, n_trials=trade.DEFAULT_TRIALS,
-                                     blocks=trade.DEFAULT_BLOCKS, seed=0)
-                report(f"   ^ same trade, stand-ins added ({label})",
-                       server._emit(out, indent=2, default=str))
+                for error in body.get("errors") or []:
+                    print(f"      refused: {error}")
     else:
         print("     evaluate_trade                  skipped: no two-sided draft record")
 

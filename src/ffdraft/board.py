@@ -1424,6 +1424,75 @@ def espn_league_rules(league_id: str, season: int = CURRENT_SEASON,
     }
 
 
+# `Scoring` field -> the `espn_league_rules` scoring items that must carry its
+# value. A two-point conversion is one field here and three statIds at ESPN.
+_SCORING_ITEMS = {
+    "pass_yd": ("passing_yards",), "pass_td": ("passing_tds",),
+    "interception": ("interceptions",), "rush_yd": ("rushing_yards",),
+    "rush_td": ("rushing_tds",), "rec": ("receptions",),
+    "rec_yd": ("receiving_yards",), "rec_td": ("receiving_tds",),
+    "fumble_lost": ("fumbles_lost",),
+    "two_pt": ("passing_2pt", "rushing_2pt", "receiving_2pt"),
+}
+# ESPN flex slot name -> the positions it takes.
+_ESPN_FLEX_ELIGIBLE = {"FLEX": ("RB", "WR", "TE"), "RB/WR": ("RB", "WR"),
+                       "WR/TE": ("WR", "TE")}
+_ESPN_STARTER_SLOTS = ("QB", "RB", "WR", "TE", "K", "DST", "OP", *_ESPN_FLEX_ELIGIBLE)
+
+
+def espn_settings_mismatch(rules: dict, league: LeagueSettings) -> list[str]:
+    """Every board-shaping setting where ESPN's league and `league` differ.
+
+    `rules` is `espn_league_rules`. Compared: team count, starters per position,
+    flex count and eligibility, superflex, every scoring value the model scores,
+    and the tight-end reception premium -- the inputs to `LeagueSettings.
+    cache_key`, which is what selects a board. Empty means a board built for
+    `league` is a board for this ESPN league. A starting slot ESPN names that
+    the model has no slot for is a mismatch too.
+    """
+    out: list[str] = []
+    if rules.get("teams") != league.teams:
+        out.append(f"teams: ESPN {rules.get('teams')}, {league.name!r} {league.teams}")
+    slots = (rules.get("roster") or {}).get("starters") or {}
+    for slot, count in sorted(slots.items()):
+        if count and slot not in _ESPN_STARTER_SLOTS:
+            out.append(f"starting slot {slot!r} x{count}: no slot for it in {league.name!r}")
+    espn_starters = {p: int(slots.get(p) or 0) for p in ("QB", "RB", "WR", "TE", "K", "DST")}
+    flex_kinds = {s: int(slots.get(s) or 0) for s in _ESPN_FLEX_ELIGIBLE if slots.get(s)}
+    espn_starters["FLEX"] = sum(flex_kinds.values())
+    for pos, count in espn_starters.items():
+        mine = int(league.starters.get(pos, 0) or 0)
+        if mine != count:
+            out.append(f"{pos} starters: ESPN {count}, {league.name!r} {mine}")
+    if len(flex_kinds) > 1:
+        out.append(f"flex slots of different eligibility {sorted(flex_kinds)}: "
+                   f"{league.name!r} has one flex eligibility")
+    elif flex_kinds:
+        eligible = set(_ESPN_FLEX_ELIGIBLE[next(iter(flex_kinds))])
+        if eligible != set(league.flex_eligible):
+            out.append(f"flex eligibility: ESPN {sorted(eligible)}, {league.name!r} "
+                       f"{sorted(league.flex_eligible)}")
+    if int(slots.get("OP") or 0) != int(league.superflex):
+        out.append(f"superflex: ESPN {int(slots.get('OP') or 0)}, {league.name!r} "
+                   f"{league.superflex}")
+    scoring = rules.get("scoring") or {}
+    items = scoring.get("items") or {}
+    for field, stats in _SCORING_ITEMS.items():
+        mine = float(getattr(league.scoring, field))
+        for stat in stats:
+            espn = float(items.get(stat) or 0.0)
+            if not np.isclose(espn, mine, rtol=0.0, atol=1e-9):
+                out.append(f"scoring {field} ({stat}): ESPN {espn}, {league.name!r} {mine}")
+    # A tight-end reception premium is ESPN's receptions value overridden in the
+    # TE slot; `espn_league_rules` keys an override it has no name for by statId.
+    te_rec = ((scoring.get("slot_overrides") or {}).get("TE") or {}).get("53")
+    premium = 0.0 if te_rec is None else float(te_rec) - float(items.get("receptions") or 0.0)
+    if not np.isclose(premium, float(league.te_premium_bonus), rtol=0.0, atol=1e-9):
+        out.append(f"TE reception premium: ESPN {premium}, {league.name!r} "
+                   f"{league.te_premium_bonus}")
+    return out
+
+
 def lineup_value(board: pd.DataFrame, picks: list[dict],
                  league: LeagueSettings) -> dict:
     """One team's picks scored as projected starter points: the best lineup they

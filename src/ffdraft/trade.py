@@ -19,12 +19,17 @@ Availability is the only thing drawn at random. Week-to-week scoring variance is
 real and is not modelled, because the board carries no distribution for it and
 inventing one would move the block spread -- the number a reader is meant to
 judge the estimate against -- on the strength of a guess.
+
+NOTHING IS GUESSED. A player who cannot be priced, placed or given a bye week,
+a trade piece the lineup does not score, a window outside the season, or a
+position with no free agent refuses the evaluation. A number built with one of
+those filled in is a different trade from the one asked about.
 """
 from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -32,25 +37,32 @@ import pandas as pd
 
 from . import adp as adp_mod
 from . import roles
-from .board import UNPRICED, is_position, replacement_points, with_stand_ins
+from .board import is_position
 from .config import LeagueSettings
 from .names import normalize as norm_name
 
-# The last week scored when no league schedule was read. Shared with roles.py so
-# the two cannot disagree about it. A live league closes the window at its own
-# last playoff week instead: the server reads that from the league settings.
+# Shared with roles.py so the two cannot disagree about it.
 FANTASY_WEEKS = roles.FANTASY_WEEKS
+# The last week of the NFL regular season. No fantasy league scores past it.
+LAST_NFL_WEEK = 18
 # Trials per block, and blocks. The block count is adp's, for the same reason:
 # one mean is not a finding.
 DEFAULT_TRIALS = 200
 DEFAULT_BLOCKS = adp_mod.DEFAULT_BLOCKS
+# Largest harness a single call runs. Four seasons are simulated per trial, so
+# the product bounds the call's run time.
+MAX_TRIALS = 5000
+MAX_BLOCKS = 20
 # Prefix of the waiver free agents `simulate_season` adds to every lineup. Board
 # keys are normalised names, which never start with an underscore.
 WAIVER_KEY = "__waiver__:"
-# Where a position's waiver rate came from, reported per position.
-WAIVER_FROM_POOL = ("ESPN season projection of the best acquirable player, "
-                    "season_proj / SEASON_GAMES")
-WAIVER_FROM_REPLACEMENT = "board replacement level, replacement_points / SEASON_GAMES"
+# Where the free agents came from, reported per position.
+WAIVER_FROM_ESPN = ("ESPN's acquirable players at ESPN season projection / SEASON_GAMES "
+                    "a game")
+WAIVER_FROM_BOARD = ("board players on no roster in the draft record at adj_ppg x weekly "
+                     "availability a game")
+# Slots `adp.best_weekly_lineup` fills from other positions or does not fill.
+UNSCORED_SLOTS = ("FLEX", "K", "DST")
 
 
 # What priced a player's per-game rate. Not decoration: a roster can mix them,
@@ -59,18 +71,8 @@ WAIVER_FROM_REPLACEMENT = "board replacement level, replacement_points / SEASON_
 BASIS_BOARD = "adj_ppg"
 BASIS_DERIVED = "proj_points / exp_games"
 BASIS_NONE = "none: no projection on the board"
-# A roster player the board cannot price at all, filled in at the position's
-# replacement level through `board.with_stand_ins` -- the same stand-in every
-# other tool gets, so a bystander is worth the same here as he is in a lineup or
-# a waiver drop. Reported per side rather than folded into the total, because a
-# delta that rests partly on replacement-level guesses is a weaker number than
-# one that does not, and only the reader can decide how much weaker.
-BASIS_STAND_IN = "replacement level: the board has no row for him"
-# A player the board cannot price whom ESPN projects: his ESPN season projection
-# over SEASON_GAMES, the pricing the waiver rate uses. Replacement level is what
-# the board knows about a player it has no row for, and ESPN knows more.
-BASIS_ESPN_STAND_IN = "ESPN season projection: the board has no row for him"
-STAND_IN_BASES = (BASIS_STAND_IN, BASIS_ESPN_STAND_IN)
+# A roster player the board has no row for, priced from ESPN (see `resolve`).
+BASIS_ESPN_STAND_IN = "ESPN season projection / SEASON_GAMES: the board has no row for him"
 
 
 @dataclass(frozen=True)
@@ -82,7 +84,7 @@ class Player:
     position: str
     adj_ppg: float
     exp_games: float
-    bye_week: float | None
+    bye_week: int | None
     basis: str = BASIS_BOARD
 
     @property
@@ -106,65 +108,62 @@ def _finite(value, fallback: float) -> float:
     return out if np.isfinite(out) else fallback
 
 
-def _stand_in_row(board: pd.DataFrame, name: str, position: str) -> dict | None:
-    """One replacement-level row for a player the board does not carry.
+def _bye(value) -> int | None:
+    """A bye week as an int, or None when the value is missing or not a number."""
+    week = _finite(value, np.nan)
+    return int(week) if np.isfinite(week) else None
 
-    Built by `board.with_stand_ins`, the same helper `DraftState.my_rows` and
-    `rosters.roster_rows` use, so a player unknown to the board is worth exactly
-    the same here as he is in a lineup or a waiver drop. A second pricing rule
-    for the same situation is how `_discount` came to exist twice.
-    """
-    if not is_position(position) or "_key" not in board.columns:
-        return None
-    empty = board.iloc[0:0].copy()
-    empty[UNPRICED] = pd.Series(dtype=bool)
-    built = with_stand_ins(empty, board, [(name, position)])
-    return None if built.empty else built.iloc[0].to_dict()
+
+def scored_positions(league: LeagueSettings) -> frozenset[str]:
+    """The positions `simulate_season` puts in a lineup: every starting slot the
+    league has except flex, kicker and defense, which `adp.best_weekly_lineup`
+    fills from other positions or skips."""
+    return frozenset(pos for pos, n in league.starters.items()
+                     if n and pos not in UNSCORED_SLOTS)
 
 
 def resolve(board: pd.DataFrame, names: list[str],
-            positions: Mapping[str, str] | None = None,
+            facts: Mapping[str, Mapping] | None = None,
             espn_season: Mapping[str, float] | None = None,
             ) -> tuple[list[Player], list[str]]:
-    """Board rows for these names, plus the names that matched nothing.
+    """Board rows for these names, plus the names that could not be priced.
 
-    `espn_season` maps a normalised name to ESPN's season projection. A stand-in
-    ESPN projects is priced at that projection over SEASON_GAMES; one it does
-    not is priced at the board's replacement level.
+    `facts` maps a normalised name to what a roster knows about a player the
+    board may not carry: `position` and `bye_week`. `espn_season` maps a
+    normalised name to ESPN's season projection.
 
-    A name the board cannot price becomes a replacement-level stand-in when
-    `positions` says what he plays, and is returned as missing only when nothing
-    can place him. That is what lets a trade be scored at all: the live roster
-    holds MarShawn Lloyd, whom the board has no row for, and refusing the whole
-    evaluation over a player who is not in the trade told the user nothing about
-    the trade they asked about.
+    A name the board has no row for is priced from ESPN when `espn_season`
+    carries a finite projection for him and `facts` gives him a position and a
+    bye week: the projection over SEASON_GAMES a game, available every week he
+    has a game. ESPN's season total is over the games it expects him to play,
+    so the per-game figure already carries his availability, and drawing it
+    again would charge it twice.
 
-    Unmatched names still come back rather than being dropped. The caller
-    decides what a miss means, and for `evaluate` it means different things on
-    the two sides: a name in `give` or `get` stops the evaluation, because a
-    trade scored without one of its own pieces is a different trade, while a
-    bystander is priced and reported.
+    Missing any of the three, he comes back as missing. There is no
+    replacement-level stand-in: a player priced at a level is not the player,
+    and one with no bye week scores a week he has no game.
     """
     if "_key" not in board.columns:
         return [], list(names)
     rows = {k: row for k, row in zip(board["_key"], board.to_dict("records"))}
-    place = dict(positions or {})
+    known = facts or {}
     found, missing = [], []
     for name in names:
-        row = rows.get(norm_name(name))
+        key = norm_name(name)
+        row = rows.get(key)
         if row is None:
-            row = _stand_in_row(board, name, str(place.get(norm_name(name)) or ""))
-            if row is None:
+            fact = known.get(key) or {}
+            position = str(fact.get("position") or "")
+            projected = _finite((espn_season or {}).get(key), np.nan)
+            bye = _bye(fact.get("bye_week"))
+            if not np.isfinite(projected) or bye is None or not is_position(position):
                 missing.append(name)
                 continue
-            projected = (espn_season or {}).get(norm_name(name))
             found.append(Player(
-                name=name, key=norm_name(name),
-                position=str(row.get("position") or ""),
-                adj_ppg=_finite(projected if projected is not None
-                                else row.get("proj_points"), 0.0) / roles.SEASON_GAMES,
-                exp_games=float(roles.SEASON_GAMES), bye_week=None,
-                basis=BASIS_ESPN_STAND_IN if projected is not None else BASIS_STAND_IN))
+                name=name, key=key, position=position,
+                adj_ppg=projected / roles.SEASON_GAMES,
+                exp_games=float(roles.SEASON_GAMES), bye_week=bye,
+                basis=BASIS_ESPN_STAND_IN))
             continue
         exp_games = _finite(row.get("exp_games"), roles.SEASON_GAMES)
         adj = row.get("adj_ppg")
@@ -188,12 +187,11 @@ def resolve(board: pd.DataFrame, names: list[str],
             # fixtures build them by hand.
             basis = BASIS_DERIVED if have_proj and exp_games > 0 else BASIS_NONE
             adj = _finite(proj, 0.0) / exp_games if exp_games > 0 else 0.0
-        bye = row.get("bye_week")
-        bye = int(bye) if bye is not None and np.isfinite(_finite(bye, np.nan)) else None
         found.append(Player(
-            name=str(row.get("name") or name), key=norm_name(name),
+            name=str(row.get("name") or name), key=key,
             position=str(row.get("position") or ""),
-            adj_ppg=_finite(adj, 0.0), exp_games=exp_games, bye_week=bye, basis=basis))
+            adj_ppg=_finite(adj, 0.0), exp_games=exp_games,
+            bye_week=_bye(row.get("bye_week")), basis=basis))
     return found, missing
 
 
@@ -214,7 +212,7 @@ def _available(seed: int, key: str, week: int) -> float:
 def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
                     first_week: int = 1, last_week: int = FANTASY_WEEKS,
                     out: Mapping[str, frozenset[int]] | None = None,
-                    replacement: Mapping[str, float] | None = None) -> dict:
+                    waiver: Sequence[Player] = ()) -> dict:
     """One roster's season: best legal lineup each week of the window, summed.
 
     `first_week` through `last_week` is the scored window, inclusive. A trade
@@ -228,17 +226,17 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
     suspension -- and it scores 0 before any draw, because the draw prices a
     preseason injury rate and averaging a known absence into that rate turns a
     player who will not play into one who probably will. Kicker and defense
-    slots are not scored, which is `adp.best_weekly_lineup`'s existing behaviour
-    rather than a choice made here.
+    slots are not scored, which is `adp.best_weekly_lineup`'s behaviour.
 
-    `replacement` is a per-game rate by position for a player on waivers. Every
-    starting slot can take one, so a slot is never worth less than a free agent:
-    a hole a bye or an injury opens scores that rate, not 0, and a rostered
-    starter below it is streamed over. Scoring holes at 0 credits every backup
-    with a full game against nothing, when the real alternative is a waiver
-    pickup; on 2026-09-15 that made a TE downgrade for a backup QB read as a gain
-    for both sides. `empty_slots` still counts the slots no ROSTERED player
-    could fill, which is where the replacement rate did the work.
+    `waiver` is the free agents every lineup may start: distinct players, each
+    usable once a week, skipped on his bye, never drawn for availability (a
+    hurt free agent is not the one picked up; his rate carries his expected
+    availability). A hole a bye or an injury opens is filled by the best free
+    agent not already starting, so two holes at one position take two different
+    players. Scoring holes at 0 credits every backup with a full game against
+    nothing; on 2026-09-15 that made a TE downgrade for a backup QB read as a
+    gain for both sides. `empty_slots` counts the slots no ROSTERED player could
+    fill, which is where the free agents did the work.
 
     THE BYE IS CHARGED ONCE, and the reason is not obvious enough to leave
     implicit. This both skips the bye week and applies an availability derived
@@ -246,26 +244,12 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
     `roles.SEASON_GAMES` is 17 *games*, and the NFL season is 18 weeks with one
     bye, so `exp_games / 17` is the chance he is available in a week he has a
     game at all. The bye is the eighteenth week, and the `continue` below is the
-    only thing that prices it. Were the denominator weeks, this would be a double
-    count. Measured: a player at `exp_games` 17 with a bye scores exactly 13
-    weeks of his rate over a 14-week window.
+    only thing that prices it. Measured: a player at `exp_games` 17 with a bye
+    scores exactly 13 weeks of his rate over a 14-week window.
     """
     positions = {p.key: p.position for p in roster}
+    with_waiver = {**positions, **{p.key: p.position for p in waiver}}
     known_out = out or {}
-    # One always-available free agent per slot his position can fill, flex
-    # included. Keyed outside the name space so no draw or roster entry touches
-    # them.
-    waiver: dict[str, float] = {}
-    with_waiver = dict(positions)
-    for pos, n in league.starters.items():
-        rate = (replacement or {}).get(pos, 0.0)
-        if pos in ("FLEX", "K", "DST") or not n or rate <= 0:
-            continue
-        slots = n + (league.starters.get("FLEX", 0) if pos in league.flex_eligible else 0)
-        for i in range(slots):
-            key = f"{WAIVER_KEY}{pos}:{i}"
-            waiver[key] = rate
-            with_waiver[key] = pos
     total, empty = 0.0, 0
     for week in range(first_week, last_week + 1):
         points = {}
@@ -277,8 +261,9 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
         week_points, week_empty = adp_mod.best_weekly_lineup(
             points, positions, league.starters, league.flex_eligible)
         if waiver:
+            free = {p.key: p.adj_ppg for p in waiver if p.bye_week != week}
             week_points, _ = adp_mod.best_weekly_lineup(
-                {**points, **waiver}, with_waiver, league.starters, league.flex_eligible)
+                {**points, **free}, with_waiver, league.starters, league.flex_eligible)
         total += week_points
         empty += week_empty
     return {"points": round(total, 1), "empty_slots": empty}
@@ -288,7 +273,7 @@ def compare(before: list[Player], after: list[Player], league: LeagueSettings,
             n_trials: int = DEFAULT_TRIALS, blocks: int = DEFAULT_BLOCKS,
             seed: int = 0, first_week: int = 1, last_week: int = FANTASY_WEEKS,
             out: Mapping[str, frozenset[int]] | None = None,
-            replacement: Mapping[str, float] | None = None) -> dict:
+            waiver: Sequence[Player] = ()) -> dict:
     """Season points for one roster before and after, in disjoint seed blocks.
 
     Blocks use `seed + block * n_trials + trial`, so a second block extends the
@@ -302,9 +287,9 @@ def compare(before: list[Player], after: list[Player], league: LeagueSettings,
         for trial in range(n_trials):
             trial_seed = block_seed + trial
             a = simulate_season(before, league, trial_seed, first_week, last_week, out,
-                                replacement)
+                                waiver)
             b = simulate_season(after, league, trial_seed, first_week, last_week, out,
-                                replacement)
+                                waiver)
             gains.append(b["points"] - a["points"])
             before_pts.append(a["points"])
             after_pts.append(b["points"])
@@ -374,30 +359,27 @@ def verdict(summary: dict, side: str, first_week: int = 1,
     either: at two blocks it is one coin flip, which `blocks_agree_p_null` states
     beside it.
 
-    `first_week` and `last_week` are the window that was actually scored, passed
-    in rather than read off the module constant, and named by its bounds rather
-    than its length: "14 weeks" does not say whether week 1 or the playoffs were
-    in it, and those are the two things a reader weighing a mid-season trade
-    needs to know.
+    `first_week` and `last_week` are the window that was actually scored, named
+    by its bounds: "14 weeks" does not say whether week 1 or the playoffs were
+    in it.
 
-    The word "points" is likewise not this function's to choose. It comes from
-    the verdict `adp.margin_unit` put in the summary, so the sentence and the
-    structured `unit` field cannot disagree about what the number is.
+    The word "points" is not this function's to choose, in either branch. It
+    comes from the verdict `adp.margin_unit` put in the summary, so the sentence
+    and the structured `unit` field cannot disagree about what the number is.
     """
     gain = summary.get("improvement")
     spread = summary.get("block_spread")
     if gain is None:
         return f"{side}: nothing to compare"
+    unit = summary.get("unit", adp_mod.UNIT_ORDINAL)
     if not summary.get("blocks_agree"):
+        size = (f"{gain:+.1f} points" if unit == adp_mod.UNIT_POINTS
+                else f"{gain:+.1f} ({unit})")
         return (f"{side}: no call. The blocks disagree in sign "
-                f"({summary['block_improvements']}), so {gain:+.1f} points is inside "
+                f"({summary['block_improvements']}), so {size} is inside "
                 f"this harness's own noise rather than a result.")
     direction = "gains" if gain > 0 else "loses"
     p_null = summary.get("blocks_agree_p_null")
-    # The unit is read, never asserted. Hardcoding the word here is exactly what
-    # the rule exists to stop, and it is where a sentence and its own structured
-    # field come to disagree.
-    unit = summary.get("unit", adp_mod.UNIT_ORDINAL)
     amount = (f"{abs(gain):.1f} points" if unit == adp_mod.UNIT_POINTS
               else f"{abs(gain):.1f} ({unit})")
     # On a pass this is the rider that says what the spread does not cover; on
@@ -412,48 +394,56 @@ def verdict(summary: dict, side: str, first_week: int = 1,
             f"the spread before the mean." + tail)
 
 
-def _spread_note(roster: list[Player], weeks: int, scored: frozenset[str]) -> str | None:
+def _stand_ins(roster: list[Player], scored: frozenset[str]) -> list[Player]:
+    return [p for p in roster if p.basis == BASIS_ESPN_STAND_IN and p.position in scored]
+
+
+def _games(player: Player, first_week: int, last_week: int) -> int:
+    """Weeks in the window he has a game."""
+    return sum(1 for w in range(first_week, last_week + 1) if w != player.bye_week)
+
+
+def _spread_note(roster: list[Player], first_week: int, last_week: int,
+                 scored: frozenset[str]) -> str | None:
     """What this side's `block_spread` does not include, when that is a stand-in.
 
-    A stand-in is given full expected games, because the board has no injury
-    opinion about a player it has no row for and inventing one would be a guess
-    dressed as data. The consequence lands on the spread rather than on the
-    mean: availability is the only thing drawn at random here, so a player who is
-    always available contributes no variance, and `block_spread` comes out
-    narrower than the roster warrants. Narrower is the direction that flatters a
-    delta, so it is said beside the number rather than left for a reader to
-    deduce from the basis column.
+    A player priced from ESPN is always available in a week he has a game,
+    because his per-game rate already carries ESPN's availability. The
+    consequence lands on the spread rather than on the mean: availability is the
+    only thing drawn at random here, so he contributes no variance, and
+    `block_spread` comes out narrower than the roster warrants. Narrower is the
+    direction that flatters a delta, so it is said beside the number.
     """
-    stand_ins = [p for p in roster if p.basis in STAND_IN_BASES and p.position in scored]
+    stand_ins = _stand_ins(roster, scored)
     if not stand_ins:
         return None
-    points = sum(p.adj_ppg * p.weekly_availability * weeks for p in stand_ins)
+    points = sum(p.adj_ppg * _games(p, first_week, last_week) for p in stand_ins)
     return (f"block_spread is replication noise over the players the board could "
             f"price, and {', '.join(p.name for p in stand_ins)} "
             f"{'is' if len(stand_ins) == 1 else 'are'} not among them: "
-            f"{points:.0f} points of this side's total, held fully available, so "
-            f"their availability never varies and they contribute no variance at "
-            f"all. The spread is therefore narrower than this roster warrants, "
-            f"and the estimate rests on them -- a measured pair worth 214 points "
-            f"moved an improvement from +36.9 to -3.9 while the spread tightened "
-            f"from 4.3 to 0.7, so the output can read more confident exactly as "
-            f"it becomes more speculative. Per-player figures under stand_ins.")
+            f"{points:.0f} points of this side's total, priced from ESPN and never "
+            f"drawn out, so they contribute no variance at all. The spread is "
+            f"therefore narrower than this roster warrants, and the estimate rests "
+            f"on them -- a measured pair worth 214 points moved an improvement from "
+            f"+36.9 to -3.9 while the spread tightened from 4.3 to 0.7, so the "
+            f"output can read more confident exactly as it becomes more "
+            f"speculative. Per-player figures under stand_ins.")
 
 
-def _stand_ins_of(roster: list[Player], weeks: int, scored: frozenset[str]) -> list[dict]:
-    """The replacement-level fill-ins on a roster, with what each contributes.
+def _stand_ins_of(roster: list[Player], first_week: int, last_week: int,
+                  scored: frozenset[str]) -> list[dict]:
+    """The ESPN-priced players on a roster, with what each contributes.
 
-    Points rather than a bare name, because "two of these are guesses" and "two
-    of these are guesses worth 96 points between them" are different warnings,
-    and only the second lets a reader judge whether the delta survives them.
-    Only positions `scored` holds: a stand-in kicker or defense never enters a
-    simulated lineup, so listing his points would warn about a guess the total
-    does not contain.
+    Points rather than a bare name, because "two of these are not board rows"
+    and "two of these are worth 96 points between them" are different warnings.
+    Only positions `scored` holds: a kicker or defense never enters a simulated
+    lineup, so listing his points would warn about a total that does not
+    contain them. Points count only the weeks he has a game.
     """
-    return [{"player": p.name, "position": p.position,
-             "points": round(p.adj_ppg * p.weekly_availability * weeks, 1),
+    return [{"player": p.name, "position": p.position, "bye_week": p.bye_week,
+             "points": round(p.adj_ppg * _games(p, first_week, last_week), 1),
              "basis": p.basis}
-            for p in roster if p.basis in STAND_IN_BASES and p.position in scored]
+            for p in _stand_ins(roster, scored)]
 
 
 def _roster_names(picks: list[dict]) -> list[str]:
@@ -488,8 +478,9 @@ def parse_out(text: str) -> tuple[dict[str, frozenset[int]], list[str]]:
                 errors.append(f"{item!r}: {part!r} is not a week or a range of weeks")
                 weeks = set()
                 break
-            if first < 1 or last < first:
-                errors.append(f"{item!r}: {part!r} is not a week or a range of weeks")
+            if first < 1 or last < first or last > LAST_NFL_WEEK:
+                errors.append(f"{item!r}: {part!r} is not a week or a range of weeks "
+                              f"inside 1-{LAST_NFL_WEEK}")
                 weeks = set()
                 break
             weeks.update(range(first, last + 1))
@@ -503,51 +494,84 @@ def _swap(names: list[str], out: list[str], into: list[str]) -> list[str]:
     return [n for n in names if norm_name(n) not in gone] + list(into)
 
 
-def waiver_rates(board: pd.DataFrame, league: LeagueSettings,
-                 pool: list[dict] | None = None,
-                 ) -> tuple[dict[str, float], dict[str, dict]]:
-    """Per-game rate for a free agent at each scored position, and its source.
+def board_pool(board: pd.DataFrame, rostered: set[str]) -> list[dict]:
+    """Free agents for an evaluation with no live pool: board players whose
+    normalised name is in no roster.
 
-    `pool` is ESPN's acquirable rows (`player`, `position`, `season_proj`). A
-    position's rate is the best `season_proj / SEASON_GAMES` among them: ESPN's
-    own season projection, which it revises in season. The board's projection
-    for a player nobody rosters is the preseason one and prices the role he was
-    drafted for: on 2026-09-15 the board had Tua Tagovailoa at 254 points and
-    Jawhar Jordan at 159 where ESPN, after week 1, had 115 and 0. A row with no
-    ESPN projection is skipped rather than read as zero.
-
-    The board's replacement level is the fallback, per position, when no pool
-    is given or no acquirable player at the position carries a projection. It
-    is the last starter in a league this size, whom every team already rosters.
+    Rows in the shape `waiver_candidates` reads. The rate is `adj_ppg x
+    weekly_availability`, his expected points in a week he has a game, because a
+    free agent is simulated always available and his injury risk is carried in
+    the rate instead of drawn.
     """
-    scored = [pos for pos, n in league.starters.items()
-              if n and pos not in ("FLEX", "K", "DST")]
-    best: dict[str, tuple[float, str]] = {}
-    for entry in pool or []:
-        position = str(entry.get("position") or "")
-        projection = entry.get("season_proj")
-        if position not in scored or projection is None:
+    if "_key" not in board.columns or "name" not in board.columns:
+        return []
+    names = [str(n) for n, k in zip(board["name"], board["_key"]) if k not in rostered]
+    players, _ = resolve(board, names)
+    return [{"player": p.name, "position": p.position,
+             "per_game": p.adj_ppg * p.weekly_availability, "bye_week": p.bye_week}
+            for p in players]
+
+
+def waiver_candidates(pool: list[dict], league: LeagueSettings, first_week: int,
+                      last_week: int, source: str,
+                      ) -> tuple[list[Player], dict[str, dict], list[str]]:
+    """The distinct free agents every simulated lineup may start, and errors.
+
+    `pool` rows carry `player`, `position`, `per_game` and `bye_week`. A row at
+    a position the lineup does not score, with no positive rate, or with no bye
+    week (a player on no NFL team has no games) is skipped.
+
+    Per position the best players are taken in rate order until every week of
+    the window has as many of them off bye as that position can start (its own
+    slots plus flex when it is flex-eligible). No lineup can start more of them
+    in a week, so a longer list changes no week and a shorter one would. The
+    list is exact, not a cap: it is the free agents a waiver wire actually
+    offers, one of each.
+
+    A scored position with no candidate at all is an error, not a hole scored at
+    0: from a live pool it means the read is not the league's free agents.
+    """
+    scored = scored_positions(league)
+    flex = league.starters.get("FLEX", 0)
+    by_pos: dict[str, list[tuple[float, str, int]]] = {}
+    for row in pool:
+        position = str(row.get("position") or "")
+        rate = _finite(row.get("per_game"), 0.0)
+        bye = _bye(row.get("bye_week"))
+        if position not in scored or rate <= 0 or bye is None:
             continue
-        rate = _finite(projection, 0.0) / roles.SEASON_GAMES
-        if position not in best or rate > best[position][0]:
-            best[position] = (rate, str(entry.get("player") or ""))
-    rates: dict[str, float] = {}
+        by_pos.setdefault(position, []).append((rate, str(row.get("player") or ""), bye))
+    weeks = range(first_week, last_week + 1)
+    players: list[Player] = []
     basis: dict[str, dict] = {}
-    for position in scored:
-        if position in best:
-            rates[position] = best[position][0]
-            basis[position] = {"source": WAIVER_FROM_POOL, "player": best[position][1]}
-        else:
-            rates[position] = replacement_points(board, position) / roles.SEASON_GAMES
-            basis[position] = {"source": WAIVER_FROM_REPLACEMENT, "player": None}
-    return rates, basis
+    errors: list[str] = []
+    for position in sorted(scored):
+        need = league.starters[position] + (flex if position in league.flex_eligible else 0)
+        ranked = sorted(by_pos.get(position, []), key=lambda c: (-c[0], c[1]))
+        taken: list[tuple[float, str, int]] = []
+        for candidate in ranked:
+            taken.append(candidate)
+            if all(sum(1 for _, _, bye in taken if bye != w) >= need for w in weeks):
+                break
+        if not taken:
+            errors.append(f"no free agent at {position} with a projection and a bye week "
+                          f"in the pool ({source})")
+            continue
+        for i, (rate, name, bye) in enumerate(taken):
+            players.append(Player(name=name, key=f"{WAIVER_KEY}{position}:{i}",
+                                  position=position, adj_ppg=rate,
+                                  exp_games=float(roles.SEASON_GAMES), bye_week=bye,
+                                  basis=source))
+        basis[position] = {"source": source,
+                           "candidates": [{"player": name, "per_game": round(rate, 2),
+                                           "bye_week": bye} for rate, name, bye in taken]}
+    return players, basis, errors
 
 
 def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
              league: LeagueSettings, my_slot: int, counterparty_slot: int,
-             give: list[str], get: list[str], n_trials: int = DEFAULT_TRIALS,
-             blocks: int = DEFAULT_BLOCKS, seed: int = 0,
-             first_week: int = 1, last_week: int = FANTASY_WEEKS,
+             give: list[str], get: list[str], *, first_week: int, last_week: int,
+             n_trials: int = DEFAULT_TRIALS, blocks: int = DEFAULT_BLOCKS, seed: int = 0,
              out: Mapping[str, frozenset[int]] | None = None,
              roster_key: str = "slot",
              counterparty_picks: list[dict] | None = None,
@@ -555,28 +579,35 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
              espn_season: Mapping[str, float] | None = None) -> dict:
     """Both sides of one proposed trade, before and after, with the spread.
 
-    `picks_by_slot` maps a side's id to its players (`name`, `position`). The id
-    is a draft slot for the draft record, or an ESPN team id for rosters read
-    live, and `roster_key` names which: it is the key each side is reported
-    under and, without its `_id` suffix, the word the verdict and errors use.
-    `counterparty_picks` is the counterparty's draft record for `tendencies`,
-    which a live roster cannot supply; omitted, it is read from `picks_by_slot`.
-    `pool` is ESPN's acquirable players, the source of each position's waiver
-    rate (see `waiver_rates`). `espn_season` prices a roster player the board
-    has no row for (see `resolve`).
+    `picks_by_slot` maps a side's id to its players (`name`, `position`, and
+    `bye_week` when the roster knows it). The id is a draft slot for the draft
+    record, or an ESPN team id for rosters read live, and `roster_key` names
+    which: it is the key each side is reported under and, without its `_id`
+    suffix, the word the verdict and errors use. `counterparty_picks` is the
+    counterparty's draft picks for `tendencies`; omitted, it is read from
+    `picks_by_slot`.
+
+    `pool` is the league's free agents in `waiver_candidates` rows. Omitted, the
+    free agents are the board players on no roster here, which is the draft
+    record's world and nothing else. `espn_season` prices a roster player the
+    board has no row for (see `resolve`); omitted, such a player refuses.
 
     `give` leaves your roster and `get` arrives on it; the counterparty's roster
     moves the other way, so one simulation answers for both and the two sides
     cannot be scored under different assumptions.
 
-    `first_week`..`last_week` is the scored window and `out` the known absences
-    by player name (see `simulate_season`). An absence names a player on one of
-    the two rosters or the evaluation stops: an absence that matches nobody
-    silently scores the player it was meant for.
+    `first_week`..`last_week` is the scored window, required: a default window
+    is a guess about when the trade happens. `out` is the known absences by
+    player name (see `simulate_season`).
 
-    A player named on the wrong roster, or on no board row, stops the evaluation
-    rather than being dropped. A trade scored without one of its own pieces is a
-    different trade.
+    Refuses, with every reason, when: a traded player is on the wrong roster, has
+    no board row, or plays a position the lineup does not score; a roster player
+    at a scored position, or at no known position, cannot be priced or has no
+    bye week; an absence names nobody on either roster; the window is not inside
+    weeks 1-LAST_NFL_WEEK; `n_trials` or `blocks` is outside its bounds; or a
+    scored position has no free agent. A roster player at a kicker or defense
+    slot who cannot be priced is listed under `not_scored` and does not refuse:
+    no simulated lineup contains those slots, so he moves neither total.
     """
     side_word = roster_key.removesuffix("_id")
     mine = _roster_names(picks_by_slot.get(my_slot, []))
@@ -590,8 +621,14 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
             errors.append(f"{name!r} is not on {side_word} {counterparty_slot}'s roster")
     if not give and not get:
         errors.append("a trade needs at least one player on one side")
-    if first_week < 1 or last_week < first_week:
-        errors.append(f"weeks {first_week}-{last_week} is not a window: it scores nothing")
+    window_ok = 1 <= first_week <= last_week <= LAST_NFL_WEEK
+    if not window_ok:
+        errors.append(f"weeks {first_week}-{last_week} is not a window inside weeks "
+                      f"1-{LAST_NFL_WEEK}")
+    if not 1 <= n_trials <= MAX_TRIALS:
+        errors.append(f"n_trials {n_trials} is outside 1-{MAX_TRIALS}")
+    if not 1 <= blocks <= MAX_BLOCKS:
+        errors.append(f"blocks {blocks} is outside 1-{MAX_BLOCKS}")
     on_rosters = {norm_name(n) for n in mine + theirs}
     known_out = {norm_name(n): frozenset(w) for n, w in (out or {}).items()}
     for name in (out or {}):
@@ -602,89 +639,99 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         "mine_before": mine, "mine_after": _swap(mine, give, get),
         "theirs_before": theirs, "theirs_after": _swap(theirs, get, give),
     }
-    # Positions from the draft record, which knows what a player is even when the
-    # board cannot price him -- that is the whole reason `record_pick` files one.
-    # Deliberately NOT offered for a name in the trade: a stand-in is a guess,
-    # and the pieces being valued are the one thing this may not guess about. A
-    # traded player with no board row still stops the evaluation, because a trade
-    # scored on a replacement-level estimate of its own centrepiece is a
-    # confident answer to a question the board cannot answer.
-    #
-    # A bystander is the opposite case. He is priced and reported, because
-    # refusing the whole trade over a player who is not in it answers nothing the
-    # user asked: the live roster holds MarShawn Lloyd, who has no board row, and
-    # every trade on that roster was refused for him.
+    # What the rosters know about a player the board may not carry. Deliberately
+    # NOT offered for a name in the trade: the pieces being valued are the one
+    # thing this may not price from anything but the board.
     traded = {norm_name(n) for n in list(give) + list(get)}
-    positions = {norm_name(p["name"]): str(p.get("position") or "")
-                 for picks in picks_by_slot.values() for p in picks
-                 if norm_name(p["name"]) not in traded}
+    facts = {norm_name(p["name"]): p for picks in picks_by_slot.values() for p in picks
+             if norm_name(p["name"]) not in traded}
     resolved, missing = {}, []
     for label, names in rosters.items():
-        players, gone = resolve(board, names, positions, espn_season)
+        players, gone = resolve(board, names, facts, espn_season)
         resolved[label] = players
         missing.extend(gone)
     blocking = sorted({n for n in missing if norm_name(n) in traded})
     if blocking:
-        # Says why THIS name refuses when a bystander does not. The bare "no
-        # board row for" was read as a bug the last time it fired, correctly,
-        # because it fired on a player who was not in the trade. Now that it
-        # cannot, the message has to carry the distinction or the next reader
-        # files the same report. Flagged by freddy.
         errors.append(
             "no board row for: " + ", ".join(blocking)
-            + " -- a player being traded cannot be filled in at replacement "
-              "level, because he is the quantity the answer is about. A player "
-              "on either roster who is not in the trade is stood in for and "
-              "reported under stand_ins.")
-    unplaceable = sorted({n for n in missing if norm_name(n) not in traded})
+            + " -- a player being traded is priced only from the board, because he "
+              "is the quantity the answer is about.")
+    scored = scored_positions(league)
+    for p in resolved["mine_before"] + resolved["theirs_before"]:
+        if p.key in traded and p.position not in scored:
+            errors.append(f"{p.name!r} plays {p.position or 'no position'}, which the "
+                          f"simulated lineup does not score, so the trade would be "
+                          f"valued as if he were not in it")
+    not_scored = []
+    for name in sorted({n for n in missing if norm_name(n) not in traded}):
+        fact = facts.get(norm_name(name)) or {}
+        position = str(fact.get("position") or "")
+        if is_position(position) and position not in scored:
+            not_scored.append({"player": name, "position": position})
+            continue
+        reasons = ["no board row"]
+        if espn_season is None:
+            reasons.append("no ESPN projections without a live league")
+        elif not np.isfinite(_finite(espn_season.get(norm_name(name)), np.nan)):
+            reasons.append("no ESPN season projection")
+        if not is_position(position):
+            reasons.append("no position")
+        if _bye(fact.get("bye_week")) is None:
+            reasons.append("no bye week")
+        errors.append(f"{name!r} is on a roster and cannot be priced ({', '.join(reasons)}): "
+                      f"leaving him out can change who starts, so the trade is not scored")
+    seen: dict[str, Player] = {p.key: p for players in resolved.values() for p in players}
+    for p in seen.values():
+        if p.position in scored and p.bye_week is None:
+            errors.append(f"{p.name!r} has no bye week, so he would score in the week "
+                          f"he has no game")
+
+    if pool is None:
+        rostered = {norm_name(n) for picks in picks_by_slot.values()
+                    for n in _roster_names(picks)}
+        pool, source = board_pool(board, rostered), WAIVER_FROM_BOARD
+    else:
+        source = WAIVER_FROM_ESPN
+    waiver, waiver_basis, waiver_errors = waiver_candidates(
+        pool, league, first_week, last_week, source)
+    if window_ok:
+        errors.extend(waiver_errors)
     if errors:
         return {"ok": False, "errors": errors}
 
-    waiver_rate, waiver_basis = waiver_rates(board, league, pool)
     yours = compare(resolved["mine_before"], resolved["mine_after"], league,
-                    n_trials, blocks, seed, first_week, last_week, known_out, waiver_rate)
+                    n_trials, blocks, seed, first_week, last_week, known_out, waiver)
     theirs_cmp = compare(resolved["theirs_before"], resolved["theirs_after"], league,
-                         n_trials, blocks, seed, first_week, last_week, known_out,
-                         waiver_rate)
-    span = last_week - first_week + 1
-    # The positions `simulate_season` puts in a lineup; `adp.best_weekly_lineup`
-    # skips kicker and defense.
-    scored = frozenset(pos for pos, n in league.starters.items()
-                       if n and pos not in ("FLEX", "K", "DST"))
+                         n_trials, blocks, seed, first_week, last_week, known_out, waiver)
     return {
         "ok": True,
         # The window scored, inclusive, by its bounds.
         "weeks": {"from": first_week, "to": last_week},
-        # What a free agent scores per game in a slot no rostered player fills
-        # or beats, and per position whether that came from ESPN's pool or the
-        # board's replacement level.
-        "replacement_per_game": {pos: round(rate, 2) for pos, rate in waiver_rate.items()},
-        "replacement_basis": waiver_basis,
+        # Per scored position, the distinct free agents a lineup may start, with
+        # their source.
+        "waiver": waiver_basis,
         # Weeks each named player scores 0 regardless of the availability draw,
         # clipped to the window so the payload shows only absences that moved it.
         "known_out": {name: sorted(w for w in weeks if first_week <= w <= last_week)
                       for name, weeks in (out or {}).items()},
         "give": list(give),
         "get": list(get),
-        # Players on either roster the board could not price, filled in at their
-        # position's replacement level with the points each contributes, so the
-        # total is never silently moved by a guess. Empty means both rosters are
-        # fully priced and the delta rests on the board throughout.
+        # Roster players the board has no row for, priced from ESPN, with the
+        # points each contributes. Empty means the delta rests on the board.
         "stand_ins": {
-            "yours": _stand_ins_of(resolved["mine_after"], span, scored),
-            "theirs": _stand_ins_of(resolved["theirs_after"], span, scored),
+            "yours": _stand_ins_of(resolved["mine_after"], first_week, last_week, scored),
+            "theirs": _stand_ins_of(resolved["theirs_after"], first_week, last_week, scored),
         },
-        # Named on a roster but placeable by nothing -- no board row and no
-        # recorded position. They are absent from the simulation entirely, which
-        # is a smaller roster than the user has, so it is said rather than left
-        # to be inferred from a total.
-        "not_scored": unplaceable,
+        # Kickers and defenses nothing could price. No simulated lineup has
+        # their slots, so they move neither total.
+        "not_scored": not_scored,
         "you": {
             roster_key: my_slot, **yours,
             "depth_before": depth(resolved["mine_before"], league),
             "depth_after": depth(resolved["mine_after"], league),
             "priced_by": priced_by(resolved["mine_after"]),
-            "spread_note": _spread_note(resolved["mine_after"], span, scored),
+            "spread_note": _spread_note(resolved["mine_after"], first_week, last_week,
+                                        scored),
             "verdict": verdict(yours, "you", first_week, last_week),
         },
         "counterparty": {
@@ -692,7 +739,8 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
             "depth_before": depth(resolved["theirs_before"], league),
             "depth_after": depth(resolved["theirs_after"], league),
             "priced_by": priced_by(resolved["theirs_after"]),
-            "spread_note": _spread_note(resolved["theirs_after"], span, scored),
+            "spread_note": _spread_note(resolved["theirs_after"], first_week, last_week,
+                                        scored),
             "verdict": verdict(theirs_cmp, f"{side_word} {counterparty_slot}", first_week,
                                last_week),
             "tendencies": counterparty_tendencies(
