@@ -66,6 +66,11 @@ BASIS_NONE = "none: no projection on the board"
 # delta that rests partly on replacement-level guesses is a weaker number than
 # one that does not, and only the reader can decide how much weaker.
 BASIS_STAND_IN = "replacement level: the board has no row for him"
+# A player the board cannot price whom ESPN projects: his ESPN season projection
+# over SEASON_GAMES, the pricing the waiver rate uses. Replacement level is what
+# the board knows about a player it has no row for, and ESPN knows more.
+BASIS_ESPN_STAND_IN = "ESPN season projection: the board has no row for him"
+STAND_IN_BASES = (BASIS_STAND_IN, BASIS_ESPN_STAND_IN)
 
 
 @dataclass(frozen=True)
@@ -119,8 +124,13 @@ def _stand_in_row(board: pd.DataFrame, name: str, position: str) -> dict | None:
 
 def resolve(board: pd.DataFrame, names: list[str],
             positions: Mapping[str, str] | None = None,
+            espn_season: Mapping[str, float] | None = None,
             ) -> tuple[list[Player], list[str]]:
     """Board rows for these names, plus the names that matched nothing.
+
+    `espn_season` maps a normalised name to ESPN's season projection. A stand-in
+    ESPN projects is priced at that projection over SEASON_GAMES; one it does
+    not is priced at the board's replacement level.
 
     A name the board cannot price becomes a replacement-level stand-in when
     `positions` says what he plays, and is returned as missing only when nothing
@@ -147,12 +157,14 @@ def resolve(board: pd.DataFrame, names: list[str],
             if row is None:
                 missing.append(name)
                 continue
+            projected = (espn_season or {}).get(norm_name(name))
             found.append(Player(
                 name=name, key=norm_name(name),
                 position=str(row.get("position") or ""),
-                adj_ppg=_finite(row.get("proj_points"), 0.0) / roles.SEASON_GAMES,
+                adj_ppg=_finite(projected if projected is not None
+                                else row.get("proj_points"), 0.0) / roles.SEASON_GAMES,
                 exp_games=float(roles.SEASON_GAMES), bye_week=None,
-                basis=BASIS_STAND_IN))
+                basis=BASIS_ESPN_STAND_IN if projected is not None else BASIS_STAND_IN))
             continue
         exp_games = _finite(row.get("exp_games"), roles.SEASON_GAMES)
         adj = row.get("adj_ppg")
@@ -412,7 +424,7 @@ def _spread_note(roster: list[Player], weeks: int, scored: frozenset[str]) -> st
     delta, so it is said beside the number rather than left for a reader to
     deduce from the basis column.
     """
-    stand_ins = [p for p in roster if p.basis == BASIS_STAND_IN and p.position in scored]
+    stand_ins = [p for p in roster if p.basis in STAND_IN_BASES and p.position in scored]
     if not stand_ins:
         return None
     points = sum(p.adj_ppg * p.weekly_availability * weeks for p in stand_ins)
@@ -441,7 +453,7 @@ def _stand_ins_of(roster: list[Player], weeks: int, scored: frozenset[str]) -> l
     return [{"player": p.name, "position": p.position,
              "points": round(p.adj_ppg * p.weekly_availability * weeks, 1),
              "basis": p.basis}
-            for p in roster if p.basis == BASIS_STAND_IN and p.position in scored]
+            for p in roster if p.basis in STAND_IN_BASES and p.position in scored]
 
 
 def _roster_names(picks: list[dict]) -> list[str]:
@@ -539,7 +551,8 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
              out: Mapping[str, frozenset[int]] | None = None,
              roster_key: str = "slot",
              counterparty_picks: list[dict] | None = None,
-             pool: list[dict] | None = None) -> dict:
+             pool: list[dict] | None = None,
+             espn_season: Mapping[str, float] | None = None) -> dict:
     """Both sides of one proposed trade, before and after, with the spread.
 
     `picks_by_slot` maps a side's id to its players (`name`, `position`). The id
@@ -549,7 +562,8 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
     `counterparty_picks` is the counterparty's draft record for `tendencies`,
     which a live roster cannot supply; omitted, it is read from `picks_by_slot`.
     `pool` is ESPN's acquirable players, the source of each position's waiver
-    rate (see `waiver_rates`).
+    rate (see `waiver_rates`). `espn_season` prices a roster player the board
+    has no row for (see `resolve`).
 
     `give` leaves your roster and `get` arrives on it; the counterparty's roster
     moves the other way, so one simulation answers for both and the two sides
@@ -606,7 +620,7 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
                  if norm_name(p["name"]) not in traded}
     resolved, missing = {}, []
     for label, names in rosters.items():
-        players, gone = resolve(board, names, positions)
+        players, gone = resolve(board, names, positions, espn_season)
         resolved[label] = players
         missing.extend(gone)
     blocking = sorted({n for n in missing if norm_name(n) in traded})

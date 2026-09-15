@@ -588,15 +588,16 @@ best ESPN season projection among the players ESPN's pool lists as acquirable at
 that position, over 17 (`season_proj / 17`). ESPN's projection, not the board's:
 the board's number for an unrostered player is the preseason one. Where no
 acquirable player at a position carries a projection, or the pool read fails, it
-is the board's replacement level. `replacement_basis` names the source and player per
-position. A hole a bye or injury opens scores that rate, not 0, and a rostered
-starter below it is streamed over, so a backup is worth his margin over a free
-agent rather than a full game. `empty_slots_before` and
-`empty_slots_after` count the slots no rostered player could fill.
+is the board's replacement level. `replacement_basis` names the source and
+player per position. A hole a bye or injury opens scores that rate, not 0, and a
+rostered starter below it is streamed over, so a backup is worth his margin over
+a free agent rather than a full game. `empty_slots_before` and `empty_slots_after`
+count the slots no rostered player could fill.
 
-A roster player the board cannot price who is not in the trade is stood in at
-replacement level and listed under `stand_ins`; a traded player with no board
-row refuses.
+A roster player the board cannot price who is not in the trade is stood in and
+listed under `stand_ins` with his basis: his ESPN season projection over 17 when
+ESPN's pool carries one (with `league_id`), else the board's replacement level.
+A traded player with no board row refuses.
 
 Each side's roster is simulated week by week on its own starting lineup, and
 each side is reported as points before and after, per-position depth before and

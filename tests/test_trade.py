@@ -690,6 +690,29 @@ class TestRefusals:
         assert out["you"]["spread_note"] is None
         assert out["counterparty"]["spread_note"] is None
 
+    def test_a_bystander_espn_projects_is_priced_at_that_projection(
+            self, fixture_board, by_slot):
+        # Replacement level is what the board knows about a player it has no row
+        # for; ESPN's season projection is what ESPN knows, and it is used first.
+        picks = {1: by_slot[1] + [{"overall": 99, "slot": 1, "name": "Bystander",
+                                   "player_id": None, "position": "RB"}],
+                 2: by_slot[2]}
+        out = trade.evaluate(_priced(fixture_board), picks, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"], n_trials=10, blocks=2, seed=0,
+                             espn_season={board.norm_name("Bystander"): 170.0})
+        mine = out["stand_ins"]["yours"]
+        assert [s["basis"] for s in mine] == [trade.BASIS_ESPN_STAND_IN]
+        # Weeks 1-14 at 170 / 17 a game, availability held full.
+        assert mine[0]["points"] == pytest.approx(170.0 / roles.SEASON_GAMES * 14, abs=0.1)
+        assert "Bystander" in out["you"]["spread_note"]
+
+    def test_a_bystander_espn_does_not_project_stays_at_replacement(self, fixture_board):
+        players, _ = trade.resolve(_priced(fixture_board), ["Bystander"], {"bystander": "RB"},
+                                   espn_season={"somebody else": 99.0})
+        assert players[0].basis == trade.BASIS_STAND_IN
+        assert players[0].adj_ppg == pytest.approx(120.0 / roles.SEASON_GAMES)
+
     def test_a_stand_in_at_an_unscored_position_is_not_listed(self, fixture_board, by_slot):
         # Kicker and defense never enter a simulated lineup, so a stand-in there
         # contributes nothing to the total and is no warning about it. Live, ESPN's

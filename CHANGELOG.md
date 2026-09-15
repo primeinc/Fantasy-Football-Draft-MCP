@@ -8,6 +8,13 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**`evaluate_trade` priced a player the board has no row for at replacement level**
+- A roster player the board does not carry was a stand-in at the board's
+  replacement level whatever ESPN projected for him. With `league_id`, a stand-in
+  ESPN projects is priced at his ESPN season projection over 17, the same source
+  the waiver rate reads; replacement level remains the fallback. `stand_ins` and
+  `priced_by` name which basis each got.
+
 **`evaluate_trade` priced a waiver pickup above what waivers hold**
 - The waiver rate was the board's replacement level, the last starter in a
   league this size, whom every team already rosters: 14.95 a game for a QB.
