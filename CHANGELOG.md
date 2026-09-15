@@ -8,6 +8,16 @@ All notable changes to this project. Format follows
 
 ### Fixed
 
+**`evaluate_trade` priced a waiver pickup above what waivers hold**
+- The waiver rate was the board's replacement level, the last starter in a
+  league this size, whom every team already rosters: 14.95 a game for a QB.
+- With `league_id`, each position's rate is the best ESPN season projection
+  among ESPN's acquirable players, over 17. ESPN's, not the board's: the board
+  priced unrostered players at their preseason role, Tua Tagovailoa at 254 and
+  Jawhar Jordan at 159 where ESPN had 115 and 0. `pool.pool_rows` carries
+  `season_proj`. Replacement level remains the fallback per position;
+  `replacement_basis` names the source and player.
+
 **`evaluate_trade` read rosters from the draft record**
 - Every add, drop and trade since the draft was invisible: a waiver pickup was
   on no roster, and a player traded away still counted for his drafter. With

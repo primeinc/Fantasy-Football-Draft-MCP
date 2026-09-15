@@ -583,10 +583,15 @@ fall inside the window. An uncertain return is modelled by running more than
 once with different absences.
 
 **Empty slots are waiver pickups.** Every starting slot can take a free agent
-scoring the board's replacement level per game (`replacement_per_game`, the
-number a stand-in is priced at). A hole a bye or injury opens scores that rate,
-not 0, and a rostered starter below it is streamed over, so a backup is worth
-his margin over a free agent rather than a full game. `empty_slots_before` and
+at a per-game rate (`replacement_per_game`). With `league_id` the rate is the
+best ESPN season projection among the players ESPN's pool lists as acquirable at
+that position, over 17 (`season_proj / 17`). ESPN's projection, not the board's:
+the board's number for an unrostered player is the preseason one. Where no
+acquirable player at a position carries a projection, or the pool read fails, it
+is the board's replacement level. `replacement_basis` names the source and player per
+position. A hole a bye or injury opens scores that rate, not 0, and a rostered
+starter below it is streamed over, so a backup is worth his margin over a free
+agent rather than a full game. `empty_slots_before` and
 `empty_slots_after` count the slots no rostered player could fill.
 
 A roster player the board cannot price who is not in the trade is stood in at

@@ -3870,7 +3870,7 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
     is reported as no call rather than as a win: that difference is inside the
     harness's own noise. Both sides can gain, because the same player is worth
     different points to two different lineups."""
-    from . import live
+    from . import live, pool
 
     state = _state()
     b = _build_board()
@@ -3912,6 +3912,16 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
     if not end:
         end = trade.FANTASY_WEEKS
         window_basis["to"] = "default: trade.FANTASY_WEEKS, no league schedule read"
+    # ESPN's acquirable players, the source of each position's waiver rate. A
+    # failed read leaves the board's replacement level, which
+    # `replacement_basis` names per position.
+    acquirable_pool: list[dict] | None = None
+    if league_id:
+        try:
+            acquirable_pool = pool.acquirable(pool.pool_rows(
+                pool.fetch_pool(league_id, season), bd._ESPN_POSITION_NAMES, season, start))
+        except Exception as exc:
+            unread["pool"] = f"{type(exc).__name__}: {exc}"
     by_slot: dict[int, list[dict]] = {}
     for p in state.picks:
         by_slot.setdefault(p["slot"], []).append(p)
@@ -3938,7 +3948,8 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
         result = trade.evaluate(
             b, live_rosters["by_team"], state.league, mine_id, theirs_id,
             give_names, get_names, n_trials=trials, blocks=block_count, seed=seed,
-            first_week=start, last_week=end, out=absences, roster_key="team_id",
+            first_week=start, last_week=end, out=absences, pool=acquirable_pool,
+            roster_key="team_id",
             counterparty_picks=by_slot.get(their_slot, []) if their_slot else [])
         result["roster_basis"] = ROSTER_LIVE
         if result.get("ok"):
@@ -3953,7 +3964,7 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
         result = trade.evaluate(
             b, by_slot, state.league, state.my_slot, counterparty_slot,
             give_names, get_names, n_trials=trials, blocks=block_count, seed=seed,
-            first_week=start, last_week=end, out=absences)
+            first_week=start, last_week=end, out=absences, pool=acquirable_pool)
         result["roster_basis"] = ROSTER_DRAFT
         entry = _WATCHES.get(league_id) if league_id else None
         if entry is not None and result.get("ok"):

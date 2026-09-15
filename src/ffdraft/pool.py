@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .board import _ESPN_TEAM_ABBR, espn_league_get
+from .board import _ESPN_TEAM_ABBR, espn_league_get, espn_season_projection
 from .config import CURRENT_SEASON
 from .waivers import POOL_FILTER
 
@@ -124,6 +124,9 @@ def pool_rows(players: list[dict], positions: dict[str, str], season: int,
             "percent_change": own.get("percentChange"),
             "week_points": week_total(source, season, week, ACTUAL_SOURCE),
             "week_proj": week_total(source, season, week, PROJECTED_SOURCE),
+            # ESPN's full-season projection from the current pull, None when it
+            # files none. Not week-scoped, so never read from `stats`.
+            "season_proj": espn_season_projection(player, season),
             "period_injury_status": None if period is None else source.get("injuryStatus"),
         })
     return rows

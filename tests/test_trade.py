@@ -429,6 +429,45 @@ class TestAnEmptySlotIsAWaiverPickupNotZero:
         assert rates["QB"] == pytest.approx(200.0 / roles.SEASON_GAMES, abs=0.01)
         assert rates["TE"] == pytest.approx(100.0 / roles.SEASON_GAMES, abs=0.01)
 
+    def test_the_best_espn_projection_in_the_pool_sets_the_rate(self, fixture_board):
+        pool = [{"player": "Waiver QB", "position": "QB", "season_proj": 115.0},
+                {"player": "Better QB", "position": "QB", "season_proj": 170.0},
+                {"player": "Waiver WR", "position": "WR", "season_proj": 136.0},
+                {"player": "Waiver RB", "position": "RB", "season_proj": None}]
+        rates, basis = trade.waiver_rates(_priced(fixture_board), _league(), pool)
+        assert rates["QB"] == pytest.approx(170.0 / roles.SEASON_GAMES)
+        assert basis["QB"] == {"source": trade.WAIVER_FROM_POOL, "player": "Better QB"}
+        assert rates["WR"] == pytest.approx(136.0 / roles.SEASON_GAMES)
+        # The RB carries no ESPN projection and no TE is in the pool: replacement
+        # level for both, and said.
+        assert rates["RB"] == pytest.approx(120.0 / roles.SEASON_GAMES)
+        assert basis["RB"] == {"source": trade.WAIVER_FROM_REPLACEMENT, "player": None}
+        assert basis["TE"]["source"] == trade.WAIVER_FROM_REPLACEMENT
+
+    def test_the_board_projection_of_a_pool_player_is_not_read(self, fixture_board):
+        # "Their QB" is on the board at 272. His ESPN projection is what counts:
+        # the board's number for an unrostered player is the preseason one.
+        rates, _ = trade.waiver_rates(
+            _priced(fixture_board), _league(),
+            [{"player": "Their QB", "position": "QB", "season_proj": 85.0}])
+        assert rates["QB"] == pytest.approx(85.0 / roles.SEASON_GAMES)
+
+    def test_no_pool_is_the_board_replacement_level(self, fixture_board):
+        rates, basis = trade.waiver_rates(_priced(fixture_board), _league())
+        assert rates["QB"] == pytest.approx(200.0 / roles.SEASON_GAMES)
+        assert all(v["source"] == trade.WAIVER_FROM_REPLACEMENT for v in basis.values())
+
+    def test_evaluate_reports_the_pool_basis(self, fixture_board, by_slot):
+        out = trade.evaluate(_priced(fixture_board), by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"], n_trials=10, blocks=2, seed=0,
+                             pool=[{"player": "Waiver TE", "position": "TE",
+                                    "season_proj": 77.0}])
+        assert out["replacement_per_game"]["TE"] == pytest.approx(
+            77.0 / roles.SEASON_GAMES, abs=0.01)
+        assert out["replacement_basis"]["TE"] == {"source": trade.WAIVER_FROM_POOL,
+                                                  "player": "Waiver TE"}
+
     def test_a_board_with_no_replacement_level_leaves_holes_at_zero(self):
         players, _ = trade.resolve(_board(IRON), ["Iron QB"])
         out = trade.simulate_season(players, self.QB_ONLY, seed=0)

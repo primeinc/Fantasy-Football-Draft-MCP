@@ -100,6 +100,17 @@ class TestPoolRows:
         assert murray["injury_status"] == "OUT"
         assert murray["period_injury_status"] == "QUESTIONABLE"
 
+    def test_the_season_projection_is_carried_and_none_when_espn_files_none(self):
+        filed = _entry(4241479, "Tua Tagovailoa", 1, 1, status="FREEAGENT")
+        filed["player"]["stats"][0]["appliedTotal"] = 115.0
+        unfiled = _entry(9003, "No Projection", 2, 1, status="FREEAGENT")
+        unfiled["player"]["stats"] = []
+        rows = pool.pool_rows([filed, unfiled], _ESPN_POSITION_NAMES, 2026, 1)
+        assert rows[0]["season_proj"] == 115.0
+        assert rows[1]["season_proj"] is None
+        # A zero ESPN files is a projection of zero, not a missing one.
+        assert self.rows()[4]["season_proj"] == 0.0
+
     def test_a_player_the_period_pull_lacks_has_no_totals(self):
         rows = pool.pool_rows([_entry(1, "Only Now", 2, 1, actual=9.0)],
                               _ESPN_POSITION_NAMES, 2026, 1, stats=[])
@@ -119,7 +130,7 @@ class TestTool:
     def run(self, monkeypatch, raises=None, **kw):
         captured: dict = {"weeks": []}
 
-        def fetch(league_id, season, week=None):
+        def fetch(_league_id, _season, week=None):
             captured["weeks"].append(week)
             if raises:
                 raise raises

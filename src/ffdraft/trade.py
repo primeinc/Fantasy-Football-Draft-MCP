@@ -47,6 +47,10 @@ DEFAULT_BLOCKS = adp_mod.DEFAULT_BLOCKS
 # Prefix of the waiver free agents `simulate_season` adds to every lineup. Board
 # keys are normalised names, which never start with an underscore.
 WAIVER_KEY = "__waiver__:"
+# Where a position's waiver rate came from, reported per position.
+WAIVER_FROM_POOL = ("ESPN season projection of the best acquirable player, "
+                    "season_proj / SEASON_GAMES")
+WAIVER_FROM_REPLACEMENT = "board replacement level, replacement_points / SEASON_GAMES"
 
 
 # What priced a player's per-game rate. Not decoration: a roster can mix them,
@@ -487,6 +491,46 @@ def _swap(names: list[str], out: list[str], into: list[str]) -> list[str]:
     return [n for n in names if norm_name(n) not in gone] + list(into)
 
 
+def waiver_rates(board: pd.DataFrame, league: LeagueSettings,
+                 pool: list[dict] | None = None,
+                 ) -> tuple[dict[str, float], dict[str, dict]]:
+    """Per-game rate for a free agent at each scored position, and its source.
+
+    `pool` is ESPN's acquirable rows (`player`, `position`, `season_proj`). A
+    position's rate is the best `season_proj / SEASON_GAMES` among them: ESPN's
+    own season projection, which it revises in season. The board's projection
+    for a player nobody rosters is the preseason one and prices the role he was
+    drafted for: on 2026-09-15 the board had Tua Tagovailoa at 254 points and
+    Jawhar Jordan at 159 where ESPN, after week 1, had 115 and 0. A row with no
+    ESPN projection is skipped rather than read as zero.
+
+    The board's replacement level is the fallback, per position, when no pool
+    is given or no acquirable player at the position carries a projection. It
+    is the last starter in a league this size, whom every team already rosters.
+    """
+    scored = [pos for pos, n in league.starters.items()
+              if n and pos not in ("FLEX", "K", "DST")]
+    best: dict[str, tuple[float, str]] = {}
+    for entry in pool or []:
+        position = str(entry.get("position") or "")
+        projection = entry.get("season_proj")
+        if position not in scored or projection is None:
+            continue
+        rate = _finite(projection, 0.0) / roles.SEASON_GAMES
+        if position not in best or rate > best[position][0]:
+            best[position] = (rate, str(entry.get("player") or ""))
+    rates: dict[str, float] = {}
+    basis: dict[str, dict] = {}
+    for position in scored:
+        if position in best:
+            rates[position] = best[position][0]
+            basis[position] = {"source": WAIVER_FROM_POOL, "player": best[position][1]}
+        else:
+            rates[position] = replacement_points(board, position) / roles.SEASON_GAMES
+            basis[position] = {"source": WAIVER_FROM_REPLACEMENT, "player": None}
+    return rates, basis
+
+
 def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
              league: LeagueSettings, my_slot: int, counterparty_slot: int,
              give: list[str], get: list[str], n_trials: int = DEFAULT_TRIALS,
@@ -494,7 +538,8 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
              first_week: int = 1, last_week: int = FANTASY_WEEKS,
              out: Mapping[str, frozenset[int]] | None = None,
              roster_key: str = "slot",
-             counterparty_picks: list[dict] | None = None) -> dict:
+             counterparty_picks: list[dict] | None = None,
+             pool: list[dict] | None = None) -> dict:
     """Both sides of one proposed trade, before and after, with the spread.
 
     `picks_by_slot` maps a side's id to its players (`name`, `position`). The id
@@ -503,6 +548,8 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
     under and, without its `_id` suffix, the word the verdict and errors use.
     `counterparty_picks` is the counterparty's draft record for `tendencies`,
     which a live roster cannot supply; omitted, it is read from `picks_by_slot`.
+    `pool` is ESPN's acquirable players, the source of each position's waiver
+    rate (see `waiver_rates`).
 
     `give` leaves your roster and `get` arrives on it; the counterparty's roster
     moves the other way, so one simulation answers for both and the two sides
@@ -579,11 +626,7 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
     if errors:
         return {"ok": False, "errors": errors}
 
-    # The board's replacement level per game, the same number a stand-in is
-    # priced at, so a waiver pickup and an unpriced bystander are worth the same.
-    waiver_rate = {pos: replacement_points(board, pos) / roles.SEASON_GAMES
-                   for pos, n in league.starters.items()
-                   if n and pos not in ("FLEX", "K", "DST")}
+    waiver_rate, waiver_basis = waiver_rates(board, league, pool)
     yours = compare(resolved["mine_before"], resolved["mine_after"], league,
                     n_trials, blocks, seed, first_week, last_week, known_out, waiver_rate)
     theirs_cmp = compare(resolved["theirs_before"], resolved["theirs_after"], league,
@@ -599,8 +642,10 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         # The window scored, inclusive, by its bounds.
         "weeks": {"from": first_week, "to": last_week},
         # What a free agent scores per game in a slot no rostered player fills
-        # or beats. 0 where the board carries no replacement level.
+        # or beats, and per position whether that came from ESPN's pool or the
+        # board's replacement level.
         "replacement_per_game": {pos: round(rate, 2) for pos, rate in waiver_rate.items()},
+        "replacement_basis": waiver_basis,
         # Weeks each named player scores 0 regardless of the availability draw,
         # clipped to the window so the payload shows only absences that moved it.
         "known_out": {name: sorted(w for w in weeks if first_week <= w <= last_week)
