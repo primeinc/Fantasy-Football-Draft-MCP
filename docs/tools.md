@@ -558,15 +558,25 @@ Score a proposed trade for both sides over the rest of the season. `give` and
 `counterparty_slot` is their draft slot; with a running watch for `league_id`
 both teams are named.
 
-**Known blocker on the live league.** A roster player the board cannot price
-stops the whole evaluation, whether or not he is part of the trade: on the
-current record MarShawn Lloyd has no board row, so every call returns
-`no board row for: MarShawn Lloyd` and no trade can be scored at all. Refusing
-when a *traded* piece cannot be priced is deliberate — a trade scored without one
-of its own pieces is a different trade — but a bystander on the roster is a
-different case, and `board.my_rows` already answers it by standing such a player
-in at replacement level. Measured, not inferred: `just payloads` reports the
-refusal and re-prices the same trade against a board carrying stand-ins.
+**Window.** `first_week` through `last_week`, inclusive. With `league_id` and
+0, the window opens at the league's current scoring period (ESPN `mStatus`) and
+closes at its last playoff week (league settings): played weeks are not
+credited to either side and the playoffs are scored. Without a league read it
+falls back to week 1 and `trade.FANTASY_WEEKS`. `weeks` states the bounds and
+`window_basis` where each came from; a failed read is under `unread`.
+
+**Known absences.** `out` is `"Player Name:weeks"`, comma-separated; weeks are
+a number, a range `2-4`, or several joined by `;` (`"Kyler Murray:2-3"`). Those
+weeks score 0 for that player before any availability draw; every other week
+draws the board's preseason availability. A malformed entry, or a name on
+neither roster, refuses the evaluation. `known_out` echoes the absences that
+fall inside the window. An uncertain return is modelled by running more than
+once with different absences.
+
+Rosters come from the draft record: a player added after the draft is not on
+either roster. A roster player the board cannot price who is not in the trade is
+stood in at replacement level and listed under `stand_ins`; a traded player with
+no board row refuses.
 
 Each side's roster is simulated week by week on its own starting lineup, and
 each side is reported as points before and after, per-position depth before and

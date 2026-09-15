@@ -6,6 +6,20 @@ All notable changes to this project. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+**`evaluate_trade` scored weeks 1-14 whatever the week**
+- The window was fixed at weeks 1 through `FANTASY_WEEKS` (14). In week 2 it
+  credited the played week and dropped playoff weeks 15-17; a concussed
+  quarterback was priced at his preseason injury rate.
+- `first_week` and `last_week`: with `league_id` the window opens at ESPN
+  `mStatus` `scoringPeriodId` and closes at the league's last playoff week.
+  `window_basis` names the source of each bound; a failed read falls back to
+  weeks 1-14 and is listed under `unread`.
+- `out="Player Name:2-3;6"`: known absences score 0 in those weeks before the
+  availability draw. A malformed entry or a name on neither roster refuses.
+- The verdict names the window by its bounds (`over weeks 2-17`).
+
 ### Added
 
 **`submit_lineup`: the lineup write (#59)**

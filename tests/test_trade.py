@@ -143,7 +143,7 @@ class TestAvailabilityIsNotChargedTwice:
         assert player.adj_ppg == 0.0
         assert player.basis == trade.BASIS_NONE
 
-    def test_availability_comes_from_the_same_mapping_the_board_uses(self, fixture_board):
+    def test_availability_comes_from_the_same_mapping_the_board_uses(self):
         hurt = _board([{"name": "Fragile", "position": "WR", "adj_ppg": 10.0,
                         "exp_games": 8.5, "bye_week": None, "proj_points": 85.0, "adp": 50.0}])
         player = trade.resolve(hurt, ["Fragile"])[0][0]
@@ -293,24 +293,114 @@ class TestBothSidesAreScoredOnTheirOwnLineup:
 
 class TestTheWindowIsStatedWhereAHumanReadsIt:
     def test_the_verdict_names_the_weeks_that_were_scored(self, fixture_board, by_slot):
-        """The structured field and the sentence must not disagree. The sentence
-        used to say 14 whatever the run did, which is a window stated wrong in
-        the one place nobody checks against the data."""
+        """The structured field and the sentence must not disagree, and the
+        sentence names the bounds: "14 weeks" does not say whether week 1 or the
+        playoffs were in the window."""
         out = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
                              counterparty_slot=2, give=["Elite WR"],
                              get=["Good WR", "Okay WR"], n_trials=20, blocks=2,
-                             seed=0, weeks=10)
+                             seed=0, first_week=3, last_week=10)
 
-        assert out["weeks"] == {"from": 1, "to": 10}
+        assert out["weeks"] == {"from": 3, "to": 10}
         for side in ("you", "counterparty"):
             said = out[side]["verdict"]
-            assert "over 10 weeks" in said, said
-            assert "14 weeks" not in said
+            assert "over weeks 3-10" in said, said
+            assert "1-14" not in said
 
-    def test_a_no_call_verdict_needs_no_window(self, fixture_board):
+    def test_a_no_call_verdict_needs_no_window(self):
         summary = {"improvement": 3.0, "block_improvements": [12.0, -6.0],
                    "block_spread": 18.0, "blocks_agree": False, "blocks_agree_p_null": 0.5}
-        assert "no call" in trade.verdict(summary, "you", weeks=10)
+        assert "no call" in trade.verdict(summary, "you", last_week=10)
+
+
+IRON = [{"name": "Iron QB", "position": "QB", "adj_ppg": 18.0, "exp_games": 17.0,
+         "bye_week": 5, "proj_points": 306.0, "adp": 20.0}]
+
+
+class TestTheWindowIsTheRestOfTheSeason:
+    """A trade weighed in week 2 is about weeks 2 through the last playoff week.
+
+    The live miss: on 2026-09-15 a three-for-three was scored over weeks 1-14,
+    crediting a played week, dropping playoff weeks 15-17, and treating a
+    concussed quarterback as a preseason injury rate. Availability is pinned at
+    1 (`exp_games` 17) so each figure is exact arithmetic on the window.
+    """
+
+    def test_weeks_before_the_window_are_not_scored(self):
+        players, _ = trade.resolve(_board(IRON), ["Iron QB"])
+        out = trade.simulate_season(players, _league(), seed=0, first_week=9, last_week=17)
+        # Weeks 9-17, bye 5 outside the window: nine games.
+        assert out["points"] == pytest.approx(18.0 * 9, abs=0.05)
+
+    def test_playoff_weeks_past_the_default_are_scored(self):
+        players, _ = trade.resolve(_board(IRON), ["Iron QB"])
+        out = trade.simulate_season(players, _league(), seed=0, first_week=15, last_week=17)
+        assert out["points"] == pytest.approx(18.0 * 3, abs=0.05)
+
+    def test_a_known_absence_scores_zero_whatever_the_draw(self):
+        players, _ = trade.resolve(_board(IRON), ["Iron QB"])
+        out = trade.simulate_season(players, _league(), seed=0, first_week=9,
+                                    last_week=17, out={players[0].key: frozenset({9, 10})})
+        assert out["points"] == pytest.approx(18.0 * 7, abs=0.05)
+
+    def test_evaluate_reports_the_window_and_the_absence(self, fixture_board, by_slot):
+        out = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"],
+                             get=["Good WR", "Okay WR"], n_trials=10, blocks=2, seed=0,
+                             first_week=6, last_week=17,
+                             out={"My QB": frozenset({4, 6, 7})})
+        assert out["ok"] is True, out.get("errors")
+        assert out["weeks"] == {"from": 6, "to": 17}
+        # Week 4 is outside the window, so it moved nothing and is not reported.
+        assert out["known_out"] == {"My QB": [6, 7]}
+        assert "weeks 6-17" in out["you"]["verdict"]
+
+    def test_a_known_absence_lowers_the_side_that_holds_him(self, fixture_board, by_slot):
+        healthy = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                                 counterparty_slot=2, give=["Elite WR"],
+                                 get=["Good WR", "Okay WR"], n_trials=20, blocks=2,
+                                 seed=0, first_week=2, last_week=17)
+        hurt = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                              counterparty_slot=2, give=["Elite WR"],
+                              get=["Good WR", "Okay WR"], n_trials=20, blocks=2,
+                              seed=0, first_week=2, last_week=17,
+                              out={"My QB": frozenset(range(2, 6))})
+        assert hurt["you"]["blocks"][0]["points_before"] \
+            < healthy["you"]["blocks"][0]["points_before"]
+        assert hurt["counterparty"]["blocks"] == healthy["counterparty"]["blocks"]
+
+    def test_an_absence_for_nobody_on_either_roster_is_refused(self, fixture_board, by_slot):
+        out = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"], get=["Good WR"],
+                             out={"Kyler Muray": frozenset({2})})
+        assert out["ok"] is False
+        assert any("marked out but is on neither roster" in e for e in out["errors"])
+
+    def test_an_empty_window_is_refused(self, fixture_board, by_slot):
+        out = trade.evaluate(fixture_board, by_slot, _league(), my_slot=1,
+                             counterparty_slot=2, give=["Elite WR"], get=["Good WR"],
+                             first_week=10, last_week=9)
+        assert out["ok"] is False
+        assert any("is not a window" in e for e in out["errors"])
+
+
+class TestParseOut:
+    def test_weeks_ranges_and_lists(self):
+        parsed, errors = trade.parse_out("Kyler Murray:2-3;6, Ja'Marr Chase:4")
+        assert errors == []
+        assert parsed == {"Kyler Murray": frozenset({2, 3, 6}),
+                          "Ja'Marr Chase": frozenset({4})}
+
+    def test_empty_text_is_no_absences(self):
+        assert trade.parse_out("") == ({}, [])
+
+    @pytest.mark.parametrize("text", ["Kyler Murray", "Kyler Murray:two", ":3",
+                                      "Kyler Murray:4-2", "Kyler Murray:0"])
+    def test_a_malformed_absence_is_named_not_dropped(self, text):
+        parsed, errors = trade.parse_out(text)
+        assert parsed == {}
+        assert len(errors) == 1
+        assert repr(text) in errors[0]
 
 
 class TestTheUnitIsNotThisModulesToChoose:
@@ -348,7 +438,7 @@ class TestTheUnitIsNotThisModulesToChoose:
         summary = {"improvement": 34.5, "block_improvements": [36.2, 32.9],
                    "block_spread": 3.3, "blocks_agree": True, "blocks_agree_p_null": 0.5,
                    **adp.margin_unit(True, None, 2, adp.HARNESS_REPLICATION)}
-        said = trade.verdict(summary, "you", weeks=10)
+        said = trade.verdict(summary, "you", last_week=10)
         assert "34.5 (ordinal)" in said
         assert "points" not in said
         # And the sentence says which clause failed, not just that one did.
@@ -363,7 +453,7 @@ class TestTheUnitIsNotThisModulesToChoose:
                        "block_spread": 2.0, "blocks_agree": True,
                        "blocks_agree_p_null": 0.5,
                        **adp.margin_unit(True, beats, 2, harness)}
-            said = trade.verdict(summary, "you", weeks=14)
+            said = trade.verdict(summary, "you", last_week=14)
             assert summary["unit"] == unit
             assert ("12.0 points" in said) is (unit == adp.UNIT_POINTS), said
 

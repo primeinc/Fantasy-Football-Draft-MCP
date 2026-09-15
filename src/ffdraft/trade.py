@@ -36,8 +36,9 @@ from .board import UNPRICED, is_position, with_stand_ins
 from .config import LeagueSettings
 from .names import normalize as norm_name
 
-# The weeks a lineup is actually set for. Shared with roles.py so the two
-# cannot disagree about how long the season is.
+# The last week scored when no league schedule was read. Shared with roles.py so
+# the two cannot disagree about it. A live league closes the window at its own
+# last playoff week instead: the server reads that from the league settings.
 FANTASY_WEEKS = roles.FANTASY_WEEKS
 # Trials per block, and blocks. The block count is adp's, for the same reason:
 # one mean is not a finding.
@@ -192,13 +193,23 @@ def _available(seed: int, key: str, week: int) -> float:
 
 
 def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
-                    weeks: int = FANTASY_WEEKS) -> dict:
-    """One roster's season: best legal lineup each week, summed.
+                    first_week: int = 1, last_week: int = FANTASY_WEEKS,
+                    out: Mapping[str, frozenset[int]] | None = None) -> dict:
+    """One roster's season: best legal lineup each week of the window, summed.
 
-    A player is out in a week when it is his bye or his availability draw fails;
-    otherwise he scores his per-game rate. Kicker and defense slots are not
-    scored, which is `adp.best_weekly_lineup`'s existing behaviour rather than a
-    choice made here.
+    `first_week` through `last_week` is the scored window, inclusive. A trade
+    weighed in week 2 is about weeks 2 through the last playoff week: weeks
+    already played cannot be changed by it, and crediting them to either side
+    dilutes the delta with points nobody can gain or lose.
+
+    A player is out in a week when it is his bye, when `out` lists that week for
+    his key, or when his availability draw fails; otherwise he scores his
+    per-game rate. `out` is a KNOWN absence -- a concussion protocol, a
+    suspension -- and it scores 0 before any draw, because the draw prices a
+    preseason injury rate and averaging a known absence into that rate turns a
+    player who will not play into one who probably will. Kicker and defense
+    slots are not scored, which is `adp.best_weekly_lineup`'s existing behaviour
+    rather than a choice made here.
 
     THE BYE IS CHARGED ONCE, and the reason is not obvious enough to leave
     implicit. This both skips the bye week and applies an availability derived
@@ -211,11 +222,12 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
     weeks of his rate over a 14-week window.
     """
     positions = {p.key: p.position for p in roster}
+    known_out = out or {}
     total, empty = 0.0, 0
-    for week in range(1, weeks + 1):
+    for week in range(first_week, last_week + 1):
         points = {}
         for p in roster:
-            if p.bye_week == week:
+            if p.bye_week == week or week in known_out.get(p.key, ()):
                 continue
             if _available(seed, p.key, week) < p.weekly_availability:
                 points[p.key] = p.adj_ppg
@@ -228,7 +240,8 @@ def simulate_season(roster: list[Player], league: LeagueSettings, seed: int,
 
 def compare(before: list[Player], after: list[Player], league: LeagueSettings,
             n_trials: int = DEFAULT_TRIALS, blocks: int = DEFAULT_BLOCKS,
-            seed: int = 0, weeks: int = FANTASY_WEEKS) -> dict:
+            seed: int = 0, first_week: int = 1, last_week: int = FANTASY_WEEKS,
+            out: Mapping[str, frozenset[int]] | None = None) -> dict:
     """Season points for one roster before and after, in disjoint seed blocks.
 
     Blocks use `seed + block * n_trials + trial`, so a second block extends the
@@ -241,8 +254,8 @@ def compare(before: list[Player], after: list[Player], league: LeagueSettings,
         gains, before_pts, after_pts, empty_before, empty_after = [], [], [], [], []
         for trial in range(n_trials):
             trial_seed = block_seed + trial
-            a = simulate_season(before, league, trial_seed, weeks)
-            b = simulate_season(after, league, trial_seed, weeks)
+            a = simulate_season(before, league, trial_seed, first_week, last_week, out)
+            b = simulate_season(after, league, trial_seed, first_week, last_week, out)
             gains.append(b["points"] - a["points"])
             before_pts.append(a["points"])
             after_pts.append(b["points"])
@@ -303,7 +316,8 @@ def priced_by(roster: list[Player]) -> dict:
                                    for p in roster if p.basis != BASIS_BOARD]}
 
 
-def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
+def verdict(summary: dict, side: str, first_week: int = 1,
+            last_week: int = FANTASY_WEEKS) -> str:
     """What may be said about this side, given whether the blocks agree.
 
     A mean whose blocks disagree in sign is a measurement of the harness, not of
@@ -311,9 +325,11 @@ def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
     either: at two blocks it is one coin flip, which `blocks_agree_p_null` states
     beside it.
 
-    `weeks` is the window that was actually scored, passed in rather than read
-    off the module constant. The sentence a human reads is the last place a
-    window may be stated wrong, and it used to say 14 whatever the run did.
+    `first_week` and `last_week` are the window that was actually scored, passed
+    in rather than read off the module constant, and named by its bounds rather
+    than its length: "14 weeks" does not say whether week 1 or the playoffs were
+    in it, and those are the two things a reader weighing a mid-season trade
+    needs to know.
 
     The word "points" is likewise not this function's to choose. It comes from
     the verdict `adp.margin_unit` put in the summary, so the sentence and the
@@ -341,13 +357,13 @@ def verdict(summary: dict, side: str, weeks: int = FANTASY_WEEKS) -> str:
     tail = summary.get("spread_covers") if unit == adp_mod.UNIT_POINTS \
         else summary.get("unit_reason")
     tail = f" {str(tail)[:1].upper()}{str(tail)[1:]}." if tail else ""
-    return (f"{side} {direction} {amount} over {weeks} weeks, "
+    return (f"{side} {direction} {amount} over weeks {first_week}-{last_week}, "
             f"blocks {summary['block_improvements']}, spread {spread}. Blocks of a "
             f"trade worth nothing agree in sign with probability {p_null}, so read "
             f"the spread before the mean." + tail)
 
 
-def _spread_note(roster: list[Player]) -> str | None:
+def _spread_note(roster: list[Player], weeks: int) -> str | None:
     """What this side's `block_spread` does not include, when that is a stand-in.
 
     A stand-in is given full expected games, because the board has no injury
@@ -362,8 +378,7 @@ def _spread_note(roster: list[Player]) -> str | None:
     stand_ins = [p for p in roster if p.basis == BASIS_STAND_IN]
     if not stand_ins:
         return None
-    points = sum(p.adj_ppg * p.weekly_availability * FANTASY_WEEKS
-                 for p in stand_ins)
+    points = sum(p.adj_ppg * p.weekly_availability * weeks for p in stand_ins)
     return (f"block_spread is replication noise over the players the board could "
             f"price, and {', '.join(p.name for p in stand_ins)} "
             f"{'is' if len(stand_ins) == 1 else 'are'} not among them: "
@@ -393,6 +408,44 @@ def _roster_names(picks: list[dict]) -> list[str]:
     return [str(p["name"]) for p in picks]
 
 
+def parse_out(text: str) -> tuple[dict[str, frozenset[int]], list[str]]:
+    """Known absences from `"Player Name:weeks, Other Player:weeks"`.
+
+    `weeks` is a week (`2`), an inclusive range (`2-4`), or several joined by
+    `;` (`2-3;6`). Parsed with `str` splits, not a pattern: the grammar is three
+    separators deep and every malformed piece is named back rather than skipped,
+    because a dropped absence scores a player who will not play.
+    """
+    parsed: dict[str, set[int]] = {}
+    errors: list[str] = []
+    for item in (t.strip() for t in text.split(",")):
+        if not item:
+            continue
+        name, sep, spec = item.rpartition(":")
+        name = name.strip()
+        if not sep or not name:
+            errors.append(f"{item!r}: expected 'Player Name:weeks', e.g. 'Kyler Murray:2-3'")
+            continue
+        weeks: set[int] = set()
+        for part in (s.strip() for s in spec.split(";")):
+            lo, dash, hi = part.partition("-")
+            try:
+                first = int(lo)
+                last = int(hi) if dash else first
+            except ValueError:
+                errors.append(f"{item!r}: {part!r} is not a week or a range of weeks")
+                weeks = set()
+                break
+            if first < 1 or last < first:
+                errors.append(f"{item!r}: {part!r} is not a week or a range of weeks")
+                weeks = set()
+                break
+            weeks.update(range(first, last + 1))
+        if weeks:
+            parsed.setdefault(name, set()).update(weeks)
+    return {n: frozenset(w) for n, w in parsed.items()}, errors
+
+
 def _swap(names: list[str], out: list[str], into: list[str]) -> list[str]:
     gone = {norm_name(n) for n in out}
     return [n for n in names if norm_name(n) not in gone] + list(into)
@@ -402,12 +455,18 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
              league: LeagueSettings, my_slot: int, counterparty_slot: int,
              give: list[str], get: list[str], n_trials: int = DEFAULT_TRIALS,
              blocks: int = DEFAULT_BLOCKS, seed: int = 0,
-             weeks: int = FANTASY_WEEKS) -> dict:
+             first_week: int = 1, last_week: int = FANTASY_WEEKS,
+             out: Mapping[str, frozenset[int]] | None = None) -> dict:
     """Both sides of one proposed trade, before and after, with the spread.
 
     `give` leaves your roster and `get` arrives on it; the counterparty's roster
     moves the other way, so one simulation answers for both and the two sides
     cannot be scored under different assumptions.
+
+    `first_week`..`last_week` is the scored window and `out` the known absences
+    by player name (see `simulate_season`). An absence names a player on one of
+    the two rosters or the evaluation stops: an absence that matches nobody
+    silently scores the player it was meant for.
 
     A player named on the wrong roster, or on no board row, stops the evaluation
     rather than being dropped. A trade scored without one of its own pieces is a
@@ -424,6 +483,13 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
             errors.append(f"{name!r} is not on slot {counterparty_slot}'s roster")
     if not give and not get:
         errors.append("a trade needs at least one player on one side")
+    if first_week < 1 or last_week < first_week:
+        errors.append(f"weeks {first_week}-{last_week} is not a window: it scores nothing")
+    on_rosters = {norm_name(n) for n in mine + theirs}
+    known_out = {norm_name(n): frozenset(w) for n, w in (out or {}).items()}
+    for name in (out or {}):
+        if norm_name(name) not in on_rosters:
+            errors.append(f"{name!r} is marked out but is on neither roster")
 
     rosters = {
         "mine_before": mine, "mine_after": _swap(mine, give, get),
@@ -468,15 +534,18 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         return {"ok": False, "errors": errors}
 
     yours = compare(resolved["mine_before"], resolved["mine_after"], league,
-                    n_trials, blocks, seed, weeks)
+                    n_trials, blocks, seed, first_week, last_week, known_out)
     theirs_cmp = compare(resolved["theirs_before"], resolved["theirs_after"], league,
-                         n_trials, blocks, seed, weeks)
+                         n_trials, blocks, seed, first_week, last_week, known_out)
+    span = last_week - first_week + 1
     return {
         "ok": True,
-        # Which weeks were scored, not just how many. Read from week 1, so this
-        # is a season-long answer; a trade being weighed in week 9 is asking
-        # about weeks 9 to 14 and this does not yet know the difference.
-        "weeks": {"from": 1, "to": weeks},
+        # The window scored, inclusive, by its bounds.
+        "weeks": {"from": first_week, "to": last_week},
+        # Weeks each named player scores 0 regardless of the availability draw,
+        # clipped to the window so the payload shows only absences that moved it.
+        "known_out": {name: sorted(w for w in weeks if first_week <= w <= last_week)
+                      for name, weeks in (out or {}).items()},
         "give": list(give),
         "get": list(get),
         # Players on either roster the board could not price, filled in at their
@@ -484,8 +553,8 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
         # total is never silently moved by a guess. Empty means both rosters are
         # fully priced and the delta rests on the board throughout.
         "stand_ins": {
-            "yours": _stand_ins_of(resolved["mine_after"], weeks),
-            "theirs": _stand_ins_of(resolved["theirs_after"], weeks),
+            "yours": _stand_ins_of(resolved["mine_after"], span),
+            "theirs": _stand_ins_of(resolved["theirs_after"], span),
         },
         # Named on a roster but placeable by nothing -- no board row and no
         # recorded position. They are absent from the simulation entirely, which
@@ -497,16 +566,16 @@ def evaluate(board: pd.DataFrame, picks_by_slot: dict[int, list[dict]],
             "depth_before": depth(resolved["mine_before"], league),
             "depth_after": depth(resolved["mine_after"], league),
             "priced_by": priced_by(resolved["mine_after"]),
-            "spread_note": _spread_note(resolved["mine_after"]),
-            "verdict": verdict(yours, "you", weeks),
+            "spread_note": _spread_note(resolved["mine_after"], span),
+            "verdict": verdict(yours, "you", first_week, last_week),
         },
         "counterparty": {
             "slot": counterparty_slot, **theirs_cmp,
             "depth_before": depth(resolved["theirs_before"], league),
             "depth_after": depth(resolved["theirs_after"], league),
             "priced_by": priced_by(resolved["theirs_after"]),
-            "spread_note": _spread_note(resolved["theirs_after"]),
-            "verdict": verdict(theirs_cmp, f"slot {counterparty_slot}", weeks),
+            "spread_note": _spread_note(resolved["theirs_after"], span),
+            "verdict": verdict(theirs_cmp, f"slot {counterparty_slot}", first_week, last_week),
             "tendencies": counterparty_tendencies(
                 picks_by_slot.get(counterparty_slot, []), board),
         },

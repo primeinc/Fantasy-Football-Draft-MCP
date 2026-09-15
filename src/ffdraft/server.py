@@ -3778,12 +3778,25 @@ def draft_strength(league_id: str = "") -> str:
 @mcp.tool(structured_output=False)
 def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
                    league_id: str = "", n_trials: int = 0, blocks: int = 0,
-                   seed: int = 0) -> str:
+                   seed: int = 0, first_week: int = 0, last_week: int = 0,
+                   out: str = "", season: int = CURRENT_SEASON) -> str:
     """Score a proposed trade for both sides over the rest of the season.
 
     `give` and `get` are comma-separated player names: `give` leaves your roster,
     `get` arrives on it. `counterparty_slot` is their draft slot; with a running
     watch for `league_id` the teams are named too.
+
+    The window is `first_week` through `last_week`, inclusive. With `league_id`
+    and 0 they are read from the league: the current scoring period (ESPN
+    mStatus) and the last playoff week (league settings), so played weeks are
+    not credited and the playoffs are. Without a league read they fall back to
+    week 1 and `trade.FANTASY_WEEKS`, and `window_basis` says which happened.
+
+    `out` is known absences, `"Player Name:weeks"` comma-separated, weeks a
+    number, a range `2-4`, or several joined by `;` -- `"Kyler Murray:2-3"`.
+    Those weeks score 0 for that player; every other week draws the board's
+    preseason availability. Model an uncertain return by running it more than
+    once with different absences.
 
     Each side is simulated week by week on its own starting lineup, with byes and
     injury availability, and reported as points before and after with the spread
@@ -3794,10 +3807,48 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
 
     Rosters come from the draft record, so a player added after the draft is not
     on it yet."""
+    from . import live
+
     state = _state()
     b = _build_board()
     give_names = [n.strip() for n in give.split(",") if n.strip()]
     get_names = [n.strip() for n in get.split(",") if n.strip()]
+    absences, out_errors = trade.parse_out(out)
+    if out_errors:
+        return _emit({"ok": False, "errors": out_errors}, indent=2)
+    window_basis: dict[str, str] = {}
+    unread: dict[str, str] = {}
+    start, end = first_week, last_week
+    if start:
+        window_basis["from"] = "first_week argument"
+    elif league_id:
+        try:
+            period = live.fetch_league_status(league_id, season).get("scoringPeriodId")
+            if type(period) is not int:
+                raise RuntimeError("mStatus carried no scoringPeriodId")
+            start = period
+            window_basis["from"] = "ESPN mStatus scoringPeriodId"
+        except Exception as exc:
+            unread["from"] = f"{type(exc).__name__}: {exc}"
+    if end:
+        window_basis["to"] = "last_week argument"
+    elif league_id:
+        try:
+            schedule = bd.espn_league_rules(league_id, season)["schedule"]
+            weeks = schedule.get("playoff_weeks") or []
+            end = max(weeks) if weeks else int(schedule.get("regular_season_weeks") or 0)
+            if not end:
+                raise RuntimeError("league settings carried no playoff or regular-season weeks")
+            window_basis["to"] = ("league settings: last playoff week" if weeks
+                                  else "league settings: last regular-season week")
+        except Exception as exc:
+            unread["to"] = f"{type(exc).__name__}: {exc}"
+    if not start:
+        start = 1
+        window_basis["from"] = "default: week 1, no league period read"
+    if not end:
+        end = trade.FANTASY_WEEKS
+        window_basis["to"] = "default: trade.FANTASY_WEEKS, no league schedule read"
     by_slot: dict[int, list[dict]] = {}
     for p in state.picks:
         by_slot.setdefault(p["slot"], []).append(p)
@@ -3805,18 +3856,22 @@ def evaluate_trade(give: str, get: str, counterparty_slot: int = 0,
         return _emit({"ok": False,
                       "errors": [f"counterparty_slot {counterparty_slot} is your own slot"]},
                      indent=2)
-    out = trade.evaluate(
+    result = trade.evaluate(
         b, by_slot, state.league, state.my_slot, counterparty_slot,
         give_names, get_names,
         n_trials=n_trials or trade.DEFAULT_TRIALS,
-        blocks=blocks or trade.DEFAULT_BLOCKS, seed=seed)
+        blocks=blocks or trade.DEFAULT_BLOCKS, seed=seed,
+        first_week=start, last_week=end, out=absences)
+    result["window_basis"] = window_basis
+    if unread:
+        result["unread"] = unread
     entry = _WATCHES.get(league_id) if league_id else None
-    if entry is not None and out.get("ok"):
+    if entry is not None and result.get("ok"):
         w, _task = entry
         labels = {slot: w.team_label(team) for team, slot in w.slot_of.items()}
-        out["you"]["team"] = labels.get(state.my_slot)
-        out["counterparty"]["team"] = labels.get(counterparty_slot)
-    return _emit(out, indent=2, default=str)
+        result["you"]["team"] = labels.get(state.my_slot)
+        result["counterparty"]["team"] = labels.get(counterparty_slot)
+    return _emit(result, indent=2, default=str)
 
 
 @mcp.tool(structured_output=False)
