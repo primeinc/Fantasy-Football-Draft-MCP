@@ -27,22 +27,24 @@ def wired(monkeypatch):
     monkeypatch.setenv("ESPN_S2", "S2-TEST")
     priced = _priced()
     monkeypatch.setattr(server, "_lineup_inputs",
-                        lambda league_id, week, season: (config.LeagueSettings(), priced, 3, 7))
+                        lambda _league_id, _week, _season: (config.LeagueSettings(), priced, 3, 7))
     starters = pd.DataFrame([{"name": "QB One", lineup.SLOT_COLUMN: "QB"},
                              {"name": "RB One", lineup.SLOT_COLUMN: "RB"}])
     monkeypatch.setattr(lineup, "starting_lineup",
-                        lambda rows, league, value: (starters, rows.iloc[0:0]))
+                        lambda rows, _league, **_kw: (starters, rows.iloc[0:0]))
     sent: list = []
 
-    def fake_send(league_id, season, payload, swid=None, espn_s2=None, post=None):
+    def fake_send(_league_id, _season, payload, _swid=None, _espn_s2=None, _post=None):
         sent.append(payload)
-        return {"status": 200, "body": {"ok": True}}
+        # ESPN's own answer echoes the transaction, `memberId` included, so the
+        # redaction assertion below only means something if this does too.
+        return {"status": 200, "body": {**payload, "status": "EXECUTED"}}
     monkeypatch.setattr(lineup_write, "send", fake_send)
     after = priced.copy()
     after.loc[after["name"] == "RB One", "lineup_slot"] = 2
     after.loc[after["name"] == "RB Two", "lineup_slot"] = 20
-    monkeypatch.setattr(rosters, "fetch_roster_teams", lambda *a, **k: [{"id": 7}])
-    monkeypatch.setattr(rosters, "rosters_by_team", lambda teams, board, positions: {7: after})
+    monkeypatch.setattr(rosters, "fetch_roster_teams", lambda *_a, **_k: [{"id": 7}])
+    monkeypatch.setattr(rosters, "rosters_by_team", lambda _teams, _board, _positions: {7: after})
     monkeypatch.setattr(server, "_build_board", lambda: pd.DataFrame())
     return sent
 
@@ -61,7 +63,7 @@ def test_a_refusal_sends_nothing(wired, monkeypatch):
     locked = _priced()
     locked.loc[locked["name"] == "RB One", "lineup_locked"] = True
     monkeypatch.setattr(server, "_lineup_inputs",
-                        lambda league_id, week, season: (config.LeagueSettings(), locked, 3, 7))
+                        lambda _league_id, _week, _season: (config.LeagueSettings(), locked, 3, 7))
     out = json.loads(server.submit_lineup("L", 3, dry_run=False))
     assert out["sent"] is False and out["refusals"]
     assert wired == []

@@ -3600,7 +3600,7 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
     """
     import os
 
-    from . import lineup, lineup_write, rosters
+    from . import lineup, lineup_write, rosters, trade_write
 
     swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
     if not (swid and espn_s2):
@@ -3644,7 +3644,9 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
         return _emit(out, indent=2)
     result = lineup_write.send(league_id, season, payload, swid, espn_s2)
     out["sent"] = True
-    out["espn_response"] = result
+    # ESPN echoes the transaction back with `memberId` set to the SWID, so the
+    # answer is redacted as well as the request.
+    out["espn_response"] = trade_write.redact(result, swid)
     try:
         teams = rosters.fetch_roster_teams(league_id, season, week, swid, espn_s2)
         mine = rosters.rosters_by_team(teams, _build_board(), bd._ESPN_POSITION_NAMES)[team_id]
