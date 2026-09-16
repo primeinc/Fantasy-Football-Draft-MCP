@@ -6,16 +6,19 @@ Three facts, each from a read:
                (nfldata schedule) or is OUT, INJURY_RESERVE, DOUBTFUL,
                SUSPENSION or NA before his game: a lineup move ESPN still
                accepts. None while the scoreboard is ahead of the league week.
+               Plus every open commitment (`commitments`): an action the user
+               approved that ESPN does not yet hold. It stays actionable past
+               its deadline, marked OVERDUE, until the record is closed.
   observing    a game in progress with a player of mine, of my opponent, or of
                a team a pending decision point names.
   attention    the earliest of: the inactives list for a game with an unlocked
                player of mine (kickoff minus INACTIVES_LEAD_MINUTES), the waiver
-               clear time, the next decision point, and a recheck while a game
-               is being observed.
+               clear time, the next decision point, an open commitment's
+               deadline, and a recheck while a game is being observed.
 
 Mode, first match wins:
 
-  DEGRADED   the scoreboard or the league could not be read
+  DEGRADED   the scoreboard, the league or the commitments ledger could not be read
   HOT        actionable, or attention within HOT_MINUTES
   WATCH      observing
   DEEP_IDLE  idle budget of at least DEEP_IDLE_MINUTES, or nothing scheduled
@@ -32,6 +35,7 @@ Nothing here reads the network; `server.controller_state` supplies the reads.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -54,13 +58,14 @@ CONTROLLER_STATE = STATE_DIR / "controller-state.json"
 BASIS = {
     "actionable": "started (ESPN lineup slot not BENCH/IR), lineupLocked not true, and either "
                   "the team is on bye in the nfldata schedule or injuryStatus is in "
-                  + "/".join(OUT_STATUSES) + " with the game state pre",
+                  + "/".join(OUT_STATUSES) + " with the game state pre; plus every open "
+                  "commitment in commitments.json, OVERDUE once its deadline has passed",
     "observing": "ESPN scoreboard state `in` for a team of mine, my opponent's, or a "
                  "pending decision point's",
     "attention": f"kickoff minus {INACTIVES_LEAD_MINUTES} min for games with an unlocked "
                  f"player of mine (inactives); waiverProcessDate; decision points in "
-                 f"{DECISION_POINTS.name}; now plus {WATCH_RECHECK_MINUTES} min while "
-                 f"observing",
+                 f"{DECISION_POINTS.name}; open commitment deadlines; now plus "
+                 f"{WATCH_RECHECK_MINUTES} min while observing",
     "budget": f"attention minus now minus {SAFETY_MARGIN_MINUTES} min",
 }
 
@@ -81,6 +86,32 @@ def when(value) -> pd.Timestamp | None:
 
 def eastern(ts: pd.Timestamp) -> str:
     return ts.tz_convert("America/New_York").strftime("%Y-%m-%d %H:%M ET")
+
+
+def commitment_text(c: dict, now: pd.Timestamp) -> str:
+    """One open commitment as the actionable list and the Stop gate name it:
+    id, the action, the deadline, and OVERDUE once the deadline has passed."""
+    kind = c.get("kind")
+    if kind == "trade":
+        give = ", ".join(p.get("name", "?") for p in c.get("give") or []) or "nothing"
+        get = ", ".join(p.get("name", "?") for p in c.get("get") or []) or "nothing"
+        action = f"trade {give} for {get} with team {c.get('partner_team_id')}"
+    elif kind == "claim":
+        add, drop = c.get("add") or {}, c.get("drop")
+        action = f"claim {add.get('name', '?')}"
+        if drop:
+            action += f" for {drop.get('name', '?')}"
+        names = [p.get("name", "?") for p in c.get("fallbacks") or []]
+        if names:
+            action += f" (fallbacks: {', '.join(names)})"
+    else:
+        action = f"set the week {c.get('week')} lineup"
+    due = when(c.get("deadline"))
+    if due is None:
+        deadline = f"deadline unreadable ({c.get('deadline')!r})"
+    else:
+        deadline = f"due {eastern(due)}" + (" OVERDUE" if due <= now else "")
+    return f"commitment {c.get('id')}: {action}, {deadline}"
 
 
 def roster(payload: dict, team_id: int) -> list[dict]:
@@ -152,19 +183,27 @@ def write_state(state: dict, path: Path | None = None) -> None:
 def controller_state(at: object, games: list[dict], mine: list[dict],
                      theirs: list[dict], waiver_clears, decision_points: list[dict],
                      unread: dict[str, str], bye_teams: set[str] | frozenset[str] = frozenset(),
-                     scoreboard_ahead: bool = False) -> dict:
+                     scoreboard_ahead: bool = False, commitments: Sequence[dict] = ()) -> dict:
     """The mode for this tick, the next moment fantasy needs attention, and what
     engineering may do until then. `at` is now, as anything `when` reads.
     `bye_teams` comes from the schedule, never from absence on the scoreboard.
     `scoreboard_ahead` means the scoreboard shows a later week than the league's
     scoring period: its games say nothing about this period's lineup, so my
-    roster contributes no actionable and no inactives attention."""
+    roster contributes no actionable and no inactives attention. `commitments`
+    are the open records from `commitments.json`: each is actionable whatever
+    the scoreboard says, and its deadline is attention while it is ahead."""
     now = when(str(at))
     if now is None:
         raise ValueError(f"unreadable time {at!r}")
     by_team = {team: g for g in games for team in g.get("teams") or ()}
     attention: list[tuple[pd.Timestamp, str]] = []
     actionable: list[str] = []
+
+    for c in commitments:
+        actionable.append(commitment_text(c, now))
+        due = when(c.get("deadline"))
+        if due is not None and due > now:
+            attention.append((due, f"commitment {c.get('id')} deadline"))
 
     for p in [] if scoreboard_ahead else mine:
         if p["pro_team"] in bye_teams:
@@ -208,7 +247,9 @@ def controller_state(at: object, games: list[dict], mine: list[dict],
     budget = (None if nxt is None
               else int((nxt[0] - now).total_seconds() // 60) - SAFETY_MARGIN_MINUTES)
 
-    degraded = {k: v for k, v in unread.items() if k in ("scoreboard", "league")}
+    # An unreadable ledger may hide an open commitment, so it degrades like an
+    # unreadable league: no engineering until it can be read.
+    degraded = {k: v for k, v in unread.items() if k in ("scoreboard", "league", "commitments")}
     if degraded:
         mode = "DEGRADED"
     elif actionable or (deadline is not None

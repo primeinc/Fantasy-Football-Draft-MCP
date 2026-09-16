@@ -11,9 +11,19 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ffdraft import claims, lineup_write, live, rosters, server, trade_write, transactions
+from ffdraft import (
+    claims,
+    commitments,
+    lineup_write,
+    live,
+    rosters,
+    server,
+    trade_write,
+    transactions,
+)
 
 SWID = "BBBB-2222"
+LEDGER: dict = {}   # the fixture's ledger path and the id of the commitment it opened
 TEAMS = [{"team_id": 3, "team": "Home Office", "owners": ["Pat Example"]},
          {"team_id": 7, "team": "Gravel Kings", "owners": ["Sam Sample"]},
          {"team_id": 9, "team": "Gravel Queens", "owners": ["Lee Test"]}]
@@ -120,11 +130,19 @@ MOVES = [{"playerId": 101, "type": "TRADE", "fromTeamId": 3, "toTeamId": 7},
 
 
 @pytest.fixture
-def wired(monkeypatch):
+def wired(monkeypatch, tmp_path):
     """ESPN as a dict: `pending` is what mTransactions2 holds per period, `files`
-    whether a 2xx send lands in it and under which period, `status` the answer."""
+    whether a 2xx send lands in it and under which period, `status` the answer.
+    The ledger holds one open trade commitment: Arlo Runner for Cy Thrower
+    with team 7."""
     monkeypatch.setenv("ESPN_SWID", SWID)
     monkeypatch.setenv("ESPN_S2", "S2-TEST")
+    LEDGER["path"] = tmp_path / "commitments.json"
+    monkeypatch.setattr(commitments, "COMMITMENTS", LEDGER["path"])
+    LEDGER["id"] = commitments.open_commitment(
+        "L", 2, "trade", "2026-12-01T03:00:00-05:00",
+        give=[commitments.player("Arlo Runner", 101)], get=[commitments.player("Cy Thrower", 301)],
+        partner_team_id=7, path=LEDGER["path"])["id"]
     monkeypatch.setattr(rosters, "fetch_roster_payload", lambda *a, **k: PAYLOAD)
     monkeypatch.setattr(claims, "fetch_settings", lambda *a, **k: SETTINGS)
     state: dict = {"sent": [], "status": 200, "files": 2, "pending": {2: [], 3: []},
@@ -153,9 +171,34 @@ def wired(monkeypatch):
     return state
 
 
-def _send(**kw):
-    return json.loads(server.propose_trade("L", "7", give="Arlo Runner", get="Cy Thrower",
-                                           dry_run=False, **kw))
+def _send(give="Arlo Runner", get="Cy Thrower", commitment_id=None, **kw):
+    cid = LEDGER["id"] if commitment_id is None else commitment_id
+    return json.loads(server.propose_trade("L", "7", give=give, get=get, dry_run=False,
+                                           commitment_id=cid, **kw))
+
+
+def test_a_send_without_a_commitment_is_refused(wired):
+    out = _send(commitment_id="")
+    assert out["sent"] is False and wired["sent"] == []
+    assert out["refusals"][0].startswith("a send needs an open commitment")
+
+
+def test_a_player_the_commitment_does_not_name_is_refused(wired):
+    # 2026-09-16: Jeudy for Wentz was built on "i want wentz". The approval
+    # named nobody to give, so the offer is refused, not guessed.
+    out = _send(give="Bo Passer")
+    assert out["sent"] is False and wired["sent"] == []
+    assert out["refusals"] == [
+        f"commitment {LEDGER['id']} does not cover player id(s) [102]; it names Arlo Runner, "
+        f"Cy Thrower. A different player is a different action: open a new commitment for it"]
+
+
+def test_a_confirmed_send_closes_the_commitment(wired):
+    out = _send()
+    assert out["outcome"] == "CONFIRMED"
+    assert out["commitment"] == {"id": LEDGER["id"], "status": "confirmed",
+                                 "espn_transaction_id": "new"}
+    assert commitments.load(LEDGER["path"])[0][0]["status"] == "confirmed"
 
 
 def test_dry_run_builds_the_proposal_reads_pending_and_sends_nothing(wired):

@@ -91,6 +91,39 @@ All notable changes to this project. Format follows
 
 ### Added
 
+**Commitments: an approved action is data until ESPN holds it**
+- On 2026-09-15 an approved claim (Wentz for Tracy, before 03:00 ET) lived only
+  in the conversation. The controller read DEEP_IDLE with engineering allowed
+  while it was unsent, the decision point that named it expired at 21:13 ET,
+  and the claim never went. On 2026-09-16 a trade the user had not priced was
+  nearly sent on "i want wentz".
+- `open_commitment(league_id, week, kind, deadline, add, drop, fallbacks, give,
+  get, partner, approved_text)` writes the approval to
+  `~/.ffdraft/state/commitments.json` with every player as an ESPN id, the
+  deadline, the fallback chain and the user's words. `block_commitment` and
+  `cancel_commitment` are the other exits; a passed deadline marks the record
+  OVERDUE and closes nothing.
+- `controller_state` is HOT with `engineering.allowed` false while any
+  commitment is open; an unreadable ledger is DEGRADED.
+- A Stop hook (`.claude/settings.json` → `just commitments-gate` →
+  `python -m ffdraft.commitments gate`) exits 2 with one line per open
+  commitment, so a turn cannot end with an approved action neither done nor
+  accounted for. The retry of a turn it already blocked is allowed.
+- `tests/test_tuesday_fixture.py` replays 2026-09-15 15:17 through 09-16 16:30
+  and asserts each expected and forbidden result.
+
+### Changed
+
+**`submit_claim`, `propose_trade` and `submit_lineup` send only under a commitment**
+- `commitment_id` on each. A send with none, with a closed one, with one for
+  another league, week or kind, or with a player the commitment does not name
+  is refused; a fallback the approval named sends without a new one. A
+  CONFIRMED send closes the commitment with ESPN's id; any other outcome leaves
+  it open. Dry runs need no commitment but check one they are given.
+- `submit_lineup` reports `outcome` (REJECTED on a 4xx, CONFIRMED when the
+  read-back holds every slot asked for, else UNKNOWN_AFTER_SEND with `retry`)
+  and redacts the SWID from ESPN's echoed response as well as the request.
+
 **`submit_claim`: the waiver claim write**
 - `preview_waiver_claim` checked a claim and had no send path, so every claim
   had to be entered by hand; a week 2 QB claim was recommended and never

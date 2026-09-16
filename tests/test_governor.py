@@ -6,9 +6,12 @@ import json
 
 import pytest
 
-from ffdraft import governor, live, pool, rosters, server
+from ffdraft import commitments, governor, live, pool, rosters, server
 
 NOW = "2026-09-13T22:00:00Z"  # 18:00 ET
+WENTZ_CLAIM = {"id": "ab12cd34", "kind": "claim", "add": {"name": "Carson Wentz", "espn_id": 1},
+               "drop": {"name": "Tyrone Tracy Jr.", "espn_id": 2}, "fallbacks": [],
+               "deadline": "2026-09-14T00:00:00Z", "status": "open"}  # due 20:00 ET
 
 
 def game(name, teams, state, date="2026-09-14T00:20Z", detail=""):
@@ -20,9 +23,11 @@ def player(name, team, started=True, locked=False, status="ACTIVE"):
             "injury_status": status}
 
 
-def state(games=(), mine=(), theirs=(), clears=None, points=(), unread=None, now=NOW, byes=()):
+def state(games=(), mine=(), theirs=(), clears=None, points=(), unread=None, now=NOW, byes=(),
+          commitments=()):
     return governor.controller_state(now, list(games), list(mine), list(theirs), clears,
-                                     list(points), unread or {}, set(byes))
+                                     list(points), unread or {}, set(byes),
+                                     commitments=list(commitments))
 
 
 class TestModes:
@@ -107,6 +112,29 @@ class TestModes:
         assert out["next_required_attention"] == {"at": "2026-09-16 03:00 ET",
                                                   "why": "waivers process"}
 
+    def test_an_open_commitment_is_hot_and_stops_engineering(self):
+        # 2026-09-16 16:50 ET the controller read DEEP_IDLE with engineering
+        # allowed while an approved claim was unsent. An open commitment is
+        # actionable whatever the scoreboard says.
+        out = state(commitments=[WENTZ_CLAIM])
+        assert out["mode"] == "HOT" and out["engineering"]["allowed"] is False
+        assert out["fantasy_actionable"] == [
+            "commitment ab12cd34: claim Carson Wentz for Tyrone Tracy Jr., due 2026-09-13 20:00 ET"]
+        assert out["next_required_attention"] == {"at": "2026-09-13 20:00 ET",
+                                                  "why": "commitment ab12cd34 deadline"}
+
+    def test_an_overdue_commitment_stays_hot(self):
+        # 03:06 ET: waivers ran, the claim was never sent. A decision point
+        # would have dropped out here; a commitment does not.
+        out = state(commitments=[WENTZ_CLAIM], now="2026-09-14T00:06:00Z")
+        assert out["mode"] == "HOT" and out["engineering"]["allowed"] is False
+        assert out["fantasy_actionable"][0].endswith("due 2026-09-13 20:00 ET OVERDUE")
+        assert out["next_required_attention"] is None
+
+    def test_an_unreadable_commitments_ledger_is_degraded(self):
+        out = state(unread={"commitments": "JSONDecodeError: x"})
+        assert out["mode"] == "DEGRADED" and out["engineering"]["allowed"] is False
+
     def test_an_unreadable_scoreboard_is_degraded(self):
         out = state(unread={"scoreboard": "RuntimeError: 503"})
         assert out["mode"] == "DEGRADED" and out["engineering"]["allowed"] is False
@@ -157,6 +185,7 @@ class TestTool:
         monkeypatch.setenv("ESPN_SWID", "AAAA")
         monkeypatch.setattr(governor, "CONTROLLER_STATE", tmp_path / "state.json")
         monkeypatch.setattr(governor, "DECISION_POINTS", tmp_path / "none.json")
+        monkeypatch.setattr(commitments, "COMMITMENTS", tmp_path / "commitments.json")
         # The scoreboard has rolled to week 2; the league is still in period 1.
         monkeypatch.setattr(live, "fetch_scoreboard", lambda *a, **k: {"week": {"number": 2},
                                                                        "events": []})
@@ -179,10 +208,23 @@ class TestTool:
         assert out["week"] == 1 and out["scoreboard_week"] == 2 and periods == [1]
         assert out["mode"] == "DEEP_IDLE"
         assert json.loads((tmp_path / "state.json").read_text())["mode"] == "DEEP_IDLE"
+        # The same tick with an open commitment on disk is HOT: the ledger, not
+        # the roster, is what says an approved action is unsent.
+        commitments.open_commitment("123", 1, "claim", "2026-12-01T03:00:00-05:00",
+                                    add=commitments.player("Carson Wentz", 1),
+                                    path=tmp_path / "commitments.json")
+        out = json.loads(server.controller_state("123"))
+        assert out["mode"] == "HOT" and out["engineering"]["allowed"] is False
+        assert out["fantasy_actionable"][0].startswith("commitment ")
+        (tmp_path / "commitments.json").write_text("{", encoding="utf-8")
+        out = json.loads(server.controller_state("123"))
+        assert out["mode"] == "DEGRADED"
+        assert out["degraded_capabilities"]["commitments"].startswith("JSONDecodeError")
 
     def test_a_scoreboard_failure_degrades(self, monkeypatch, tmp_path):
         monkeypatch.setattr(governor, "CONTROLLER_STATE", tmp_path / "state.json")
         monkeypatch.setattr(governor, "DECISION_POINTS", tmp_path / "none.json")
+        monkeypatch.setattr(commitments, "COMMITMENTS", tmp_path / "commitments.json")
 
         def boom(*a, **k):
             raise RuntimeError("503")

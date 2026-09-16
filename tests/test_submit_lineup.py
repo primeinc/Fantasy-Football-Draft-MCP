@@ -7,7 +7,9 @@ import json
 import pandas as pd
 import pytest
 
-from ffdraft import config, lineup, lineup_write, rosters, server
+from ffdraft import commitments, config, lineup, lineup_write, rosters, server
+
+LEDGER: dict = {}   # the fixture's ledger path and the id of the commitment it opened
 
 
 def _priced():
@@ -22,9 +24,13 @@ def _priced():
 
 
 @pytest.fixture
-def wired(monkeypatch):
+def wired(monkeypatch, tmp_path):
     monkeypatch.setenv("ESPN_SWID", "SWID-TEST")
     monkeypatch.setenv("ESPN_S2", "S2-TEST")
+    LEDGER["path"] = tmp_path / "commitments.json"
+    monkeypatch.setattr(commitments, "COMMITMENTS", LEDGER["path"])
+    LEDGER["id"] = commitments.open_commitment("L", 3, "lineup", "2026-12-01T03:00:00-05:00",
+                                               path=LEDGER["path"])["id"]
     priced = _priced()
     monkeypatch.setattr(server, "_lineup_inputs",
                         lambda _league_id, _week, _season: (config.LeagueSettings(), priced, 3, 7))
@@ -70,11 +76,29 @@ def test_a_refusal_sends_nothing(wired, monkeypatch):
 
 
 def test_a_send_is_followed_by_a_read_back(wired):
-    out = json.loads(server.submit_lineup("L", 3, dry_run=False))
+    out = json.loads(server.submit_lineup("L", 3, dry_run=False, commitment_id=LEDGER["id"]))
     assert out["sent"] is True
     assert len(wired) == 1
     assert wired[0]["memberId"] == "{SWID-TEST}"
     assert [i["playerId"] for i in wired[0]["items"]] == [2, 3]
     assert out["espn_holds"] == {"QB One": "QB", "RB One": "RB", "RB Two": "BENCH"}
     assert out["mismatches"] == []
+    assert out["outcome"] == lineup_write.CONFIRMED
+    assert out["commitment"] == {"id": LEDGER["id"], "status": "confirmed",
+                                 "espn_transaction_id": "read-back matched"}
     assert "SWID-TEST" not in json.dumps(out)
+
+
+def test_a_send_without_a_commitment_is_refused(wired):
+    out = json.loads(server.submit_lineup("L", 3, dry_run=False))
+    assert out["sent"] is False and wired == []
+    assert out["refusals"][0].startswith("a send needs an open commitment")
+    assert out["commitment"] is None
+
+
+def test_a_mismatched_read_back_leaves_the_commitment_open(wired, monkeypatch):
+    monkeypatch.setattr(rosters, "rosters_by_team", lambda _t, _b, _p: {7: _priced()})
+    out = json.loads(server.submit_lineup("L", 3, dry_run=False, commitment_id=LEDGER["id"]))
+    assert out["mismatches"] == ["RB One", "RB Two"]
+    assert out["outcome"] == lineup_write.UNKNOWN_AFTER_SEND and out["retry"]
+    assert out["commitment"]["status"] == "open"

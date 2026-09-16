@@ -2518,6 +2518,186 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
     }), indent=2)
 
 
+def _under_commitment(commitment_id: str, league_id: str, kind: str, moved: set[int],
+                      week: int | None = None) -> tuple[dict | None, str | None]:
+    """The open commitment a send acts under, or why it may not: no id, an id
+    that names no open record of this kind for this league (and week), or a
+    transaction that moves a player the record does not name. A lineup
+    commitment names no players, because its moves are the roster's."""
+    from . import commitments
+
+    cid = commitment_id.strip()
+    if not cid:
+        return None, ("a send needs an open commitment: open_commitment records the approved "
+                      "action, then pass its id as commitment_id")
+    rows, err = commitments.load()
+    if err:
+        return None, f"the commitments ledger could not be read: {err}"
+    c = commitments.find(rows, cid)
+    if c is None:
+        return None, f"no commitment {cid!r} in {commitments.COMMITMENTS.name}"
+    if c.get("status") != commitments.OPEN:
+        return None, f"commitment {cid} is {c.get('status')}, not open"
+    if c.get("kind") != kind:
+        return None, f"commitment {cid} is a {c.get('kind')}, not a {kind}"
+    if str(c.get("league_id")) != str(league_id):
+        return None, f"commitment {cid} is for league {c.get('league_id')}, not {league_id}"
+    if week is not None and c.get("week") != int(week):
+        return None, f"commitment {cid} is for week {c.get('week')}, not {week}"
+    allowed = commitments.allowed_ids(c)
+    outside = sorted(moved - allowed) if allowed else []
+    if outside:
+        named = [c.get("add"), c.get("drop"), *(c.get("fallbacks") or []),
+                 *(c.get("give") or []), *(c.get("get") or [])]
+        names = ", ".join(p["name"] for p in named if p)
+        return None, (f"commitment {cid} does not cover player id(s) {outside}; it names "
+                      f"{names}. A different player is a different action: open a new "
+                      f"commitment for it")
+    return c, None
+
+
+def _settle_commitment(out: dict, c: dict | None, outcome: str, espn_id) -> None:
+    """After a send: CONFIRMED closes the commitment with ESPN's id; any other
+    outcome leaves it open, and `commitment` says so."""
+    from . import commitments, lineup_write
+
+    if c is None:
+        return
+    if outcome != lineup_write.CONFIRMED:
+        out["commitment"] = {"id": c["id"], "status": commitments.OPEN,
+                             "why": f"outcome {outcome}: it stays open until ESPN holds the "
+                                    f"action, or block_commitment names why it cannot"}
+        return
+    try:
+        commitments.confirm(c["id"], str(espn_id))
+        out["commitment"] = {"id": c["id"], "status": commitments.CONFIRMED,
+                             "espn_transaction_id": str(espn_id)}
+    except ValueError as exc:
+        out["commitment"] = {"id": c["id"], "status": "unclosed", "error": str(exc)}
+
+
+@mcp.tool(structured_output=False)
+def open_commitment(league_id: str, week: int, kind: str, deadline: str, add: str = "",
+                    drop: str = "", fallbacks: str = "", give: str = "", get: str = "",
+                    partner: str = "", approved_text: str = "",
+                    season: int = CURRENT_SEASON) -> str:
+    """Record an action the user approved, so it stays open until ESPN holds it.
+
+    `kind` is claim, trade or lineup. `deadline` is ISO 8601 with a UTC offset
+    (`2026-09-16T03:00:00-04:00`). A claim names `add` and usually `drop`;
+    `fallbacks` is a comma-separated list of alternative adds, in order, that
+    the same approval covers. A trade names `partner` (team id or a unique piece
+    of its name) and `give` / `get`. Every name must be a player's full name in
+    ESPN's pool; a substring, an ambiguity or a miss writes nothing.
+    `approved_text` is the user's words, verbatim.
+
+    While the record is open, `controller_state` is HOT and engineering is not
+    allowed; the Stop gate (`python -m ffdraft.commitments gate`) refuses to end
+    a turn. `submit_claim`, `propose_trade` and `submit_lineup` send only under
+    an open commitment whose players cover the transaction, and a CONFIRMED
+    send closes it. `block_commitment` and `cancel_commitment` are the other
+    exits. A deadline passing changes nothing but the word OVERDUE.
+    """
+    import os
+
+    from . import claim_write, commitments, pool, rosters, trade_write
+
+    swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
+    if not (swid and espn_s2):
+        return _emit({"error": "open_commitment needs ESPN_SWID and ESPN_S2"})
+    if kind not in commitments.KINDS:
+        return _emit({"error": f"kind {kind!r} is not one of {', '.join(commitments.KINDS)}"})
+
+    def names_in(text: str) -> list[str]:
+        return [n.strip() for n in text.split(",") if n.strip()]
+
+    wanted = {"add": names_in(add), "drop": names_in(drop), "fallbacks": names_in(fallbacks),
+              "give": names_in(give), "get": names_in(get)}
+    refusals: list[str] = []
+    for label in ("add", "drop"):
+        if len(wanted[label]) > 1:
+            refusals.append(f"{label} names {len(wanted[label])} players; a claim names one")
+    resolved: dict[str, list[dict]] = {k: [] for k in wanted}
+    partner_id: int | None = None
+    if any(wanted.values()):
+        try:
+            current = pool.fetch_pool(league_id, season, None, swid, espn_s2)
+        except Exception as exc:
+            return _emit({"error": f"could not read ESPN's pool: {type(exc).__name__}: {exc}"})
+        rows = pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, week)
+        for label, names in wanted.items():
+            for name in names:
+                row, why = claim_write.resolve(rows, name)
+                if row is None:
+                    refusals.append(str(why))
+                elif bd.norm_name(str(row["player"])) != bd.norm_name(name):
+                    refusals.append(f"{label} {name!r} is not a full name; an approval needs "
+                                    f"{row['player']!r}")
+                elif row["espn_id"] is None:
+                    refusals.append(f"{row['player']}: ESPN gave no player id")
+                else:
+                    resolved[label].append(commitments.player(row["player"], row["espn_id"]))
+    if kind == "trade":
+        try:
+            payload = rosters.fetch_roster_payload(league_id, season, None, swid, espn_s2)
+        except Exception as exc:
+            return _emit({"error": f"could not read the rosters: {type(exc).__name__}: {exc}"})
+        teams = [t for t in payload.get("teams") or [] if t.get("id") is not None]
+        my_id = rosters.my_team_id(teams, swid)
+        if my_id is None:
+            return _emit({"error": "no team in this league is owned by ESPN_SWID"})
+        table = rosters.league_table(payload, bd._ESPN_POSITION_NAMES, bd._ESPN_SLOT_NAMES, swid)
+        team, why = trade_write.resolve_team(table, partner, my_id)
+        if team is None:
+            refusals.append(str(why))
+        else:
+            partner_id = int(team["team_id"])
+    if refusals:
+        return _emit({"opened": False, "refusals": refusals}, indent=2)
+    try:
+        row = commitments.open_commitment(
+            league_id, week, kind, deadline,
+            add=resolved["add"][0] if resolved["add"] else None,
+            drop=resolved["drop"][0] if resolved["drop"] else None,
+            fallbacks=resolved["fallbacks"], give=resolved["give"], get=resolved["get"],
+            partner_team_id=partner_id, approved_text=approved_text)
+    except ValueError as exc:
+        return _emit({"opened": False, "refusals": [str(exc)]}, indent=2)
+    return _emit({"opened": True, "commitment": row,
+                  "note": "controller_state is HOT and engineering is off until this is "
+                          "confirmed, blocked or cancelled; pass commitment_id to the send"},
+                 indent=2)
+
+
+@mcp.tool(structured_output=False)
+def block_commitment(commitment_id: str, reason: str, impossible: bool = False) -> str:
+    """Close an open commitment without doing it, and say why. `impossible` marks
+    an action that can no longer happen (the player is on another team, a lock
+    ESPN enforces has passed); otherwise the record is blocked, which is a
+    reason the next reader must see, not a cancellation."""
+    from . import commitments
+
+    try:
+        row = (commitments.mark_impossible(commitment_id, reason) if impossible
+               else commitments.block(commitment_id, reason))
+    except ValueError as exc:
+        return _emit({"closed": False, "error": str(exc)})
+    return _emit({"closed": True, "commitment": row}, indent=2)
+
+
+@mcp.tool(structured_output=False)
+def cancel_commitment(commitment_id: str, by: str = "user") -> str:
+    """Close an open commitment because the user withdrew or superseded it.
+    Only the user cancels an approval; `by` records who said so."""
+    from . import commitments
+
+    try:
+        row = commitments.cancel(commitment_id, by)
+    except ValueError as exc:
+        return _emit({"closed": False, "error": str(exc)})
+    return _emit({"closed": True, "commitment": row}, indent=2)
+
+
 def _claim_plan(league_id: str, week: int, add: str, drop: str, season: int,
                 swid: str | None, espn_s2: str | None, exact: bool) -> dict:
     """One claim resolved against ESPN's pool, roster and settings.
@@ -2601,13 +2781,19 @@ def preview_waiver_claim(league_id: str, week: int, add: str, drop: str = "",
 
 @mcp.tool(structured_output=False)
 def submit_claim(league_id: str, week: int, add: str, drop: str = "", dry_run: bool = True,
-                 season: int = CURRENT_SEASON) -> str:
+                 commitment_id: str = "", season: int = CURRENT_SEASON) -> str:
     """Claim a player on ESPN: a WAIVERS claim, or an outright add of a free agent.
 
     `add` and `drop` are player names in ESPN's pool. `week` is the scoring
     period the claim is filed for. What the claim is, ESPN decides: WAIVER for a
     player on waivers, which the league processes at its own waiver time, and
     FREEAGENT for one who can be added now, which executes at once.
+
+    A send acts under `commitment_id`, an open claim commitment for this league
+    and week (`open_commitment`) whose add, drop or fallbacks cover every player
+    the claim moves; without one, or with a player it does not name, the send is
+    refused. A CONFIRMED send closes the commitment with ESPN's transaction id.
+    A dry run needs no commitment, but checks one it is given.
 
     By default (`dry_run=true`) it sends nothing and returns the resolved add
     and drop, the refusals, the exact transaction and any claim ESPN already
@@ -2678,6 +2864,13 @@ def submit_claim(league_id: str, week: int, add: str, drop: str = "", dry_run: b
             for t in before]
         if any(t.get("status") == claim_write.PENDING for t in before):
             out["refusals"].append("an identical claim is already PENDING on ESPN")
+    under: dict | None = None
+    if not out["refusals"] and (commitment_id.strip() or not dry_run):
+        under, why = _under_commitment(commitment_id, league_id, "claim",
+                                       {int(i["playerId"]) for i in body["items"]}, week)
+        if why:
+            out["refusals"].append(why)
+    out["commitment"] = None if under is None else {"id": under["id"], "status": under["status"]}
     if out["refusals"]:
         out["why_not_sent"] = "refusals above; nothing is sent while any stand"
         return _emit(out, indent=2)
@@ -2703,6 +2896,7 @@ def submit_claim(league_id: str, week: int, add: str, drop: str = "", dry_run: b
     out["espn_holds"] = None
     if sent is not None and 400 <= sent < 500:
         out["outcome"] = lineup_write.REJECTED
+        _settle_commitment(out, under, lineup_write.REJECTED, None)
         return _emit(out, indent=2)
     try:
         outcome, match = lineup_write.reconcile_new_id(before, filed())
@@ -2719,6 +2913,7 @@ def submit_claim(league_id: str, week: int, add: str, drop: str = "", dry_run: b
         }
     if outcome == lineup_write.UNKNOWN_AFTER_SEND:
         out["retry"] = lineup_write.NO_RETRY
+    _settle_commitment(out, under, outcome, None if match is None else match.get("id"))
     return _emit(out, indent=2)
 
 
@@ -2854,23 +3049,28 @@ def waiver_candidates(league_id: str, week: int, limit: int = 3,
 def controller_state(league_id: str, season: int = CURRENT_SEASON) -> str:
     """Whether this tick belongs to fantasy operations or engineering. Read it first.
 
-    `mode`: DEGRADED (the scoreboard or league could not be read), HOT (a started
-    player of mine is OUT-class before his lock, or attention is due within 30
-    minutes), WATCH (a game in progress with my players, my opponent's, or a
-    team a decision point names), DEEP_IDLE (180+ idle minutes or nothing
-    scheduled), IDLE. `next_required_attention` is the earliest of: inactives
-    (kickoff minus 90 minutes) for a game with an unlocked player of mine, the
-    waiver clear time, the next decision point, a 15-minute recheck while
-    observing. `idle_budget_minutes` is that minus now minus a 15-minute margin.
+    `mode`: DEGRADED (the scoreboard, the league or the commitments ledger could
+    not be read), HOT (an open commitment; a started player of mine is
+    OUT-class before his lock; or attention is due within 30 minutes), WATCH (a
+    game in progress with my players, my opponent's, or a team a decision point
+    names), DEEP_IDLE (180+ idle minutes or nothing scheduled), IDLE.
+    `fantasy_actionable` lists every open commitment (`open_commitment`), marked
+    OVERDUE past its deadline and present until the record is closed, plus the
+    lineup moves ESPN still accepts. `next_required_attention` is the earliest
+    of: inactives (kickoff minus 90 minutes) for a game with an unlocked player
+    of mine, the waiver clear time, the next decision point, an open
+    commitment's deadline, a 15-minute recheck while observing.
+    `idle_budget_minutes` is that minus now minus a 15-minute margin.
     `engineering` says whether engineering may run, for how long, and at which
-    risk class. The scoring and matchup periods are the league's (mStatus); the
-    scoreboard supplies games, and while it shows a later week my roster adds
-    no actionable. A started, unlocked player on bye (nfldata schedule) is
-    actionable. Written to
-    the state directory as controller-state.json. Decision points are read
-    from decision_points.json there (`just decision-point`).
+    risk class; never while a commitment is open. The scoring and matchup
+    periods are the league's (mStatus); the scoreboard supplies games, and
+    while it shows a later week my roster adds no actionable. A started,
+    unlocked player on bye (nfldata schedule) is actionable. Written to the
+    state directory as controller-state.json. Decision points are read from
+    decision_points.json there (`just decision-point`), commitments from
+    commitments.json.
     """
-    from . import governor, live, pool, rosters
+    from . import commitments, governor, live, pool, rosters
 
     now = pd.Timestamp.now(tz="UTC").isoformat()
     unread: dict[str, str] = {}
@@ -2914,6 +3114,10 @@ def controller_state(league_id: str, season: int = CURRENT_SEASON) -> str:
     points, err = governor.load_decision_points()
     if err:
         unread["decision_points"] = err
+    ledger, err = commitments.load()
+    if err:
+        unread["commitments"] = err
+    open_commitments = commitments.open_ones(ledger)
     bye_teams: set[str] = set()
     if week is not None:
         from . import claims
@@ -2927,7 +3131,7 @@ def controller_state(league_id: str, season: int = CURRENT_SEASON) -> str:
         unread["scoreboard_week"] = (f"ESPN's scoreboard shows week {scoreboard_week}; the league "
                                      f"is in scoring period {week}, so no inactives are scheduled")
     state = governor.controller_state(now, games, mine, theirs, clears, points, unread, bye_teams,
-                                      scoreboard_ahead=ahead)
+                                      scoreboard_ahead=ahead, commitments=open_commitments)
     state = {"week": week, "matchup_period": matchup, "scoreboard_week": scoreboard_week,
              "season": season, **state}
     try:
@@ -3581,7 +3785,7 @@ def weekly_lineup(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
 
 @mcp.tool(structured_output=False)
 def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
-                  dry_run: bool = True) -> str:
+                  dry_run: bool = True, commitment_id: str = "") -> str:
     """Set this week's ESPN lineup to the one `weekly_lineup` recommends.
 
     The write `weekly_lineup` is not. By default (`dry_run=true`) it sends
@@ -3591,6 +3795,12 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
     writes host, the same request ESPN's own web client makes, then re-reads
     the roster and reports the slots ESPN holds afterwards under `espn_holds`,
     with `mismatches` naming any player whose slot is not what was asked.
+    `outcome` is REJECTED on a 4xx, CONFIRMED when the read-back holds every
+    slot asked for, UNKNOWN_AFTER_SEND otherwise.
+
+    A send acts under `commitment_id`, an open lineup commitment for this league
+    and week (`open_commitment`); without one it is refused, and a CONFIRMED
+    send closes it. A dry run needs no commitment, but checks one it is given.
 
     It refuses, and sends nothing, when a move would put a player in a slot
     ESPN does not list him as eligible for, when ESPN reports a player's slot
@@ -3633,6 +3843,13 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
         "transaction": {**payload, "memberId": "<SWID>"},
         "espn_weekly_projections_seen": weekly_seen,
     }
+    under: dict | None = None
+    if not plan["refusals"] and plan["items"] and (commitment_id.strip() or not dry_run):
+        under, why = _under_commitment(commitment_id, league_id, "lineup",
+                                       {int(i["playerId"]) for i in plan["items"]}, week)
+        if why:
+            out["refusals"].append(why)
+    out["commitment"] = None if under is None else {"id": under["id"], "status": under["status"]}
     if plan["refusals"]:
         out["why_not_sent"] = "refusals above; nothing is sent while any stand"
         return _emit(out, indent=2)
@@ -3647,6 +3864,12 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
     # ESPN echoes the transaction back with `memberId` set to the SWID, so the
     # answer is redacted as well as the request.
     out["espn_response"] = trade_write.redact(result, swid)
+    status = int(result.get("status") or 0)
+    if 400 <= status < 500:
+        out["outcome"] = lineup_write.REJECTED
+        _settle_commitment(out, under, lineup_write.REJECTED, None)
+        return _emit(out, indent=2)
+    outcome = lineup_write.UNKNOWN_AFTER_SEND
     try:
         teams = rosters.fetch_roster_teams(league_id, season, week, swid, espn_s2)
         mine = rosters.rosters_by_team(teams, _build_board(), bd._ESPN_POSITION_NAMES)[team_id]
@@ -3656,16 +3879,24 @@ def submit_lineup(league_id: str, week: int, season: int = CURRENT_SEASON,
         out["espn_holds"] = {n: slot_name(s) for n, s in holds.items()}
         out["mismatches"] = sorted(n for n, want in plan["after"].items()
                                    if n in holds and holds[n] != want)
+        if not out["mismatches"]:
+            outcome = lineup_write.CONFIRMED
     except Exception as exc:
         out["espn_holds"] = None
         out["read_back_error"] = f"{type(exc).__name__}: {exc}"
+    out["outcome"] = outcome
+    if outcome == lineup_write.UNKNOWN_AFTER_SEND:
+        out["retry"] = lineup_write.NO_RETRY
+    body = result.get("body")
+    _settle_commitment(out, under, outcome,
+                       (body.get("id") if isinstance(body, dict) else None) or "read-back matched")
     return _emit(out, indent=2)
 
 
 @mcp.tool(structured_output=False)
 def propose_trade(league_id: str, partner: str, give: str = "", get: str = "",
                   days: int = 2, comment: str = "", dry_run: bool = True,
-                  season: int = CURRENT_SEASON) -> str:
+                  commitment_id: str = "", season: int = CURRENT_SEASON) -> str:
     """Propose a trade to another team on ESPN.
 
     `partner` is a team id, or a unique piece of the team's name or an owner's
@@ -3673,6 +3904,12 @@ def propose_trade(league_id: str, partner: str, give: str = "", get: str = "",
     roster and the partner's as ESPN holds them now (exact, else a unique
     substring). `days` is how long the offer stays open, 1 through 7 as ESPN's
     trade modal offers. `comment` goes to the partner with the offer.
+
+    A send acts under `commitment_id`, an open trade commitment for this league
+    (`open_commitment`) whose give and get cover every player the offer moves;
+    without one, or with a player it does not name, the send is refused. A
+    CONFIRMED send closes the commitment with ESPN's proposal id. A dry run
+    needs no commitment, but checks one it is given.
 
     By default (`dry_run=true`) it sends nothing and returns both sides, the
     refusals and the exact transaction. `dry_run=false` takes full names only,
@@ -3759,6 +3996,13 @@ def propose_trade(league_id: str, partner: str, give: str = "", get: str = "",
                                          give_rows, get_rows,
                                          trade_write.expiration(now, days), comment)
     out["transaction"] = {**body, "memberId": "<SWID>"}
+    under: dict | None = None
+    if not refusals and (commitment_id.strip() or not dry_run):
+        under, why = _under_commitment(commitment_id, league_id, "trade",
+                                       {int(i["playerId"]) for i in body["items"]})
+        if why:
+            refusals.append(why)
+    out["commitment"] = None if under is None else {"id": under["id"], "status": under["status"]}
     if refusals:
         out["why_not_sent"] = "refusals above; nothing is sent while any stand"
         return _emit(out, indent=2)
@@ -3801,6 +4045,7 @@ def propose_trade(league_id: str, partner: str, give: str = "", get: str = "",
     out["espn_holds"] = None
     if status is not None and 400 <= status < 500:
         out["outcome"] = trade_write.REJECTED
+        _settle_commitment(out, under, trade_write.REJECTED, None)
         return _emit(out, indent=2)
     try:
         outcome, match = trade_write.reconcile(before, pending())
@@ -3818,6 +4063,7 @@ def propose_trade(league_id: str, partner: str, give: str = "", get: str = "",
         }
     if outcome == trade_write.UNKNOWN_AFTER_SEND:
         out["retry"] = trade_write.NO_RETRY
+    _settle_commitment(out, under, outcome, None if match is None else match.get("id"))
     return _emit(out, indent=2)
 
 
@@ -4419,7 +4665,7 @@ RELOAD_ORDER = ("names", "config", "sources", "features", "rookies", "separation
                 "model", "adp", "board", "espn_live", "espn_dump", "choice", "replay",
                 "watch", "roomstats", "roles", "lineup", "rosters", "stream",
                 "trade", "waivers", "pool", "transactions", "playerweek", "claims", "claim_write", "watchstore", "lineup_write", "trade_write", "injuries", "live",
-                "governor", "improve", "ticks", "contain", "runner")
+                "governor", "commitments", "improve", "ticks", "contain", "runner")
 
 
 def _sync_tools(live: Any, fresh: Any) -> dict[str, list[str]]:

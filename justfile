@@ -85,6 +85,12 @@ check:
     uvx ty check --python "{{ venv }}" src tests
     "{{ python }}" -m pytest tests -q
 
+# The Stop hook (.claude/settings.json): exit 2 with one line per open
+# commitment, so a turn cannot end with an approved action neither done nor
+# accounted for. Allows the retry of a turn it already blocked.
+commitments-gate:
+    @"{{ python }}" -m ffdraft.commitments gate
+
 # Upstream CI locally: ruff and the test suite on every Python it tests, each
 # in a throwaway venv, then the distribution build.
 [script]

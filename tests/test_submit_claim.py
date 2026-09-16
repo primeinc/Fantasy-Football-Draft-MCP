@@ -12,10 +12,22 @@ import json
 
 import pytest
 
-from ffdraft import claims, lineup_write, live, pool, rosters, server, trade_write, transactions
+from ffdraft import (
+    claims,
+    commitments,
+    lineup_write,
+    live,
+    pool,
+    rosters,
+    server,
+    trade_write,
+    transactions,
+)
 
 SWID = "AAAA-1111"
 BENCH, WR_SLOT = 20, 4
+DEADLINE = "2026-12-01T03:00:00-05:00"
+LEDGER: dict = {}   # the fixture's ledger path and the id of the commitment it opened
 
 
 def _row(pid, name, status="ONTEAM", on_team=3, injury="ACTIVE", droppable=True):
@@ -63,11 +75,19 @@ PAYLOAD = {"teams": [{"id": 3, "name": "adverse possession", "owners": ["{AAAA-1
 
 
 @pytest.fixture
-def wired(monkeypatch):
+def wired(monkeypatch, tmp_path):
     """ESPN as a dict: `filed` is what mTransactions2 holds per period, `files`
-    the period a 2xx send lands in (None for nowhere), `status` the answer."""
+    the period a 2xx send lands in (None for nowhere), `status` the answer.
+    The ledger holds one open claim commitment: Brissett for Jeudy, Free Guy
+    as the named fallback."""
     monkeypatch.setenv("ESPN_SWID", SWID)
     monkeypatch.setenv("ESPN_S2", "S2-TEST")
+    LEDGER["path"] = tmp_path / "commitments.json"
+    monkeypatch.setattr(commitments, "COMMITMENTS", LEDGER["path"])
+    LEDGER["id"] = commitments.open_commitment(
+        "L", 2, "claim", DEADLINE, add=commitments.player("Jacoby Brissett", 2578570),
+        drop=commitments.player("Jerry Jeudy", 4241463),
+        fallbacks=[commitments.player("Free Guy", 9)], path=LEDGER["path"])["id"]
     monkeypatch.setattr(rosters, "fetch_roster_payload", lambda *_a, **_k: PAYLOAD)
     monkeypatch.setattr(pool, "fetch_pool", lambda *_a, **_k: [_pool_entry(r) for r in ROWS])
     monkeypatch.setattr(claims, "fetch_settings", lambda *_a, **_k: SETTINGS)
@@ -97,8 +117,14 @@ def wired(monkeypatch):
     return state
 
 
-def run(add="Jacoby Brissett", drop="Jerry Jeudy", dry_run=True, week=2):
-    return json.loads(server.submit_claim("L", week, add, drop=drop, dry_run=dry_run))
+def run(add="Jacoby Brissett", drop="Jerry Jeudy", dry_run=True, week=2, commitment_id=None):
+    cid = LEDGER["id"] if commitment_id is None else commitment_id
+    return json.loads(server.submit_claim("L", week, add, drop=drop, dry_run=dry_run,
+                                          commitment_id=cid))
+
+
+def ledger():
+    return commitments.load(LEDGER["path"])[0]
 
 
 def test_a_dry_run_builds_the_claim_reads_what_espn_holds_and_sends_nothing(wired):
@@ -233,6 +259,68 @@ def test_a_failed_read_after_a_2xx_is_unknown_not_absent(wired):
     assert out["outcome"] == lineup_write.UNKNOWN_AFTER_SEND
     assert out["retry"] == lineup_write.NO_RETRY
     assert out["read_back_error"] == "RuntimeError: timeout"
+
+
+def test_a_send_without_a_commitment_is_refused(wired):
+    # 2026-09-16: a Jeudy-for-Wentz offer was nearly sent on an inferred
+    # approval. Nothing is sent under no commitment.
+    out = run(dry_run=False, commitment_id="")
+    assert out["sent"] is False and wired["sent"] == []
+    assert out["refusals"] == ["a send needs an open commitment: open_commitment records the "
+                               "approved action, then pass its id as commitment_id"]
+    assert out["commitment"] is None
+    dry = run(commitment_id="")
+    assert dry["refusals"] == [] and "dry run" in dry["why_not_sent"]
+
+
+def test_a_player_the_commitment_does_not_name_is_refused(wired):
+    other = commitments.open_commitment(
+        "L", 2, "claim", DEADLINE, add=commitments.player("Free Guy", 9),
+        drop=commitments.player("Jerry Jeudy", 4241463), path=LEDGER["path"])
+    out = run(dry_run=False, commitment_id=other["id"])
+    assert out["sent"] is False and wired["sent"] == []
+    assert out["refusals"] == [
+        f"commitment {other['id']} does not cover player id(s) [2578570]; it names Free Guy, "
+        f"Jerry Jeudy. A different player is a different action: open a new commitment for it"]
+
+
+def test_a_named_fallback_sends_without_a_new_approval(wired):
+    # Tuesday's chain was Wentz, then Lock, then Brissett. The second name in
+    # the chain is the same approval, not a new question.
+    out = run(add="Free Guy", dry_run=False)
+    assert out["sent"] is True and out["outcome"] == lineup_write.CONFIRMED
+    assert out["commitment"] == {"id": LEDGER["id"], "status": "confirmed",
+                                 "espn_transaction_id": "new"}
+
+
+def test_a_confirmed_send_closes_the_commitment_once(wired):
+    out = run(dry_run=False)
+    assert out["commitment"]["status"] == "confirmed"
+    assert ledger()[0]["confirmed"]["espn_transaction_id"] == "new"
+    # The fallback name, so the duplicate check stays quiet and the closed
+    # commitment is what refuses.
+    again = run(add="Free Guy", dry_run=False)
+    assert again["sent"] is False and len(wired["sent"]) == 1
+    assert again["refusals"] == [f"commitment {LEDGER['id']} is confirmed, not open"]
+
+
+@pytest.mark.parametrize("status, files", [(409, 2), (200, None)])
+def test_an_unconfirmed_send_leaves_the_commitment_open(wired, status, files):
+    wired["status"], wired["files"] = status, files
+    out = run(dry_run=False)
+    assert out["outcome"] in (lineup_write.REJECTED, lineup_write.UNKNOWN_AFTER_SEND)
+    assert out["commitment"]["status"] == "open"
+    assert ledger()[0]["status"] == "open"
+
+
+def test_a_commitment_for_another_week_league_or_kind_is_refused(wired):
+    out = run(dry_run=False, week=3)
+    assert out["refusals"] == [f"commitment {LEDGER['id']} is for week 2, not 3"]
+    out = json.loads(server.submit_claim("M", 2, "Jacoby Brissett", drop="Jerry Jeudy",
+                                         dry_run=False, commitment_id=LEDGER["id"]))
+    assert out["refusals"] == [f"commitment {LEDGER['id']} is for league L, not M"]
+    out = run(dry_run=False, commitment_id="nope")
+    assert out["refusals"] == ["no commitment 'nope' in commitments.json"]
 
 
 def test_the_trade_write_outcome_words_are_the_shared_ones():

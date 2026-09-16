@@ -1,5 +1,18 @@
 {
   "worktree": {
     "baseRef": "head"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "just commitments-gate",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
   }
 }

@@ -676,14 +676,18 @@ request ESPN's own web client makes, read from its bundle rather than from a
 community port, then re-reads the roster and reports the slots ESPN holds under
 `espn_holds`, with `mismatches` naming any player whose slot is not what was asked.
 
+`outcome` is REJECTED on a 4xx, CONFIRMED when the read-back holds every slot
+asked for (`mismatches` empty), and UNKNOWN_AFTER_SEND otherwise, with `retry`
+saying not to resend.
+
+A send acts under `commitment_id`, an open lineup commitment for this league and
+week (`open_commitment`); without one it is refused, and a CONFIRMED send closes
+it. A dry run needs no commitment but checks one it is given.
+
 Refuses, and sends nothing, when a move targets a slot the player is not eligible
 for, when ESPN reports a player's slot locked, or when a roster player carries no
 ESPN id. Injured reserve is never touched. `memberId` in the returned transaction
-is redacted; it is the SWID.
-
-Not yet run against a populated roster: ESPN withholds rosters until the draft
-completes. The first real send is a bench-to-bench move the user approves, read
-back afterwards.
+and in ESPN's echoed response is redacted; it is the SWID.
 
 ### `propose_trade`
 
@@ -712,6 +716,13 @@ ISO string. Sent to the same `/transactions/` endpoint with the same headers as
 `submit_lineup`. Refuses on an unresolved team or player, an empty trade, `days`
 outside 1-7, or a roster that would end past capacity (the client's drop items
 are not built). The SWID is redacted from everything returned.
+
+A send acts under `commitment_id`, an open trade commitment for this league
+(`open_commitment`) whose `give` and `get` cover every player the offer moves.
+Without one, or with a player it does not name, the send is refused: "i want
+Wentz" names no price, so no offer goes out on it. A CONFIRMED send closes the
+commitment with ESPN's proposal id. A dry run needs no commitment but checks one
+it is given.
 
 ### `league_rosters`
 
@@ -847,6 +858,45 @@ fails. An already EXECUTED claim for the same players does not refuse: a
 processed claim is not a pending duplicate. The SWID is redacted everywhere it
 would appear. Which claim to make is `waiver_candidates`.
 
+A send acts under `commitment_id`, an open claim commitment for this league and
+week (`open_commitment`) whose add, drop or fallbacks cover every player the
+claim moves. Without one, or with a player it does not name, the send is refused
+(`commitment <id> does not cover player id(s) [...]`). A fallback named with the
+approval sends without a new one: under "Wentz, else Lock, else Brissett", Lock
+for the same drop is the same approval. A CONFIRMED send closes the commitment
+with ESPN's transaction id; REJECTED and UNKNOWN_AFTER_SEND leave it open and
+`commitment.why` says so. A dry run needs no commitment but checks one it is given.
+
+### `open_commitment` / `block_commitment` / `cancel_commitment` / `just commitments-gate`
+
+An action the user approved, written down when approved and open until ESPN
+holds it: `open_commitment(league_id, week, kind, deadline, add="", drop="",
+fallbacks="", give="", get="", partner="", approved_text="")`. `kind` is
+`claim`, `trade` or `lineup`; `deadline` is ISO 8601 with a UTC offset. Every
+name must be a player's full name in ESPN's pool (a substring, an ambiguity or a
+miss writes nothing, listed under `refusals`), and is stored with his ESPN id.
+`fallbacks` are alternative adds the same approval covers, in order. A trade
+names `partner` (team id or a unique piece of the name) and both sides.
+`approved_text` is the user's words, verbatim.
+
+The record lives in `~/.ffdraft/state/commitments.json` with `status` one of
+`open`, `confirmed` (ESPN's transaction id), `blocked` (a reason), `cancelled`
+(by whom), `impossible` (why). A passed deadline changes nothing but the word
+OVERDUE in how it is reported; a decision point expires, a commitment does not.
+The exits: a CONFIRMED send under it; `block_commitment(id, reason,
+impossible=false)`; `cancel_commitment(id, by="user")`. A closed record refuses
+a second close.
+
+While one is open, `controller_state` is HOT with `engineering.allowed` false
+and the record in `fantasy_actionable`, and the Stop hook in
+`.claude/settings.json` runs `just commitments-gate`
+(`python -m ffdraft.commitments gate`), which exits 2 with one line per open
+commitment — `BLOCKED-UNTIL-RESOLVED: commitment <id>: <action>, due <t>` — so
+the turn cannot end until each is confirmed, blocked or cancelled. The retry of
+a turn the gate already blocked (`stop_hook_active`) is allowed with the lines
+still printed, because a Stop hook that keeps blocking loops the session until
+it is killed. An unreadable ledger blocks the gate and degrades the controller.
+
 ### `controller_state` / `just decision-point <at> <what> [teams]`
 
 Whether a tick belongs to fantasy operations or engineering:
@@ -854,16 +904,18 @@ Whether a tick belongs to fantasy operations or engineering:
 
 | mode | when | engineering |
 |---|---|---|
-| `DEGRADED` | the ESPN scoreboard or league document could not be read | no |
-| `HOT` | a started, unlocked player of mine is on bye (nfldata schedule) or OUT, INJURY_RESERVE, DOUBTFUL, SUSPENSION or NA before his game, or a deadline is within 30 min | no |
+| `DEGRADED` | the ESPN scoreboard, the league document or the commitments ledger could not be read | no |
+| `HOT` | a commitment is open (OVERDUE past its deadline, never dropped); a started, unlocked player of mine is on bye (nfldata schedule) or OUT, INJURY_RESERVE, DOUBTFUL, SUSPENSION or NA before his game; or a deadline is within 30 min | no |
 | `WATCH` | a game in progress with a player of mine, of my opponent, or of a team a pending decision point names | no |
 | `DEEP_IDLE` | 180+ minutes of idle budget, or nothing scheduled | up to 120 min, risk class up to B |
 | `IDLE` | otherwise | up to the budget if at least 15 min, risk class A |
 
 `next_required_attention` is the earliest of: inactives (kickoff minus 90
 minutes) for a game with an unlocked player of mine, ESPN's
-`waiverProcessDate` (a 25-row WAIVERS pull), the next decision point, and a
-15-minute recheck while observing. The recheck does not make a tick HOT.
+`waiverProcessDate` (a 25-row WAIVERS pull), the next decision point, an open
+commitment's deadline, and a 15-minute recheck while observing. The recheck
+does not make a tick HOT. `fantasy_actionable` lists every open commitment
+first, as `commitment <id>: <action>, due <t>`.
 `idle_budget_minutes` is attention minus now minus 15. `engineering.lease_expires`
 is when engineering work stops. The scoring and matchup periods come from the
 league's `mStatus` (`scoringPeriodId`, `status.currentMatchupPeriod`); the ESPN
