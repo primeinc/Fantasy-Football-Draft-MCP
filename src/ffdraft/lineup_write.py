@@ -126,6 +126,33 @@ def plan_moves(starters: pd.DataFrame, roster: pd.DataFrame) -> dict:
             "lock_status_unknown_for": unknown_lock}
 
 
+# What a send may have done, and how a 2xx is settled against what ESPN holds.
+# One vocabulary for every write that goes through `send`, so a lineup, a claim
+# and a trade cannot answer the same question in three wordings -- and because a
+# second copy of a rule is how `_discount` came to exist twice.
+CONFIRMED = "CONFIRMED"
+REJECTED = "REJECTED"
+UNKNOWN_AFTER_SEND = "UNKNOWN_AFTER_SEND"
+NO_RETRY = ("do not resend: the write may have landed on ESPN; read what ESPN holds "
+            "before sending again")
+
+
+def reconcile_new_id(before: list[dict], after: list[dict]) -> tuple[str, dict | None]:
+    """A 2xx send's outcome from the matching records read before and after it.
+
+    Exactly one ESPN id absent before is this send's: CONFIRMED. None, or more
+    than one, is UNKNOWN_AFTER_SEND -- the write may exist, and the caller must
+    not resend. No clock is compared: a local clock ahead of ESPN's, or a record
+    filed under another scoring period, would make a time window answer
+    "absent" for a write that landed.
+    """
+    old = {str(t.get("id")) for t in before}
+    new = [t for t in after if str(t.get("id")) not in old and t.get("id") is not None]
+    if len(new) == 1:
+        return CONFIRMED, new[0]
+    return UNKNOWN_AFTER_SEND, None
+
+
 def send(league_id: str, season: int, payload: dict, swid: str | None = None,
          espn_s2: str | None = None, post: Callable[..., Any] | None = None) -> dict:
     """POST the transaction and return what ESPN answered, status included.

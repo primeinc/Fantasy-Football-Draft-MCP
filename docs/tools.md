@@ -797,8 +797,8 @@ entries equal).
 
 ### `preview_waiver_claim`
 
-The ESPN transaction a claim would send, checked against the league, with no
-send path: `preview_waiver_claim(league_id, week, add, drop="")`. Names resolve
+The ESPN transaction a claim would send, checked against the league, sending
+nothing: `preview_waiver_claim(league_id, week, add, drop="")`. Names resolve
 in ESPN's current pool (exact, else a unique substring; ambiguity is a refusal).
 `refusals` names every rule broken: the add is not FREEAGENT or WAIVERS with no
 team, the roster is full (mSettings slot counts, IR excluded) with no drop, the
@@ -808,7 +808,44 @@ scoringPeriodId, executionType, items}`, `type` WAIVER or FREEAGENT by the add's
 status. The envelope is `lineup_write`'s, read from ESPN's web client; the items
 mirror ESPN's records of claims this league processed in `mTransactions2`
 (ADD fromTeamId 0 slot -1 -> 20, DROP the reverse). No claim request has been
-observed, so `contract_basis` marks the body unverified and nothing is sent.
+observed, so `contract_basis` marks the body unverified. The send is
+`submit_claim`, which checks the claim through the same rules.
+
+### `submit_claim`
+
+The write `preview_waiver_claim` is not: `submit_claim(league_id, week, add,
+drop="", dry_run=true)`. ESPN decides what the claim is — WAIVER for a player on
+waivers, which the league processes at its waiver time, FREEAGENT for one who
+can be added now, which executes at once.
+
+`dry_run=true` (the default) returns the resolved add and drop, the refusals,
+the exact transaction, the claims ESPN already holds for it (`espn_already_holds`)
+and the periods read (`claim_periods`), with nothing sent. `dry_run=false` takes
+full names only, reads the matching claims in every period the league names
+(`week`, `scoringPeriodId`, `status.latestScoringPeriod`), sends one transaction
+to `lm-api-writes`, and reads them again.
+
+`outcome` is one of three, and the third is not a failure to hide:
+
+| outcome | when |
+|---|---|
+| `REJECTED` | ESPN answered 4xx; nothing was filed and nothing is read back |
+| `CONFIRMED` | exactly one claim id is new since the pre-send read; `espn_holds` carries ESPN's own status, period and time |
+| `UNKNOWN_AFTER_SEND` | anything else, including a 5xx, a missing status, a send that raised (`sent: "unknown"`) and a read-back that failed |
+
+On `UNKNOWN_AFTER_SEND`, `retry` says not to resend: the claim may exist.
+Matching is by ESPN id alone — type, team and the exact (player, ADD/DROP)
+moves — so **no local clock takes part**, and a claim ESPN filed under a
+different scoring period is still found. The "exactly one new id" rule and the
+three outcome words live in `lineup_write` and are shared with `propose_trade`.
+
+Refuses, and sends nothing, when the add is not claimable, the drop is not on
+your bench or is undroppable, the roster is full with no drop named, a name is
+not full or matches several players, an identical claim is already PENDING, the
+league's scoring periods cannot be read, or the pre-send read of the claims
+fails. An already EXECUTED claim for the same players does not refuse: a
+processed claim is not a pending duplicate. The SWID is redacted everywhere it
+would appear. Which claim to make is `waiver_candidates`.
 
 ### `controller_state` / `just decision-point <at> <what> [teams]`
 

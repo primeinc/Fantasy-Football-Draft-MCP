@@ -91,6 +91,24 @@ All notable changes to this project. Format follows
 
 ### Added
 
+**`submit_claim`: the waiver claim write**
+- `preview_waiver_claim` checked a claim and had no send path, so every claim
+  had to be entered by hand; a week 2 QB claim was recommended and never
+  submitted. `submit_claim(league_id, week, add, drop, dry_run=true)` sends it.
+- Dry run by default: the resolved add and drop, the refusals, the exact
+  transaction, and the claims ESPN already holds, with nothing sent.
+  `dry_run=false` takes full names only, reads the matching claims first, sends
+  one WAIVER (or FREEAGENT for an outright add) transaction to
+  `lm-api-writes`, and reads them again. `outcome` is REJECTED on a 4xx,
+  CONFIRMED when exactly one claim id is new, else UNKNOWN_AFTER_SEND with
+  `retry` saying not to resend. A 5xx, a missing status and a send that raises
+  are reconciled the same way as a 2xx.
+- Refuses, sending nothing, when the add is not claimable, the drop is not on
+  your bench or is undroppable, the roster is full with no drop named, an
+  identical claim is already PENDING, or the pre-send read fails.
+- The outcome words and the "exactly one new id" rule now live in
+  `lineup_write` and are shared with `propose_trade` rather than copied.
+
 **`propose_trade`: the trade offer write**
 - Dry run by default: both sides resolved on ESPN's rosters, refusals, expiry
   and the exact `TRADE_PROPOSAL`. `dry_run=false` takes full names only, sends

@@ -2518,11 +2518,60 @@ def injury_report(league_id: str, week: int, season: int = CURRENT_SEASON) -> st
     }), indent=2)
 
 
+def _claim_plan(league_id: str, week: int, add: str, drop: str, season: int,
+                swid: str | None, espn_s2: str | None, exact: bool) -> dict:
+    """One claim resolved against ESPN's pool, roster and settings.
+
+    Shared by `preview_waiver_claim` and `submit_claim`, so a preview and a send
+    cannot check the same claim by different rules. `exact` refuses a substring
+    match, which a send needs: a claim moves a roster, and "boston" is not a
+    name. Returns `error` when a read fails; otherwise the resolved rows, every
+    refusal, the warnings and the body the claim would carry.
+    """
+    import os
+
+    from . import claim_write, claims, pool, rosters
+
+    swid = swid or os.environ.get("ESPN_SWID") or ""
+    try:
+        payload = rosters.fetch_roster_payload(league_id, season, week, swid, espn_s2)
+        current = pool.fetch_pool(league_id, season, None, swid, espn_s2)
+        settings = claims.fetch_settings(league_id, season, swid, espn_s2)
+    except Exception as exc:
+        return {"error": f"could not read the roster, pool or settings: "
+                         f"{type(exc).__name__}: {exc}"}
+    teams = payload.get("teams") or []
+    my_id = rosters.my_team_id(teams, swid)
+    if my_id is None:
+        return {"error": "no team in this league is owned by ESPN_SWID"}
+    my_team = next(t for t in teams if t.get("id") == my_id)
+    entries = (my_team.get("roster") or {}).get("entries") or []
+    rows = pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, week)
+    add_row, add_refusal = claim_write.resolve(rows, add)
+    drop_row, drop_refusal = (None, None) if not drop.strip() else claim_write.resolve(rows, drop)
+    refusals = [r for r in (add_refusal, drop_refusal) if r]
+    if exact:
+        for label, given, row in (("add", add, add_row), ("drop", drop, drop_row)):
+            if row is not None and bd.norm_name(str(row["player"])) != bd.norm_name(given):
+                refusals.append(f"{label} {given!r} is not a full name; a send needs "
+                                f"{row['player']!r}")
+    refusals += claim_write.check(add_row, drop_row, my_id,
+                                  {e.get("playerId"): e.get("lineupSlotId") for e in entries},
+                                  len(entries), claim_write.roster_capacity(settings))
+    warnings = []
+    if add_row is not None and add_row["injury_status"] not in (None, "ACTIVE"):
+        warnings.append(f"{add_row['player']} is {add_row['injury_status']}")
+    return {"my_id": my_id, "add": add_row, "drop": drop_row, "refusals": refusals,
+            "warnings": warnings,
+            "body": None if add_row is None
+            else claim_write.claim_transaction(my_id, swid, week, add_row, drop_row)}
+
+
 @mcp.tool(structured_output=False)
 def preview_waiver_claim(league_id: str, week: int, add: str, drop: str = "",
                          season: int = CURRENT_SEASON) -> str:
     """The ESPN transaction a waiver claim would send, checked against the league.
-    Sends nothing: there is no send path.
+    Sends nothing; `submit_claim` sends.
 
     `add` and `drop` are player names, matched in ESPN's current pool (exact,
     else a unique substring; ambiguity is a refusal). `refusals` lists every
@@ -2534,46 +2583,143 @@ def preview_waiver_claim(league_id: str, week: int, add: str, drop: str = "",
     `contract_basis` says why the body is unverified: ESPN's record of a
     processed claim was observed, the request that makes one was not.
     """
-    import os
+    from . import claim_write
 
-    from . import claim_write, claims, pool, rosters
-
-    try:
-        payload = rosters.fetch_roster_payload(league_id, season, week)
-        current = pool.fetch_pool(league_id, season)
-        settings = claims.fetch_settings(league_id, season)
-    except Exception as exc:
-        return _emit({"error": f"could not read the roster, pool or settings: "
-                               f"{type(exc).__name__}: {exc}", "week": week, "season": season})
-    teams = payload.get("teams") or []
-    my_id = rosters.my_team_id(teams)
-    if my_id is None:
-        return _emit({"error": "no team in this league is owned by ESPN_SWID", "week": week})
-    my_team = next(t for t in teams if t.get("id") == my_id)
-    entries = (my_team.get("roster") or {}).get("entries") or []
-    rows = pool.pool_rows(current, bd._ESPN_POSITION_NAMES, season, week)
-    add_row, add_refusal = claim_write.resolve(rows, add)
-    drop_row, drop_refusal = (None, None) if not drop.strip() else claim_write.resolve(rows, drop)
-    refusals = [r for r in (add_refusal, drop_refusal) if r]
-    refusals += claim_write.check(add_row, drop_row, my_id,
-                                  {e.get("playerId"): e.get("lineupSlotId") for e in entries},
-                                  len(entries), claim_write.roster_capacity(settings))
-    transaction = None
-    if add_row is not None:
-        transaction = {**claim_write.claim_transaction(my_id, os.environ.get("ESPN_SWID") or "",
-                                                       week, add_row, drop_row),
-                       "memberId": "redacted"}
-    warnings = []
-    if add_row is not None and add_row["injury_status"] not in (None, "ACTIVE"):
-        warnings.append(f"{add_row['player']} is {add_row['injury_status']}")
+    plan = _claim_plan(league_id, week, add, drop, season, None, None, exact=False)
+    if "error" in plan:
+        return _emit({**plan, "week": week, "season": season})
+    body = plan["body"]
     return _emit({
         "week": week, "season": season, "sends": "nothing",
-        "add": add_row, "drop": drop_row,
-        "waiver_clears": None if add_row is None else add_row["waiver_clears"],
-        "refusals": refusals, "warnings": warnings,
-        "transaction": transaction,
+        "add": plan["add"], "drop": plan["drop"],
+        "waiver_clears": None if plan["add"] is None else plan["add"]["waiver_clears"],
+        "refusals": plan["refusals"], "warnings": plan["warnings"],
+        "transaction": None if body is None else {**body, "memberId": "redacted"},
         "contract_basis": claim_write.CONTRACT_BASIS,
     })
+
+
+@mcp.tool(structured_output=False)
+def submit_claim(league_id: str, week: int, add: str, drop: str = "", dry_run: bool = True,
+                 season: int = CURRENT_SEASON) -> str:
+    """Claim a player on ESPN: a WAIVERS claim, or an outright add of a free agent.
+
+    `add` and `drop` are player names in ESPN's pool. `week` is the scoring
+    period the claim is filed for. What the claim is, ESPN decides: WAIVER for a
+    player on waivers, which the league processes at its own waiver time, and
+    FREEAGENT for one who can be added now, which executes at once.
+
+    By default (`dry_run=true`) it sends nothing and returns the resolved add
+    and drop, the refusals, the exact transaction and any claim ESPN already
+    holds for it. `dry_run=false` takes full names only, reads the matching
+    claims in every period the league names, sends one transaction to ESPN's
+    writes host, and reads them again. `outcome` is REJECTED on a 4xx answer,
+    CONFIRMED when exactly one claim id is new (`espn_holds` describes it, with
+    the status ESPN filed), and UNKNOWN_AFTER_SEND otherwise, with `retry`
+    saying not to resend: the claim may exist. A 5xx, a missing status and a
+    send that raises (`sent: "unknown"`) are reconciled like a 2xx, and no local
+    clock takes part.
+
+    It refuses, and sends nothing, when the add is not claimable, the drop is
+    not on your bench or is undroppable, your roster is full and no drop is
+    named, a name is not full or matches several players, an identical claim is
+    already PENDING, or the pre-send read of the claims fails. The SWID is
+    redacted everywhere it would appear. Which claim to make is
+    `waiver_candidates`.
+    """
+    import os
+
+    from . import claim_write, lineup_write, live, trade_write, transactions
+    from .pool import eastern
+
+    swid, espn_s2 = os.environ.get("ESPN_SWID"), os.environ.get("ESPN_S2")
+    if not (swid and espn_s2):
+        return _emit({"error": "submit_claim needs ESPN_SWID and ESPN_S2"})
+    plan = _claim_plan(league_id, week, add, drop, season, swid, espn_s2, exact=not dry_run)
+    if "error" in plan:
+        return _emit({**plan, "week": week, "season": season})
+    body = plan["body"]
+    out: dict[str, Any] = {
+        "week": week, "season": season, "sent": False,
+        "add": plan["add"], "drop": plan["drop"],
+        "waiver_clears": None if plan["add"] is None else plan["add"]["waiver_clears"],
+        "refusals": list(plan["refusals"]), "warnings": plan["warnings"],
+        "transaction": None if body is None else trade_write.redact(body, swid),
+        "contract_basis": claim_write.CONTRACT_BASIS,
+    }
+    if body is None:
+        out["why_not_sent"] = "refusals above; nothing is sent while any stand"
+        return _emit(out, indent=2)
+    try:
+        status = live.fetch_league_status(league_id, season)
+        periods = sorted({p for p in (week, status.get("scoringPeriodId"),
+                                      (status.get("status") or {}).get("latestScoringPeriod"))
+                          if type(p) is int})
+    except Exception as exc:
+        out["why_not_sent"] = (f"could not read the league's scoring periods, so a claim "
+                               f"could not be reconciled: {type(exc).__name__}: {exc}")
+        return _emit(out, indent=2)
+    out["claim_periods"] = periods
+
+    def filed() -> list[dict]:
+        return claim_write.matching_claims(
+            [transactions.fetch_transactions(league_id, season, p, swid, espn_s2)
+             for p in periods], body)
+
+    try:
+        before: list[dict] | None = filed()
+    except Exception as exc:
+        before = None
+        out["claim_read_error"] = f"{type(exc).__name__}: {exc}"
+    if before:
+        out["espn_already_holds"] = [
+            {"status": t.get("status"), "scoring_period": t.get("scoringPeriodId"),
+             "when": eastern(t.get("processDate") or t.get("proposedDate"))}
+            for t in before]
+        if any(t.get("status") == claim_write.PENDING for t in before):
+            out["refusals"].append("an identical claim is already PENDING on ESPN")
+    if out["refusals"]:
+        out["why_not_sent"] = "refusals above; nothing is sent while any stand"
+        return _emit(out, indent=2)
+    if dry_run:
+        out["why_not_sent"] = "dry run; pass dry_run=false to send this claim"
+        if before is None:
+            out["why_not_sent"] += ("; the duplicate check did not run because the claim read "
+                                    "failed, and a send refuses until that read succeeds")
+        return _emit(out, indent=2)
+    if before is None:
+        out["why_not_sent"] = ("the claim read failed, so a send could not be reconciled "
+                               "against it; nothing is sent")
+        return _emit(out, indent=2)
+    sent: int | None = None
+    try:
+        result = lineup_write.send(league_id, season, body, swid, espn_s2)
+        out["espn_response"] = trade_write.redact(result, swid)
+        sent = int(result.get("status") or 0)
+        out["sent"] = True
+    except Exception as exc:
+        out["sent"] = "unknown"
+        out["send_error"] = trade_write.redact(f"{type(exc).__name__}: {exc}", swid)
+    out["espn_holds"] = None
+    if sent is not None and 400 <= sent < 500:
+        out["outcome"] = lineup_write.REJECTED
+        return _emit(out, indent=2)
+    try:
+        outcome, match = lineup_write.reconcile_new_id(before, filed())
+    except Exception as exc:
+        outcome, match = lineup_write.UNKNOWN_AFTER_SEND, None
+        out["read_back_error"] = f"{type(exc).__name__}: {exc}"
+    out["outcome"] = outcome
+    if match is not None:
+        out["espn_holds"] = {
+            "status": match.get("status"),
+            "scoring_period": match.get("scoringPeriodId"),
+            "when": eastern(match.get("processDate") or match.get("proposedDate")),
+            "bid": match.get("bidAmount"),
+        }
+    if outcome == lineup_write.UNKNOWN_AFTER_SEND:
+        out["retry"] = lineup_write.NO_RETRY
+    return _emit(out, indent=2)
 
 
 @mcp.tool(structured_output=False)

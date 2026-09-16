@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from . import lineup_write
 from .board import norm_name
 from .claim_write import resolve
 
@@ -130,9 +131,13 @@ def trade_transaction(team_id: int, partner_id: int, swid: str, period: int,
     }
 
 
-CONFIRMED = "CONFIRMED"
-REJECTED = "REJECTED"
-UNKNOWN_AFTER_SEND = "UNKNOWN_AFTER_SEND"
+# The outcome vocabulary and the reconcile rule are `lineup_write`'s, shared with
+# every other write; only the retry sentence is this module's, because where to
+# look is particular to a trade.
+CONFIRMED = lineup_write.CONFIRMED
+REJECTED = lineup_write.REJECTED
+UNKNOWN_AFTER_SEND = lineup_write.UNKNOWN_AFTER_SEND
+reconcile = lineup_write.reconcile_new_id
 NO_RETRY = ("do not resend: the offer may exist on ESPN; check the pending offers on ESPN's "
             "trade page before proposing again")
 
@@ -152,12 +157,3 @@ def matching_proposals(payloads: list[dict], body: dict) -> list[dict]:
     return list(seen.values())
 
 
-def reconcile(before: list[dict], after: list[dict]) -> tuple[str, dict | None]:
-    """A 2xx send's outcome from the matching PENDING proposals read before and
-    after it. Exactly one id absent before is this send's: CONFIRMED. None, or
-    more than one, is UNKNOWN_AFTER_SEND. No clock is compared."""
-    old = {str(t.get("id")) for t in before}
-    new = [t for t in after if str(t.get("id")) not in old and t.get("id") is not None]
-    if len(new) == 1:
-        return CONFIRMED, new[0]
-    return UNKNOWN_AFTER_SEND, None

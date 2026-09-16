@@ -8,7 +8,8 @@ league already processed, in `mTransactions2` on 2026-09-13: `type` WAIVER
 (FREEAGENT for an outright add), an `ADD` item with `fromTeamId` 0,
 `toTeamId` the team, `fromLineupSlotId` -1, `toLineupSlotId` 20, and a `DROP`
 item the reverse. A processed record is not the request that created it, so
-the request body is unverified and this module has no send path.
+the request body is unverified; `submit_claim` sends it and settles the answer
+against the claims ESPN holds, never against a local clock.
 """
 from __future__ import annotations
 
@@ -19,7 +20,12 @@ from .rosters import BENCH_SLOT, IR_SLOT
 CONTRACT_BASIS = (
     "UNVERIFIED request body: envelope from lineup_write (ESPN web client, 2026-09-05), "
     "items from executed WAIVER and FREEAGENT records in this league's mTransactions2 "
-    "(2026-09-13); no claim request has been observed, so nothing is sent")
+    "(2026-09-13); no claim request has been observed, so a send is reconciled against "
+    "what ESPN holds afterwards rather than trusted")
+# A claim ESPN has not processed yet. A WAIVER claim waits for the league's
+# process time; an outright FREEAGENT add is executed when it is made, so it
+# never holds this status.
+PENDING = "PENDING"
 
 
 def resolve(rows: list[dict], name: str) -> tuple[dict | None, str | None]:
@@ -63,6 +69,27 @@ def check(add: dict | None, drop: dict | None, team_id: int, slots: dict,
         elif slot != BENCH_SLOT:
             refusals.append(f"{drop['player']} is in ESPN lineup slot {slot}, not the bench")
     return refusals
+
+
+def matching_claims(payloads: list[dict], body: dict) -> list[dict]:
+    """Every claim across mTransactions2 payloads that is this body's, each id once.
+
+    A claim is the body's when its type, its team and its (player, item type)
+    moves are exactly the body's. Status is read, not filtered: a WAIVER claim
+    is PENDING until the league processes it and a FREEAGENT add is EXECUTED at
+    once, and a caller reconciling a send needs both, with the status ESPN
+    filed. Ordered oldest first by the time ESPN carries.
+    """
+    want = sorted((i["playerId"], i["type"]) for i in body["items"])
+    seen: dict[str, dict] = {}
+    for payload in payloads:
+        for t in payload.get("transactions") or []:
+            if (t.get("type") == body["type"] and t.get("teamId") == body["teamId"]
+                    and sorted((i.get("playerId"), i.get("type"))
+                               for i in t.get("items") or []) == want):
+                seen.setdefault(str(t.get("id")), t)
+    return sorted(seen.values(),
+                  key=lambda t: int(t.get("processDate") or t.get("proposedDate") or 0))
 
 
 def claim_transaction(team_id: int, swid: str, week: int, add: dict,

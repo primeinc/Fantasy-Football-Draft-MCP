@@ -1,8 +1,8 @@
-"""`preview_waiver_claim`: the claim body, checked, with no send path.
+"""`preview_waiver_claim`: the claim body, checked, sending nothing.
 
 Item shape is ESPN's record of this league's processed claims in
 mTransactions2 (2026-09-13): ADD fromTeamId 0 toTeamId <team> slot -1 -> 20;
-DROP the reverse.
+DROP the reverse. The send path is `submit_claim` (tests/test_submit_claim.py).
 """
 import json
 
@@ -18,6 +18,12 @@ def _row(pid, name, status="ONTEAM", on_team=3, injury="ACTIVE", droppable=True)
             "injury_status": injury, "droppable": droppable, "percent_owned": 5.0,
             "percent_change": 0.0, "week_points": None, "week_proj": None,
             "period_injury_status": None}
+
+
+def _claim(tid, items, team=3, kind="WAIVER", status="PENDING", period=2, when=1789542000000):
+    """One mTransactions2 claim record, as ESPN files it."""
+    return {"id": tid, "type": kind, "status": status, "teamId": team,
+            "scoringPeriodId": period, "processDate": when, "items": items}
 
 
 ROWS = [_row(2578570, "Jacoby Brissett", status="WAIVERS", on_team=0),
@@ -68,6 +74,30 @@ class TestParts:
              "fromLineupSlotId": 20, "toLineupSlotId": -1}]
         assert claim_write.claim_transaction(3, SWID, 2, ROWS[1], None)["type"] == "FREEAGENT"
 
+    def test_matching_needs_the_type_the_team_and_the_exact_moves(self):
+        body = claim_write.claim_transaction(3, SWID, 2, ROWS[0], ROWS[2])
+        moves = [{"playerId": 4241463, "type": "DROP", "fromTeamId": 3, "toTeamId": 0},
+                 {"playerId": 2578570, "type": "ADD", "fromTeamId": 0, "toTeamId": 3}]
+        period2 = {"transactions": [
+            _claim("a", moves),
+            _claim("b", moves, team=7),
+            _claim("c", moves, kind="FREEAGENT"),
+            _claim("d", moves[:1]),
+        ]}
+        period3 = {"transactions": [_claim("a", moves), _claim("e", moves, period=3, when=2)]}
+        found = claim_write.matching_claims([period2, period3], body)
+        # Oldest first by ESPN's own time, each id once.
+        assert [t["id"] for t in found] == ["e", "a"]
+        assert claim_write.matching_claims([{"transactions": []}], body) == []
+
+    def test_matching_reads_the_status_rather_than_filtering_on_it(self):
+        # A WAIVER claim is PENDING until the league processes it; an outright
+        # add is EXECUTED at once. A caller reconciling a send needs both.
+        body = claim_write.claim_transaction(3, SWID, 2, ROWS[1], None)
+        moves = [{"playerId": 9, "type": "ADD", "fromTeamId": 0, "toTeamId": 3}]
+        payload = {"transactions": [_claim("x", moves, kind="FREEAGENT", status="EXECUTED")]}
+        assert [t["status"] for t in claim_write.matching_claims([payload], body)] == ["EXECUTED"]
+
 
 def _entry(row):
     return {"id": row["espn_id"], "status": row["status"], "onTeamId": row["on_team_id"],
@@ -85,9 +115,9 @@ class TestTool:
                                                      for p, s in SLOTS.items()]
                                          + [{"playerId": 100 + i, "lineupSlotId": 20}
                                             for i in range(12)]}}]}
-        monkeypatch.setattr(rosters, "fetch_roster_payload", lambda *a, **k: payload)
-        monkeypatch.setattr(pool, "fetch_pool", lambda *a, **k: [_entry(r) for r in ROWS])
-        monkeypatch.setattr(claims, "fetch_settings", lambda *a, **k: {
+        monkeypatch.setattr(rosters, "fetch_roster_payload", lambda *_a, **_k: payload)
+        monkeypatch.setattr(pool, "fetch_pool", lambda *_a, **_k: [_entry(r) for r in ROWS])
+        monkeypatch.setattr(claims, "fetch_settings", lambda *_a, **_k: {
             "rosterSettings": {"lineupSlotCounts": {"0": 1, "2": 2, "4": 2, "6": 1, "16": 1,
                                                     "17": 1, "20": 6, "21": 1}}})
         return json.loads(server.preview_waiver_claim("123", 2, **kw))
