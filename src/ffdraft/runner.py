@@ -207,7 +207,7 @@ def claude_cmd(prompt: str, role: str, claude: str | None = None,
            "--permission-mode", "dontAsk", "--allowedTools", ",".join(tools),
            "--tools", ",".join(builtins),
            "--max-turns", str(MAX_TURNS[role]), "--max-budget-usd", str(BUDGET_USD[role]),
-           "--output-format", "json", "--no-session-persistence", "--strict-mcp-config",
+           "--output-format", "json", "--strict-mcp-config",
            "--mcp-config", str(REPO / ".mcp.json") if role == "fantasy" else '{"mcpServers": {}}']
     if system:
         cmd += ["--append-system-prompt", system]
